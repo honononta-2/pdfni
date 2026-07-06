@@ -1,0 +1,388 @@
+//! 文字整列方式の表検出
+
+use crate::model::{BBox, Cell, Table};
+
+/// 検出単位の文字塊
+pub struct Seg {
+    pub text: String,
+    pub bbox: BBox,
+}
+
+/// 検出パラメータ
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct TextSettings {
+    pub align_tol: f64,
+    pub min_table_segs: usize,
+    pub col_gap: f64,
+    pub min_rows: usize,
+    pub min_cols: usize,
+    pub min_fill: f64,
+    /// 型の揃った列が無い表に要求する最小行数
+    pub untyped_min_rows: usize,
+    /// 文章らしいセルの許容割合
+    pub max_prose_ratio: f64,
+}
+
+impl Default for TextSettings {
+    fn default() -> Self {
+        Self {
+            align_tol: 1.0,
+            min_table_segs: 4,
+            col_gap: 1.0,
+            min_rows: 2,
+            min_cols: 2,
+            min_fill: 0.3,
+            untyped_min_rows: 4,
+            max_prose_ratio: 0.4,
+        }
+    }
+}
+
+/// 文章セル比率が許容を超えるか
+fn prose_heavy(t: &Table, s: &TextSettings) -> bool {
+    let filled = t
+        .data
+        .iter()
+        .flatten()
+        .filter(|c| !c.text.trim().is_empty())
+        .count();
+    let prose = t
+        .data
+        .iter()
+        .flatten()
+        .filter(|c| is_prose_cell(&c.text))
+        .count();
+    (prose as f64) > s.max_prose_ratio * filled as f64
+}
+
+/// 文章らしいセルか
+pub(crate) fn is_prose_cell(s: &str) -> bool {
+    let t = s.trim();
+    let n = t.chars().count();
+    if n == 0 {
+        return false;
+    }
+    n >= 20
+        || t.contains('。')
+        || t.contains('@')
+        || t.ends_with(':')
+        || t.ends_with('：')
+        || t.contains('：')
+        || t.contains(": ")
+}
+
+/// 数値や日付とみなせるセルか
+fn is_typed_cell(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty()
+        && t.chars().any(|c| c.is_ascii_digit())
+        && !t.chars().any(|c| c.is_alphabetic())
+}
+
+/// 型の揃った列を持つか
+fn has_typed_column(t: &Table) -> bool {
+    (0..t.n_cols).any(|c| {
+        let texts: Vec<&str> = t
+            .data
+            .iter()
+            .filter_map(|r| r.get(c))
+            .map(|cell| cell.text.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        let typed = texts.iter().filter(|s| is_typed_cell(s)).count();
+        typed >= 2 && (typed as f64) >= 0.6 * texts.len() as f64
+    })
+}
+
+/// 各値が属する許容差クラスタのid
+pub(crate) fn cluster_ids(vals: &[f64], tol: f64) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..vals.len()).collect();
+    idx.sort_by(|&a, &b| vals[a].partial_cmp(&vals[b]).unwrap());
+    let mut ids = vec![0usize; vals.len()];
+    let mut cur = 0usize;
+    let mut prev = f64::NEG_INFINITY;
+    for (n, &i) in idx.iter().enumerate() {
+        if n > 0 && vals[i] - prev > tol {
+            cur += 1;
+        }
+        ids[i] = cur;
+        prev = vals[i];
+    }
+    ids
+}
+
+/// 各値が属するクラスタの要素数
+pub(crate) fn group_sizes(vals: &[f64], tol: f64) -> Vec<usize> {
+    let ids = cluster_ids(vals, tol);
+    let max_id = ids.iter().copied().max().unwrap_or(0);
+    let mut counts = vec![0usize; max_id + 1];
+    for &g in &ids {
+        counts[g] += 1;
+    }
+    ids.iter().map(|&g| counts[g]).collect()
+}
+
+pub(crate) fn median(mut v: Vec<f64>) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v[v.len() / 2]
+}
+
+/// 縦横どちらかでしか整列しないセグメントを反復して落とす
+fn connected_set(segs: &[Seg], tol: f64) -> Vec<usize> {
+    let mut active: Vec<usize> = (0..segs.len()).collect();
+    loop {
+        let n = active.len();
+        if n == 0 {
+            break;
+        }
+        let lefts: Vec<f64> = active.iter().map(|&i| segs[i].bbox.x0).collect();
+        let rights: Vec<f64> = active.iter().map(|&i| segs[i].bbox.x1).collect();
+        let hmids: Vec<f64> = active.iter().map(|&i| segs[i].bbox.cx()).collect();
+        let tops: Vec<f64> = active.iter().map(|&i| segs[i].bbox.top).collect();
+        let bots: Vec<f64> = active.iter().map(|&i| segs[i].bbox.bottom).collect();
+        let vmids: Vec<f64> = active.iter().map(|&i| segs[i].bbox.cy()).collect();
+
+        let gl = group_sizes(&lefts, tol);
+        let gr = group_sizes(&rights, tol);
+        let gm = group_sizes(&hmids, tol);
+        let gt = group_sizes(&tops, tol);
+        let gb = group_sizes(&bots, tol);
+        let gv = group_sizes(&vmids, tol);
+
+        let mut keep = Vec::new();
+        for k in 0..n {
+            let col_count = gl[k].max(gr[k]).max(gm[k]);
+            let row_count = gt[k].max(gb[k]).max(gv[k]);
+            if col_count >= 2 && row_count >= 2 {
+                keep.push(active[k]);
+            }
+        }
+        if keep.len() == n {
+            break;
+        }
+        active = keep;
+    }
+    active
+}
+
+/// 水平に重なるセグメントの x 区間をまとめて列帯にする
+pub(crate) fn column_bands(segs: &[Seg], members: &[usize], gap: f64) -> Vec<(f64, f64)> {
+    let mut iv: Vec<(f64, f64)> = members
+        .iter()
+        .map(|&i| (segs[i].bbox.x0, segs[i].bbox.x1))
+        .collect();
+    iv.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let mut bands: Vec<(f64, f64)> = Vec::new();
+    for (lo, hi) in iv {
+        match bands.last_mut() {
+            Some(b) if lo <= b.1 + gap => {
+                if hi > b.1 {
+                    b.1 = hi;
+                }
+            }
+            _ => bands.push((lo, hi)),
+        }
+    }
+    bands
+}
+
+/// 文字整列方式による1ページの表検出
+pub fn detect(segs: &[Seg], s: &TextSettings) -> Vec<Table> {
+    if segs.len() < s.min_table_segs {
+        return Vec::new();
+    }
+
+    let active = connected_set(segs, s.align_tol);
+    if active.len() < s.min_table_segs {
+        return Vec::new();
+    }
+
+    let med_h = median(active.iter().map(|&i| segs[i].bbox.height()).collect());
+    let row_tol = (med_h * 0.5).max(0.5);
+
+    let bottoms: Vec<f64> = active.iter().map(|&i| segs[i].bbox.bottom).collect();
+    let row_ids = cluster_ids(&bottoms, row_tol);
+    let n_total_rows = row_ids.iter().copied().max().unwrap_or(0) + 1;
+
+    let mut row_top = vec![f64::INFINITY; n_total_rows];
+    let mut row_bot = vec![f64::NEG_INFINITY; n_total_rows];
+    for (k, &rid) in row_ids.iter().enumerate() {
+        let i = active[k];
+        if segs[i].bbox.top < row_top[rid] {
+            row_top[rid] = segs[i].bbox.top;
+        }
+        if segs[i].bbox.bottom > row_bot[rid] {
+            row_bot[rid] = segs[i].bbox.bottom;
+        }
+    }
+
+    let mut ordered: Vec<usize> = (0..n_total_rows).collect();
+    ordered.sort_by(|&a, &b| row_top[a].partial_cmp(&row_top[b]).unwrap());
+
+    let gaps: Vec<f64> = ordered
+        .windows(2)
+        .map(|w| row_top[w[1]] - row_bot[w[0]])
+        .collect();
+    let med_gap = median(gaps);
+    let row_gap_threshold = (med_gap * 1.3).max(med_h * 0.5);
+
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for rid in ordered {
+        let split = groups.last().is_none_or(|g| {
+            let prev = *g.last().unwrap();
+            row_top[rid] - row_bot[prev] > row_gap_threshold
+        });
+        if split {
+            groups.push(vec![rid]);
+        } else {
+            groups.last_mut().unwrap().push(rid);
+        }
+    }
+
+    let mut tables = Vec::new();
+    for group in &groups {
+        let mut rid_map = vec![usize::MAX; n_total_rows];
+        for (new_id, &old_id) in group.iter().enumerate() {
+            rid_map[old_id] = new_id;
+        }
+        let group_active: Vec<usize> = active
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| rid_map[row_ids[*k]] != usize::MAX)
+            .map(|(_, &i)| i)
+            .collect();
+        let group_row_ids: Vec<usize> = row_ids
+            .iter()
+            .filter(|&&r| rid_map[r] != usize::MAX)
+            .map(|&r| rid_map[r])
+            .collect();
+        if group_active.len() < s.min_table_segs {
+            continue;
+        }
+        if let Some(t) = build_table(segs, &group_active, &group_row_ids, group.len(), s) {
+            // 表らしさによる棄却
+            if (t.n_rows >= s.untyped_min_rows || has_typed_column(&t)) && !prose_heavy(&t, s) {
+                tables.push(t);
+            }
+        }
+    }
+    tables
+}
+
+/// 1つの行グループから1表を組み立てる
+fn build_table(
+    segs: &[Seg],
+    active: &[usize],
+    row_ids: &[usize],
+    n_rows: usize,
+    s: &TextSettings,
+) -> Option<Table> {
+    let bands = column_bands(segs, active, s.col_gap);
+    let n_cols = bands.len();
+    if n_rows < s.min_rows || n_cols < s.min_cols {
+        return None;
+    }
+
+    let band_of = |x: f64| -> usize {
+        bands
+            .iter()
+            .position(|b| x >= b.0 && x <= b.1)
+            .unwrap_or_else(|| {
+                bands
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| {
+                        let da = (x - (a.0 + a.1) / 2.0).abs();
+                        let db = (x - (b.0 + b.1) / 2.0).abs();
+                        da.partial_cmp(&db).unwrap()
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            })
+    };
+
+    let mut grid_text: Vec<Vec<String>> = vec![vec![String::new(); n_cols]; n_rows];
+    let mut grid_box: Vec<Vec<Option<BBox>>> = vec![vec![None; n_cols]; n_rows];
+    for (k, &i) in active.iter().enumerate() {
+        let r = row_ids[k];
+        let c = band_of(segs[i].bbox.cx());
+        if !grid_text[r][c].is_empty() {
+            grid_text[r][c].push(' ');
+        }
+        grid_text[r][c].push_str(&segs[i].text);
+        grid_box[r][c] = Some(match grid_box[r][c] {
+            Some(b) => BBox {
+                x0: b.x0.min(segs[i].bbox.x0),
+                top: b.top.min(segs[i].bbox.top),
+                x1: b.x1.max(segs[i].bbox.x1),
+                bottom: b.bottom.max(segs[i].bbox.bottom),
+            },
+            None => segs[i].bbox,
+        });
+    }
+
+    let filled = grid_text.iter().flatten().filter(|t| !t.is_empty()).count();
+    if (filled as f64) < s.min_fill * (n_rows * n_cols) as f64 {
+        return None;
+    }
+
+    let bbox = BBox {
+        x0: active
+            .iter()
+            .map(|&i| segs[i].bbox.x0)
+            .fold(f64::INFINITY, f64::min),
+        top: active
+            .iter()
+            .map(|&i| segs[i].bbox.top)
+            .fold(f64::INFINITY, f64::min),
+        x1: active
+            .iter()
+            .map(|&i| segs[i].bbox.x1)
+            .fold(f64::NEG_INFINITY, f64::max),
+        bottom: active
+            .iter()
+            .map(|&i| segs[i].bbox.bottom)
+            .fold(f64::NEG_INFINITY, f64::max),
+    };
+    let data: Vec<Vec<Cell>> = (0..n_rows)
+        .map(|r| {
+            (0..n_cols)
+                .map(|c| Cell {
+                    text: grid_text[r][c].clone(),
+                    bbox: grid_box[r][c].unwrap_or(bbox),
+                })
+                .collect()
+        })
+        .collect();
+
+    Some(Table {
+        extraction_method: "text",
+        bbox,
+        n_rows,
+        n_cols,
+        data,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cluster_splits_by_tolerance() {
+        let ids = cluster_ids(&[0.0, 1.0, 10.0, 10.5], 2.0);
+        assert_eq!(ids[0], ids[1]);
+        assert_eq!(ids[2], ids[3]);
+        assert_ne!(ids[0], ids[2]);
+    }
+
+    #[test]
+    fn group_sizes_counts_members() {
+        let sizes = group_sizes(&[0.0, 1.0, 10.0], 2.0);
+        assert_eq!(sizes, vec![2, 2, 1]);
+    }
+}

@@ -1,0 +1,6 @@
+/target
+/out
+/pkg
+/pkg-pdfium
+node_modules/
+*.dll
