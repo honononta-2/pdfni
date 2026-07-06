@@ -1,23 +1,41 @@
 //! PDFから表を抽出しJSONを出すCLI
-//! 使い方: reticella <input.pdf> [output.json] [password]
+//! 使い方: reticella [--mode auto|ruled|borderless] <input.pdf> [output.json] [password]
 
 use anyhow::Result;
+use reticella::{DetectMode, ExtractOptions};
 use std::env;
 
+fn usage() -> ! {
+    eprintln!("使い方: reticella [--mode auto|ruled|borderless] <input.pdf> [output.json] [password]");
+    std::process::exit(2);
+}
+
 fn main() -> Result<()> {
+    let mut mode = DetectMode::Auto;
+    let mut positional = Vec::new();
     let mut args = env::args().skip(1);
-    let input = match args.next() {
-        Some(p) => p,
-        None => {
-            eprintln!("使い方: reticella <input.pdf> [output.json] [password]");
-            std::process::exit(2);
+    while let Some(a) = args.next() {
+        if a == "--mode" {
+            mode = match args.next().as_deref() {
+                Some("auto") => DetectMode::Auto,
+                Some("ruled") => DetectMode::Ruled,
+                Some("borderless") => DetectMode::Borderless,
+                _ => usage(),
+            };
+        } else {
+            positional.push(a);
         }
+    }
+    let mut positional = positional.into_iter();
+    let input = positional.next().unwrap_or_else(|| usage());
+    let output = positional.next();
+    let password = positional.next();
+
+    let options = ExtractOptions {
+        mode,
+        ..ExtractOptions::default()
     };
-
-    let output = args.next();
-    let password = args.next();
-
-    let doc = reticella::extract(&input, password.as_deref())?;
+    let doc = reticella::extract_with_options(&input, password.as_deref(), &options)?;
     let json = serde_json::to_string_pretty(&doc)?;
 
     match output {

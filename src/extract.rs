@@ -418,9 +418,10 @@ pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Doc
 /// 3方式の検出を優先順で実行し1ページ分の表を確定する
 fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> Vec<Table> {
     let fill = |b: &BBox| cell_text(chars, b);
-    let use_ruled = options.mode != DetectMode::Borderless;
+    let use_lattice = options.mode != DetectMode::Borderless;
+    let use_hybrid = options.mode == DetectMode::Auto;
     let use_text = options.mode != DetectMode::Ruled;
-    let mut tables = if use_ruled {
+    let mut tables = if use_lattice {
         detect_lattice::detect(edges, &fill, &options.lattice)
     } else {
         Vec::new()
@@ -436,7 +437,7 @@ fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> V
         .filter(|seg| !tables.iter().any(|t| t.bbox.contains_center(&seg.bbox)))
         .collect();
 
-    let mut hybrid_tables = if use_ruled {
+    let mut hybrid_tables = if use_hybrid {
         detect_hybrid::detect(&segs, edges, &fill, &options.hybrid)
     } else {
         Vec::new()
