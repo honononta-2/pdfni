@@ -190,6 +190,18 @@ pub(crate) fn column_bands(segs: &[Seg], members: &[usize], gap: f64) -> Vec<(f6
     bands
 }
 
+/// 列帯の一致判定
+fn bands_match(a: &[(f64, f64)], b: &[(f64, f64)]) -> bool {
+    if a.len().min(b.len()) < 2 {
+        return false;
+    }
+    let overlaps = |x: &(f64, f64), y: &(f64, f64)| x.0 <= y.1 && y.0 <= x.1;
+    let need = (a.len().max(b.len()) as f64 * 0.8).ceil() as usize;
+    let hit_a = a.iter().filter(|x| b.iter().any(|y| overlaps(x, y))).count();
+    let hit_b = b.iter().filter(|y| a.iter().any(|x| overlaps(x, y))).count();
+    hit_a >= need && hit_b >= need
+}
+
 /// 文字整列方式による1ページの表検出
 pub fn detect(segs: &[Seg], s: &TextSettings) -> Vec<Table> {
     if segs.len() < s.min_table_segs {
@@ -243,8 +255,62 @@ pub fn detect(segs: &[Seg], s: &TextSettings) -> Vec<Table> {
         }
     }
 
+    // 見出し行や広い行間で分断された同一表の統合
+    let mut is_dropped = vec![true; segs.len()];
+    for &i in &active {
+        is_dropped[i] = false;
+    }
+    let members_of = |group: &[usize]| -> Vec<usize> {
+        let mut sel = vec![false; n_total_rows];
+        for &rid in group {
+            sel[rid] = true;
+        }
+        active
+            .iter()
+            .zip(row_ids.iter())
+            .filter(|&(_, &r)| sel[r])
+            .map(|(&i, _)| i)
+            .collect()
+    };
+    let mut merged: Vec<Vec<usize>> = Vec::new();
+    for g in groups {
+        if let Some(prev) = merged.last_mut() {
+            let y0 = row_bot[*prev.last().unwrap()];
+            let y1 = row_top[g[0]];
+            let pm = members_of(prev);
+            let cm = members_of(&g);
+            let x0 = pm
+                .iter()
+                .chain(cm.iter())
+                .map(|&i| segs[i].bbox.x0)
+                .fold(f64::INFINITY, f64::min);
+            let x1 = pm
+                .iter()
+                .chain(cm.iter())
+                .map(|&i| segs[i].bbox.x1)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let gap_has_dropped = segs.iter().enumerate().any(|(i, sg)| {
+                is_dropped[i]
+                    && sg.bbox.top > y0
+                    && sg.bbox.bottom < y1
+                    && sg.bbox.x1 > x0
+                    && sg.bbox.x0 < x1
+            });
+            if (y1 - y0 <= med_gap * 4.0 || gap_has_dropped)
+                && bands_match(
+                    &column_bands(segs, &pm, s.col_gap),
+                    &column_bands(segs, &cm, s.col_gap),
+                )
+            {
+                prev.extend(g);
+                continue;
+            }
+        }
+        merged.push(g);
+    }
+
     let mut tables = Vec::new();
-    for group in &groups {
+    for group in &merged {
         let mut rid_map = vec![usize::MAX; n_total_rows];
         for (new_id, &old_id) in group.iter().enumerate() {
             rid_map[old_id] = new_id;

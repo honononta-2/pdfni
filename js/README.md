@@ -1,9 +1,9 @@
-# reticella (ブラウザ/wasm)
+# reticella (JS/wasm)
 
-テキスト埋め込みPDFから表を抽出しJSONで返す。読み取り方式で2つのルートがある。
+テキスト埋め込みPDFから表を抽出しJSONで返す。読み取り方式で2つのルートがあり、主従はない。
 
-- `reticella/pdfjs` — pdf.js で読み取り、検出は wasm コア。軽量（コア約341KB、Brotli約95KB）。pdf.js の座標近似があるため罫線なし表で挙動差が出うる
-- `reticella/pdfium` — pdfium を wasm で動かし読み取りも検出も行う。抽出はネイティブと同一で忠実。別途 pdfium.wasm（Emscripten ビルド）が要る
+- `reticella/pdfjs` — pdf.js で読み取り、検出は wasm コア。ブラウザ・Node.js どちらでも動く。コア約341KB（Brotli約95KB）。pdf.js の座標近似があるため罫線なし表で挙動差が出うる
+- `reticella/pdfium` — pdfium を wasm で動かし読み取りも検出も行う。読み取り実装は pdfium ルートの Rust 実装（`src/reader.rs`）と共通。別途 pdfium.wasm（Emscripten ビルド）が要る
 
 ## pdf.js ルート
 

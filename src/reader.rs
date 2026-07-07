@@ -1,4 +1,4 @@
-//! PDF リーダー層
+//! pdfium リーダー層
 //! 座標は top-down に揃える
 
 use crate::error::{Error, Result};

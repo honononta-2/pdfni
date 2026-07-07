@@ -4,3 +4,5 @@
 /pkg-pdfium
 node_modules/
 *.dll
+*.dylib
+.DS_Store

@@ -1,4 +1,4 @@
-// pdf.js のページから文字と罫線を取り出し wasm 入口用の parts に整える
+// pdf.js のページから文字と罫線を取り出し検出コア用の parts に整える
 // 座標は top-down、bbox は left/right/top/bottom
 
 const DRAW_MOVE = 0, DRAW_LINE = 1, DRAW_CURVE = 2, DRAW_QUAD = 3, DRAW_CLOSE = 4;
@@ -29,8 +29,9 @@ function readGlyphs(textContent, pageH) {
     const t = item.transform;
     const fontSize = Math.hypot(t[2], t[3]);
     const st = styles[item.fontName] || {};
-    let asc = typeof st.ascent === 'number' ? st.ascent : 0.88;
-    let desc = typeof st.descent === 'number' ? st.descent : -0.12;
+    // pdf.js は非埋め込みの標準フォントで ascent/descent に NaN を返すことがある
+    let asc = Number.isFinite(st.ascent) ? st.ascent : 0.88;
+    let desc = Number.isFinite(st.descent) ? st.descent : -0.12;
     if (asc <= 0) asc = 0.88;
     if (desc >= 0) desc = -0.12;
 
@@ -135,7 +136,7 @@ export async function readPage(page, OPS) {
   };
 }
 
-// pdf.js の全ページを wasm 入口用の parts 配列に変換する
+// pdf.js の全ページを検出コア用の parts 配列に変換する
 export async function readParts(pdfDocument, OPS) {
   const pages = [];
   for (let p = 1; p <= pdfDocument.numPages; p++) {

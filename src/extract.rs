@@ -183,16 +183,19 @@ fn cell_text(chars: &[Glyph], cell: &BBox) -> String {
 
 /// 文字を行内の塊に切り分ける
 fn build_segments(chars: &[Glyph]) -> Vec<Seg> {
-    if chars.is_empty() {
+    let solid: Vec<usize> = (0..chars.len())
+        .filter(|&i| !chars[i].ch.is_whitespace())
+        .collect();
+    if solid.is_empty() {
         return Vec::new();
     }
-    let mut heights: Vec<f64> = chars.iter().map(|g| g.bbox.height()).collect();
+    let mut heights: Vec<f64> = solid.iter().map(|&i| chars[i].bbox.height()).collect();
     heights.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let med_h = heights[heights.len() / 2];
     let line_tol = (med_h * 0.6).max(0.5);
     let seg_gap = (med_h).max(1.0);
 
-    let mut order: Vec<usize> = (0..chars.len()).collect();
+    let mut order = solid;
     order.sort_by(|&a, &b| {
         chars[a]
             .bbox
@@ -213,6 +216,31 @@ fn build_segments(chars: &[Glyph]) -> Vec<Seg> {
     }
     if !cur.is_empty() {
         lines.push(cur);
+    }
+
+    // 語間の空白をセル文字に残すための割り当て
+    let ranges: Vec<(f64, f64)> = lines
+        .iter()
+        .map(|l| {
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for &i in l {
+                lo = lo.min(chars[i].bbox.bottom);
+                hi = hi.max(chars[i].bbox.bottom);
+            }
+            (lo, hi)
+        })
+        .collect();
+    for (i, g) in chars.iter().enumerate() {
+        if !g.ch.is_whitespace() {
+            continue;
+        }
+        let b = g.bbox.bottom;
+        if let Some(k) = ranges
+            .iter()
+            .position(|&(lo, hi)| b >= lo - 0.5 && b <= hi + 0.5)
+        {
+            lines[k].push(i);
+        }
     }
 
     let mut segs = Vec::new();

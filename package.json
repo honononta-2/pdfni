@@ -2,7 +2,7 @@
   "name": "reticella",
   "version": "0.1.0",
   "type": "module",
-  "description": "テキスト埋め込みPDFから表を抽出しJSONで返す（ブラウザ/wasm）",
+  "description": "テキスト埋め込みPDFから表を抽出しJSONで返す（JS/wasm）",
   "exports": {
     "./pdfjs": "./js/reticella-pdfjs.mjs",
     "./pdfium": "./js/reticella-pdfium.mjs"
