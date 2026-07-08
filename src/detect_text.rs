@@ -1,6 +1,7 @@
 //! 文字整列方式の表検出
 
 use crate::model::{BBox, Cell, Table};
+use std::collections::HashMap;
 
 /// 検出単位の文字塊
 pub struct Seg {
@@ -73,7 +74,6 @@ pub(crate) fn is_prose_cell(s: &str) -> bool {
 }
 
 /// 数値や日付とみなせるセルか
-/// 「1月」「100円」等の単位付き数値を含めるため CJK は弾かず ASCII 英字のみ弾く
 fn is_typed_cell(s: &str) -> bool {
     let t = s.trim();
     !t.is_empty()
@@ -187,6 +187,64 @@ pub(crate) fn column_bands(segs: &[Seg], members: &[usize], gap: f64) -> Vec<(f6
             }
             _ => bands.push((lo, hi)),
         }
+    }
+    bands
+}
+
+/// 基準行の塊から作る列帯
+fn anchor_column_bands(
+    segs: &[Seg],
+    members: &[usize],
+    row_ids: &[usize],
+    n_rows: usize,
+    s: &TextSettings,
+) -> Vec<(f64, f64)> {
+    let mut rows: Vec<Vec<usize>> = vec![Vec::new(); n_rows];
+    for (k, &i) in members.iter().enumerate() {
+        rows[row_ids[k]].push(i);
+    }
+    let mut counts: HashMap<usize, usize> = HashMap::new();
+    for r in &rows {
+        if !r.is_empty() {
+            *counts.entry(r.len()).or_insert(0) += 1;
+        }
+    }
+    fn mode_of(counts: &HashMap<usize, usize>) -> Option<usize> {
+        counts.iter().max_by_key(|&(&k, &v)| (v, k)).map(|(&k, _)| k)
+    }
+    let mut ncols = match mode_of(&counts) {
+        Some(n) => n,
+        None => return column_bands(segs, members, s.col_gap),
+    };
+    if ncols == 1 {
+        counts.remove(&1);
+        ncols = match mode_of(&counts) {
+            Some(n) => n,
+            None => return column_bands(segs, members, s.col_gap),
+        };
+    }
+    if ncols < 2 {
+        return column_bands(segs, members, s.col_gap);
+    }
+    let anchors: Vec<usize> = rows
+        .iter()
+        .filter(|r| r.len() == ncols)
+        .flatten()
+        .copied()
+        .collect();
+    let mut bands = column_bands(segs, &anchors, s.col_gap);
+    // 帯に重ならない塊からの列の補完
+    let extras: Vec<usize> = members
+        .iter()
+        .copied()
+        .filter(|&i| {
+            let b = &segs[i].bbox;
+            !bands.iter().any(|&(lo, hi)| b.x0 <= hi && lo <= b.x1)
+        })
+        .collect();
+    if !extras.is_empty() {
+        bands.extend(column_bands(segs, &extras, s.col_gap));
+        bands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
     }
     bands
 }
@@ -312,25 +370,43 @@ pub fn detect(segs: &[Seg], s: &TextSettings) -> Vec<Table> {
 
     let mut tables = Vec::new();
     for group in &merged {
-        let mut rid_map = vec![usize::MAX; n_total_rows];
-        for (new_id, &old_id) in group.iter().enumerate() {
-            rid_map[old_id] = new_id;
+        let mut in_group = vec![false; n_total_rows];
+        for &rid in group {
+            in_group[rid] = true;
         }
         let group_active: Vec<usize> = active
             .iter()
-            .enumerate()
-            .filter(|(k, _)| rid_map[row_ids[*k]] != usize::MAX)
-            .map(|(_, &i)| i)
-            .collect();
-        let group_row_ids: Vec<usize> = row_ids
-            .iter()
-            .filter(|&&r| rid_map[r] != usize::MAX)
-            .map(|&r| rid_map[r])
+            .zip(row_ids.iter())
+            .filter(|&(_, &r)| in_group[r])
+            .map(|(&i, _)| i)
             .collect();
         if group_active.len() < s.min_table_segs {
             continue;
         }
-        if let Some(t) = build_table(segs, &group_active, &group_row_ids, group.len(), s) {
+
+        // 領域内で落ちた塊の復帰
+        let mut bb = segs[group_active[0]].bbox;
+        for &i in &group_active[1..] {
+            bb = BBox {
+                x0: bb.x0.min(segs[i].bbox.x0),
+                top: bb.top.min(segs[i].bbox.top),
+                x1: bb.x1.max(segs[i].bbox.x1),
+                bottom: bb.bottom.max(segs[i].bbox.bottom),
+            };
+        }
+        let mut members = group_active;
+        for (i, sg) in segs.iter().enumerate() {
+            if is_dropped[i] && bb.contains_center(&sg.bbox) {
+                members.push(i);
+            }
+        }
+
+        let med_h = median(members.iter().map(|&i| segs[i].bbox.height()).collect());
+        let member_row_tol = (med_h * 0.5).max(0.5);
+        let bottoms: Vec<f64> = members.iter().map(|&i| segs[i].bbox.bottom).collect();
+        let member_row_ids = cluster_ids(&bottoms, member_row_tol);
+        let n_rows = member_row_ids.iter().copied().max().unwrap_or(0) + 1;
+        if let Some(t) = build_table(segs, &members, &member_row_ids, n_rows, s) {
             // 表らしさによる棄却
             if (t.n_rows >= s.untyped_min_rows || has_typed_column(&t)) && !prose_heavy(&t, s) {
                 tables.push(t);
@@ -348,7 +424,7 @@ fn build_table(
     n_rows: usize,
     s: &TextSettings,
 ) -> Option<Table> {
-    let bands = column_bands(segs, active, s.col_gap);
+    let bands = anchor_column_bands(segs, active, row_ids, n_rows, s);
     let n_cols = bands.len();
     if n_rows < s.min_rows || n_cols < s.min_cols {
         return None;

@@ -5,6 +5,7 @@ use crate::detect_lattice::{self, LatticeSettings};
 use crate::detect_text::{self, Seg, TextSettings};
 use crate::model::{BBox, Cell, Document, Edge, Glyph, Orientation, Page, Table};
 use serde::Deserialize;
+use std::collections::HashMap;
 
 #[cfg(feature = "pdfium")]
 use crate::error::Result;
@@ -72,9 +73,7 @@ pub struct ExtractOptions {
 #[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
 static PDFIUM: OnceLock<Pdfium> = OnceLock::new();
 
-/// pdfium 使用全体の直列化用ロック
-/// pdfium は同時使用に対応せず pdfium-render の thread_safe も直列化はしないため
-/// 初期化から文書クローズまでをこのロックで守る
+/// pdfium 使用を直列化するロック
 #[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
 static PDFIUM_LOCK: Mutex<()> = Mutex::new(());
 
@@ -305,6 +304,160 @@ fn push_seg(segs: &mut Vec<Seg>, text: &mut String, bb: &mut Option<BBox>) {
     text.clear();
 }
 
+/// 罫線行内を細分する行境界の算出
+fn row_split_boundaries(row: &[Cell], chars: &[Glyph], min_lines: usize) -> Vec<f64> {
+    // 列ごとのテキスト行クラスタ
+    let mut marks: Vec<(usize, f64, f64)> = Vec::new();
+    let mut heights: Vec<f64> = Vec::new();
+    for (c, cell) in row.iter().enumerate() {
+        if cell.bbox.width() <= 0.0 || cell.bbox.height() <= 0.0 {
+            continue;
+        }
+        let mut bottoms: Vec<(f64, f64)> = chars
+            .iter()
+            .filter(|g| !g.ch.is_whitespace() && cell.bbox.contains_center(&g.bbox))
+            .map(|g| (g.bbox.bottom, g.bbox.top))
+            .collect();
+        if bottoms.is_empty() {
+            continue;
+        }
+        heights.extend(bottoms.iter().map(|(b, t)| b - t));
+        bottoms.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let med_h = {
+            let mut hs: Vec<f64> = bottoms.iter().map(|(b, t)| b - t).collect();
+            hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            hs[hs.len() / 2]
+        };
+        let line_tol = (med_h * 0.6).max(0.5);
+        let mut top = f64::INFINITY;
+        let mut bot = f64::NEG_INFINITY;
+        let mut last_b = f64::NEG_INFINITY;
+        for &(b, t) in &bottoms {
+            if bot > f64::NEG_INFINITY && b - last_b > line_tol {
+                marks.push((c, top, bot));
+                top = f64::INFINITY;
+                bot = f64::NEG_INFINITY;
+            }
+            last_b = b;
+            top = top.min(t);
+            bot = bot.max(b);
+        }
+        marks.push((c, top, bot));
+    }
+    if marks.len() < 2 {
+        return Vec::new();
+    }
+
+    heights.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let row_tol = (heights[heights.len() / 2] * 0.6).max(0.5);
+    let ids = detect_text::cluster_ids(&marks.iter().map(|m| m.2).collect::<Vec<_>>(), row_tol);
+    let n = ids.iter().copied().max().unwrap_or(0) + 1;
+    if n < 2 {
+        return Vec::new();
+    }
+    let mut cols: Vec<std::collections::HashSet<usize>> = vec![Default::default(); n];
+    let mut top = vec![f64::INFINITY; n];
+    let mut bot = vec![f64::NEG_INFINITY; n];
+    for (k, &rid) in ids.iter().enumerate() {
+        cols[rid].insert(marks[k].0);
+        top[rid] = top[rid].min(marks[k].1);
+        bot[rid] = bot[rid].max(marks[k].2);
+    }
+    let sets: Vec<Vec<usize>> = cols
+        .iter()
+        .map(|c| {
+            let mut v: Vec<usize> = c.iter().copied().collect();
+            v.sort_unstable();
+            v
+        })
+        .collect();
+    let mut counts: HashMap<&[usize], usize> = HashMap::new();
+    for s in &sets {
+        if s.len() >= 2 {
+            *counts.entry(s.as_slice()).or_insert(0) += 1;
+        }
+    }
+    let Some((dominant, dom_cnt)) = counts.into_iter().max_by_key(|&(_, c)| c) else {
+        return Vec::new();
+    };
+    if dom_cnt < min_lines.max(2) {
+        return Vec::new();
+    }
+    let dominant = dominant.to_vec();
+
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| top[a].partial_cmp(&top[b]).unwrap());
+    let mut out = Vec::new();
+    for w in order.windows(2) {
+        if sets[w[1]] == dominant {
+            out.push((bot[w[0]] + top[w[1]]) / 2.0);
+        }
+    }
+    out
+}
+
+/// 疎罫線の罫線行内をテキスト行で細分する
+fn refine_lattice_rows(t: &mut Table, chars: &[Glyph], min_lines: usize) {
+    let mut new_data: Vec<Vec<Cell>> = Vec::with_capacity(t.data.len());
+    let mut changed = false;
+    for row in &t.data {
+        let bounds = row_split_boundaries(row, chars, min_lines);
+        if bounds.is_empty() {
+            new_data.push(row.clone());
+            continue;
+        }
+        changed = true;
+        let row_top = row
+            .iter()
+            .filter(|c| c.bbox.height() > 0.0)
+            .map(|c| c.bbox.top)
+            .fold(f64::INFINITY, f64::min);
+        let row_bottom = row
+            .iter()
+            .filter(|c| c.bbox.height() > 0.0)
+            .map(|c| c.bbox.bottom)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mut ys = Vec::with_capacity(bounds.len() + 2);
+        ys.push(row_top);
+        ys.extend(bounds);
+        ys.push(row_bottom);
+        for w in ys.windows(2) {
+            let mut new_row = Vec::with_capacity(row.len());
+            for cell in row {
+                let top = cell.bbox.top.max(w[0]);
+                let bottom = cell.bbox.bottom.min(w[1]);
+                if cell.bbox.width() > 0.0 && bottom - top > 0.0 {
+                    let bb = BBox {
+                        x0: cell.bbox.x0,
+                        top,
+                        x1: cell.bbox.x1,
+                        bottom,
+                    };
+                    new_row.push(Cell {
+                        text: cell_text(chars, &bb),
+                        bbox: bb,
+                    });
+                } else {
+                    new_row.push(Cell {
+                        text: String::new(),
+                        bbox: BBox {
+                            x0: 0.0,
+                            top: 0.0,
+                            x1: 0.0,
+                            bottom: 0.0,
+                        },
+                    });
+                }
+            }
+            new_data.push(new_row);
+        }
+    }
+    if changed {
+        t.n_rows = new_data.len();
+        t.data = new_data;
+    }
+}
+
 /// 矩形の重なり判定
 fn overlaps_any(b: &BBox, tables: &[Table]) -> bool {
     tables.iter().any(|t| {
@@ -341,7 +494,7 @@ fn prune_empty(t: &mut Table) {
     t.n_cols = keep_cols.len();
     t.data = data;
 
-    // 面積ゼロの placeholder セルを除き bbox を残セルの外接に更新する
+    // 残セルでの bbox 更新
     let mut bb: Option<BBox> = None;
     for c in t.data.iter().flatten() {
         if c.bbox.width() <= 0.0 || c.bbox.height() <= 0.0 {
@@ -374,7 +527,6 @@ pub fn extract_with_options(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<Document> {
-    // doc の drop (FPDF_CloseDocument) までロック下に置く
     let _guard = lock_pdfium();
     let pdfium = pdfium()?;
     let path = path.as_ref();
@@ -398,7 +550,6 @@ pub fn extract_from_bytes_with_options(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<Document> {
-    // doc の drop (FPDF_CloseDocument) までロック下に置く
     let _guard = lock_pdfium();
     let pdfium = pdfium()?;
     let doc = pdfium.load_pdf_from_byte_vec(bytes.to_vec(), password)?;
@@ -499,6 +650,11 @@ fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> V
     } else {
         Vec::new()
     };
+    if options.lattice.refine_rows {
+        for t in &mut tables {
+            refine_lattice_rows(t, chars, options.lattice.refine_min_lines);
+        }
+    }
     for t in &mut tables {
         prune_empty(t);
     }

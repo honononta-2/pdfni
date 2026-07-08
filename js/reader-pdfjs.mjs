@@ -1,10 +1,8 @@
 // pdf.js のページから文字と罫線を取り出し検出コア用の parts に整える
-// 座標は生のユーザー空間から view (CropBox) 原点基準の top-down へ揃える
-// bbox は left/right/top/bottom
+// 座標は view 原点基準の top-down、bbox は left/right/top/bottom
 
-// 罫線の取り出しは pdf.js 非公開の constructPath 内部データ形式 (DrawOPS) に依存する
-// 動作確認済みは pdfjs-dist 6.x。形式が合わない場合は下の warnUnsupported で検知する
 const DRAW_MOVE = 0, DRAW_LINE = 1, DRAW_CURVE = 2, DRAW_QUAD = 3, DRAW_CLOSE = 4;
+const ANNOTATION_MODE_DISABLE = 0;
 
 let warnedUnsupported = false;
 function warnUnsupported() {
@@ -32,8 +30,7 @@ function isSpace(c) {
 }
 
 // 1ページ分の文字を按分で1文字ずつの bbox にする
-// ox は view 左端、oyTop は view 上端のユーザー空間 y
-function readGlyphs(textContent, ox, oyTop) {
+function readGlyphs(textContent, viewLeft, viewTop) {
   const styles = textContent.styles || {};
   const glyphs = [];
   for (const item of textContent.items) {
@@ -65,10 +62,10 @@ function readGlyphs(textContent, ox, oyTop) {
       const gx1 = t[4] + ux * perW * (k + 1);
       glyphs.push({
         ch,
-        left: Math.min(gx0, gx1) - ox,
-        right: Math.max(gx0, gx1) - ox,
-        top: oyTop - topY,
-        bottom: oyTop - botY,
+        left: Math.min(gx0, gx1) - viewLeft,
+        right: Math.max(gx0, gx1) - viewLeft,
+        top: viewTop - topY,
+        bottom: viewTop - botY,
       });
     }
   }
@@ -76,8 +73,7 @@ function readGlyphs(textContent, ox, oyTop) {
 }
 
 // constructPath から軸平行な線分を取り出す
-// ox は view 左端、oyTop は view 上端のユーザー空間 y
-function readEdges(opList, OPS, ox, oyTop) {
+function readEdges(opList, OPS, viewLeft, viewTop) {
   const edges = [];
   let ctm = [1, 0, 0, 1, 0, 0];
   const stack = [];
@@ -86,10 +82,10 @@ function readEdges(opList, OPS, ox, oyTop) {
     const [x1u, y1u] = applyMatrix(ctm, bx, by);
     const dx = x1u - x0u, dy = y1u - y0u;
     if (Math.abs(dx) <= EPS && Math.abs(dy) > EPS) {
-      edges.push({ orientation: 'vertical', left: x1u - ox, right: x1u - ox, top: oyTop - Math.max(y0u, y1u), bottom: oyTop - Math.min(y0u, y1u) });
+      edges.push({ orientation: 'vertical', left: x1u - viewLeft, right: x1u - viewLeft, top: viewTop - Math.max(y0u, y1u), bottom: viewTop - Math.min(y0u, y1u) });
     } else if (Math.abs(dy) <= EPS && Math.abs(dx) > EPS) {
-      const yy = oyTop - y1u;
-      edges.push({ orientation: 'horizontal', left: Math.min(x0u, x1u) - ox, right: Math.max(x0u, x1u) - ox, top: yy, bottom: yy });
+      const yy = viewTop - y1u;
+      edges.push({ orientation: 'horizontal', left: Math.min(x0u, x1u) - viewLeft, right: Math.max(x0u, x1u) - viewLeft, top: yy, bottom: yy });
     }
   };
 
@@ -109,6 +105,7 @@ function readEdges(opList, OPS, ox, oyTop) {
     } else if (fn === OPS.paintFormXObjectEnd) {
       ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
     } else if (fn === OPS.constructPath) {
+      if (args[0] === OPS.endPath) continue;
       const buf = args[1] && args[1][0];
       if (!buf || typeof buf.length !== 'number') {
         warnUnsupported();
@@ -146,7 +143,7 @@ export async function readPage(page, OPS) {
   const pageH = view[3] - view[1];
   const pageW = view[2] - view[0];
   const textContent = await page.getTextContent({ disableNormalization: true, includeMarkedContent: false });
-  const opList = await page.getOperatorList();
+  const opList = await page.getOperatorList({ annotationMode: ANNOTATION_MODE_DISABLE });
   return {
     width: pageW,
     height: pageH,

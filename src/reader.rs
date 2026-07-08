@@ -1,5 +1,5 @@
 //! pdfium リーダー層
-//! pdfium は生のユーザー空間座標を返すため CropBox 原点基準の top-down に揃える
+//! 座標は CropBox 原点基準の top-down に揃える
 
 use crate::error::{Error, Result};
 use crate::model::{BBox, Edge, Glyph, Orientation};
@@ -41,7 +41,6 @@ pub(crate) fn bind_pdfium() -> Result<Pdfium> {
 }
 
 /// ページ左端と上端のユーザー空間座標
-/// CropBox 優先で MediaBox に落ち、どちらも無ければ原点 (0, page_h) とみなす
 pub(crate) fn page_origin(page: &PdfPage, page_h: f64) -> (f64, f64) {
     let b = page.boundaries();
     match b.crop().or_else(|_| b.media()) {

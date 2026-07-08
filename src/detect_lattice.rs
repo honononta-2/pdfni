@@ -17,6 +17,10 @@ pub struct LatticeSettings {
     pub edge_min_length: f64,
     /// 整形前に切る線分の最小長
     pub edge_min_length_prefilter: f64,
+    /// 罫線行内をテキスト行で細分する
+    pub refine_rows: bool,
+    /// 細分に必要な最頻列集合クラスタの最小出現回数
+    pub refine_min_lines: usize,
 }
 
 impl Default for LatticeSettings {
@@ -29,6 +33,8 @@ impl Default for LatticeSettings {
             min_cols: 2,
             edge_min_length: 3.0,
             edge_min_length_prefilter: 1.0,
+            refine_rows: true,
+            refine_min_lines: 4,
         }
     }
 }
