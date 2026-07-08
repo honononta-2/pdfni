@@ -5,7 +5,6 @@ use crate::detect_lattice::{self, LatticeSettings};
 use crate::detect_text::{self, Seg, TextSettings};
 use crate::model::{BBox, Cell, Document, Edge, Glyph, Orientation, Page, Table};
 use serde::Deserialize;
-use std::collections::HashMap;
 
 #[cfg(feature = "pdfium")]
 use crate::error::Result;
@@ -304,45 +303,112 @@ fn push_seg(segs: &mut Vec<Seg>, text: &mut String, bb: &mut Option<BBox>) {
     text.clear();
 }
 
+fn lattice_cols_too_coarse(t: &Table, segs: &[Seg], margin: usize) -> bool {
+    let inside: Vec<&Seg> = segs
+        .iter()
+        .filter(|s| t.bbox.contains_center(&s.bbox))
+        .collect();
+    if inside.len() < 2 {
+        return false;
+    }
+    let mut hs: Vec<f64> = inside.iter().map(|s| s.bbox.height()).collect();
+    hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let line_tol = (hs[hs.len() / 2] * 0.6).max(0.5);
+    let bottoms: Vec<f64> = inside.iter().map(|s| s.bbox.bottom).collect();
+    let ids = detect_text::cluster_ids(&bottoms, line_tol);
+    let n = ids.iter().copied().max().unwrap_or(0) + 1;
+    let mut lines: Vec<Vec<&Seg>> = vec![Vec::new(); n];
+    for (k, &id) in ids.iter().enumerate() {
+        lines[id].push(inside[k]);
+    }
+    let need = t.n_cols + margin;
+    let rich: Vec<&Vec<&Seg>> = lines.iter().filter(|l| l.len() >= need).collect();
+    rich.iter().enumerate().any(|(i, a)| {
+        rich[i + 1..]
+            .iter()
+            .any(|b| aligned_col_count(a, b, 3.0) >= need)
+    })
+}
+
+fn aligned_col_count(a: &[&Seg], b: &[&Seg], tol: f64) -> usize {
+    let xs: Vec<f64> = a
+        .iter()
+        .filter(|s| {
+            b.iter().any(|u| {
+                (s.bbox.x0 - u.bbox.x0).abs() <= tol
+                    || (s.bbox.x1 - u.bbox.x1).abs() <= tol
+                    || ((s.bbox.x0 + s.bbox.x1) - (u.bbox.x0 + u.bbox.x1)).abs() <= 2.0 * tol
+            })
+        })
+        .map(|s| s.bbox.x0)
+        .collect();
+    if xs.is_empty() {
+        return 0;
+    }
+    let ids = detect_text::cluster_ids(&xs, tol);
+    ids.iter().copied().max().unwrap_or(0) + 1
+}
+
+/// セル内の1テキスト行と型付き内容の特徴
+struct LineMark {
+    col: usize,
+    top: f64,
+    bot: f64,
+    typed_evidence: bool,
+}
+
 /// 罫線行内を細分する行境界の算出
-fn row_split_boundaries(row: &[Cell], chars: &[Glyph], min_lines: usize) -> Vec<f64> {
-    // 列ごとのテキスト行クラスタ
-    let mut marks: Vec<(usize, f64, f64)> = Vec::new();
+fn row_split_boundaries(row: &[Cell], chars: &[Glyph]) -> Vec<f64> {
+    let mut marks: Vec<LineMark> = Vec::new();
     let mut heights: Vec<f64> = Vec::new();
     for (c, cell) in row.iter().enumerate() {
         if cell.bbox.width() <= 0.0 || cell.bbox.height() <= 0.0 {
             continue;
         }
-        let mut bottoms: Vec<(f64, f64)> = chars
+        let mut gs: Vec<&Glyph> = chars
             .iter()
             .filter(|g| !g.ch.is_whitespace() && cell.bbox.contains_center(&g.bbox))
-            .map(|g| (g.bbox.bottom, g.bbox.top))
             .collect();
-        if bottoms.is_empty() {
+        if gs.is_empty() {
             continue;
         }
-        heights.extend(bottoms.iter().map(|(b, t)| b - t));
-        bottoms.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        heights.extend(gs.iter().map(|g| g.bbox.height()));
+        gs.sort_by(|a, b| a.bbox.bottom.partial_cmp(&b.bbox.bottom).unwrap());
         let med_h = {
-            let mut hs: Vec<f64> = bottoms.iter().map(|(b, t)| b - t).collect();
+            let mut hs: Vec<f64> = gs.iter().map(|g| g.bbox.height()).collect();
             hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
             hs[hs.len() / 2]
         };
         let line_tol = (med_h * 0.6).max(0.5);
-        let mut top = f64::INFINITY;
-        let mut bot = f64::NEG_INFINITY;
+        let mut lines: Vec<Vec<&Glyph>> = Vec::new();
+        let mut cur: Vec<&Glyph> = Vec::new();
         let mut last_b = f64::NEG_INFINITY;
-        for &(b, t) in &bottoms {
-            if bot > f64::NEG_INFINITY && b - last_b > line_tol {
-                marks.push((c, top, bot));
-                top = f64::INFINITY;
-                bot = f64::NEG_INFINITY;
+        for g in gs {
+            if !cur.is_empty() && g.bbox.bottom - last_b > line_tol {
+                lines.push(std::mem::take(&mut cur));
             }
-            last_b = b;
-            top = top.min(t);
-            bot = bot.max(b);
+            last_b = g.bbox.bottom;
+            cur.push(g);
         }
-        marks.push((c, top, bot));
+        if !cur.is_empty() {
+            lines.push(cur);
+        }
+        let typed: Vec<bool> = lines
+            .iter()
+            .map(|l| {
+                l.iter().any(|g| g.ch.is_ascii_digit())
+                    && !l.iter().any(|g| g.ch.is_alphabetic())
+            })
+            .collect();
+        let typed_majority = typed.iter().filter(|&&t| t).count() * 2 >= lines.len();
+        for (k, l) in lines.iter().enumerate() {
+            marks.push(LineMark {
+                col: c,
+                top: l.iter().map(|g| g.bbox.top).fold(f64::INFINITY, f64::min),
+                bot: l.iter().map(|g| g.bbox.bottom).fold(f64::NEG_INFINITY, f64::max),
+                typed_evidence: typed[k] && typed_majority,
+            });
+        }
     }
     if marks.len() < 2 {
         return Vec::new();
@@ -350,7 +416,7 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph], min_lines: usize) -> Vec<
 
     heights.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let row_tol = (heights[heights.len() / 2] * 0.6).max(0.5);
-    let ids = detect_text::cluster_ids(&marks.iter().map(|m| m.2).collect::<Vec<_>>(), row_tol);
+    let ids = detect_text::cluster_ids(&marks.iter().map(|m| m.bot).collect::<Vec<_>>(), row_tol);
     let n = ids.iter().copied().max().unwrap_or(0) + 1;
     if n < 2 {
         return Vec::new();
@@ -358,38 +424,20 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph], min_lines: usize) -> Vec<
     let mut cols: Vec<std::collections::HashSet<usize>> = vec![Default::default(); n];
     let mut top = vec![f64::INFINITY; n];
     let mut bot = vec![f64::NEG_INFINITY; n];
+    let mut typed_any = vec![false; n];
     for (k, &rid) in ids.iter().enumerate() {
-        cols[rid].insert(marks[k].0);
-        top[rid] = top[rid].min(marks[k].1);
-        bot[rid] = bot[rid].max(marks[k].2);
+        cols[rid].insert(marks[k].col);
+        top[rid] = top[rid].min(marks[k].top);
+        bot[rid] = bot[rid].max(marks[k].bot);
+        typed_any[rid] |= marks[k].typed_evidence;
     }
-    let sets: Vec<Vec<usize>> = cols
-        .iter()
-        .map(|c| {
-            let mut v: Vec<usize> = c.iter().copied().collect();
-            v.sort_unstable();
-            v
-        })
-        .collect();
-    let mut counts: HashMap<&[usize], usize> = HashMap::new();
-    for s in &sets {
-        if s.len() >= 2 {
-            *counts.entry(s.as_slice()).or_insert(0) += 1;
-        }
-    }
-    let Some((dominant, dom_cnt)) = counts.into_iter().max_by_key(|&(_, c)| c) else {
-        return Vec::new();
-    };
-    if dom_cnt < min_lines.max(2) {
-        return Vec::new();
-    }
-    let dominant = dominant.to_vec();
+    let splits = |i: usize| cols[i].len() >= 2 && typed_any[i];
 
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| top[a].partial_cmp(&top[b]).unwrap());
     let mut out = Vec::new();
     for w in order.windows(2) {
-        if sets[w[1]] == dominant {
+        if splits(w[1]) {
             out.push((bot[w[0]] + top[w[1]]) / 2.0);
         }
     }
@@ -397,11 +445,11 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph], min_lines: usize) -> Vec<
 }
 
 /// 疎罫線の罫線行内をテキスト行で細分する
-fn refine_lattice_rows(t: &mut Table, chars: &[Glyph], min_lines: usize) {
+fn refine_lattice_rows(t: &mut Table, chars: &[Glyph]) {
     let mut new_data: Vec<Vec<Cell>> = Vec::with_capacity(t.data.len());
     let mut changed = false;
     for row in &t.data {
-        let bounds = row_split_boundaries(row, chars, min_lines);
+        let bounds = row_split_boundaries(row, chars);
         if bounds.is_empty() {
             new_data.push(row.clone());
             continue;
@@ -650,9 +698,13 @@ fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> V
     } else {
         Vec::new()
     };
+    let all_segs = build_segments(chars);
+    if options.lattice.col_check && (use_hybrid || use_text) {
+        tables.retain(|t| !lattice_cols_too_coarse(t, &all_segs, options.lattice.col_check_margin));
+    }
     if options.lattice.refine_rows {
         for t in &mut tables {
-            refine_lattice_rows(t, chars, options.lattice.refine_min_lines);
+            refine_lattice_rows(t, chars);
         }
     }
     for t in &mut tables {
@@ -661,7 +713,7 @@ fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> V
     tables.retain(|t| t.n_rows >= options.lattice.min_rows && t.n_cols >= options.lattice.min_cols);
 
     // 確定したlattice表の領域内の文字は後続の検出の入力から除く
-    let segs: Vec<Seg> = build_segments(chars)
+    let segs: Vec<Seg> = all_segs
         .into_iter()
         .filter(|seg| !tables.iter().any(|t| t.bbox.contains_center(&seg.bbox)))
         .collect();
