@@ -1,7 +1,20 @@
 // pdf.js のページから文字と罫線を取り出し検出コア用の parts に整える
-// 座標は top-down、bbox は left/right/top/bottom
+// 座標は生のユーザー空間から view (CropBox) 原点基準の top-down へ揃える
+// bbox は left/right/top/bottom
 
+// 罫線の取り出しは pdf.js 非公開の constructPath 内部データ形式 (DrawOPS) に依存する
+// 動作確認済みは pdfjs-dist 6.x。形式が合わない場合は下の warnUnsupported で検知する
 const DRAW_MOVE = 0, DRAW_LINE = 1, DRAW_CURVE = 2, DRAW_QUAD = 3, DRAW_CLOSE = 4;
+
+let warnedUnsupported = false;
+function warnUnsupported() {
+  if (warnedUnsupported) return;
+  warnedUnsupported = true;
+  console.warn(
+    'reticella: pdf.js の constructPath 内部データを解釈できません。' +
+    '未対応の pdfjs-dist バージョンの可能性があり、罫線ベースの表検出が働きません'
+  );
+}
 const EPS = 0.8; // 軸平行判定の許容差
 
 function mulMatrix(m, n) {
@@ -19,7 +32,8 @@ function isSpace(c) {
 }
 
 // 1ページ分の文字を按分で1文字ずつの bbox にする
-function readGlyphs(textContent, pageH) {
+// ox は view 左端、oyTop は view 上端のユーザー空間 y
+function readGlyphs(textContent, ox, oyTop) {
   const styles = textContent.styles || {};
   const glyphs = [];
   for (const item of textContent.items) {
@@ -47,14 +61,14 @@ function readGlyphs(textContent, pageH) {
       if (ch === '\n' || ch === '\r' || ch === '\t') continue;
       // pdf.js が列間の空隙を埋める幅広の合成スペースは列右端を次列へ膨らませるため除く
       if (isSpace(ch) && perW > fontSize) continue;
-      const ox = t[4] + ux * perW * k;
-      const ex = t[4] + ux * perW * (k + 1);
+      const gx0 = t[4] + ux * perW * k;
+      const gx1 = t[4] + ux * perW * (k + 1);
       glyphs.push({
         ch,
-        left: Math.min(ox, ex),
-        right: Math.max(ox, ex),
-        top: pageH - topY,
-        bottom: pageH - botY,
+        left: Math.min(gx0, gx1) - ox,
+        right: Math.max(gx0, gx1) - ox,
+        top: oyTop - topY,
+        bottom: oyTop - botY,
       });
     }
   }
@@ -62,7 +76,8 @@ function readGlyphs(textContent, pageH) {
 }
 
 // constructPath から軸平行な線分を取り出す
-function readEdges(opList, OPS, pageH) {
+// ox は view 左端、oyTop は view 上端のユーザー空間 y
+function readEdges(opList, OPS, ox, oyTop) {
   const edges = [];
   let ctm = [1, 0, 0, 1, 0, 0];
   const stack = [];
@@ -71,10 +86,10 @@ function readEdges(opList, OPS, pageH) {
     const [x1u, y1u] = applyMatrix(ctm, bx, by);
     const dx = x1u - x0u, dy = y1u - y0u;
     if (Math.abs(dx) <= EPS && Math.abs(dy) > EPS) {
-      edges.push({ orientation: 'vertical', left: x1u, right: x1u, top: pageH - Math.max(y0u, y1u), bottom: pageH - Math.min(y0u, y1u) });
+      edges.push({ orientation: 'vertical', left: x1u - ox, right: x1u - ox, top: oyTop - Math.max(y0u, y1u), bottom: oyTop - Math.min(y0u, y1u) });
     } else if (Math.abs(dy) <= EPS && Math.abs(dx) > EPS) {
-      const yy = pageH - y1u;
-      edges.push({ orientation: 'horizontal', left: Math.min(x0u, x1u), right: Math.max(x0u, x1u), top: yy, bottom: yy });
+      const yy = oyTop - y1u;
+      edges.push({ orientation: 'horizontal', left: Math.min(x0u, x1u) - ox, right: Math.max(x0u, x1u) - ox, top: yy, bottom: yy });
     }
   };
 
@@ -95,7 +110,10 @@ function readEdges(opList, OPS, pageH) {
       ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
     } else if (fn === OPS.constructPath) {
       const buf = args[1] && args[1][0];
-      if (!buf) continue;
+      if (!buf || typeof buf.length !== 'number') {
+        warnUnsupported();
+        continue;
+      }
       let j = 0, sx = 0, sy = 0, px = 0, py = 0;
       while (j < buf.length) {
         const op = buf[j++];
@@ -113,6 +131,7 @@ function readEdges(opList, OPS, pageH) {
           pushAxisEdge(px, py, sx, sy);
           px = sx; py = sy;
         } else {
+          warnUnsupported();
           break;
         }
       }
@@ -131,8 +150,8 @@ export async function readPage(page, OPS) {
   return {
     width: pageW,
     height: pageH,
-    glyphs: readGlyphs(textContent, pageH),
-    edges: readEdges(opList, OPS, pageH),
+    glyphs: readGlyphs(textContent, view[0], view[3]),
+    edges: readEdges(opList, OPS, view[0], view[3]),
   };
 }
 

@@ -15,7 +15,7 @@ use pdfium_render::prelude::*;
 #[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
 use std::path::Path;
 #[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 /// 外部リーダーから受け取る1ページ分の文字と線分
 #[derive(Debug, Clone, Deserialize)]
@@ -72,8 +72,20 @@ pub struct ExtractOptions {
 #[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
 static PDFIUM: OnceLock<Pdfium> = OnceLock::new();
 
+/// pdfium 使用全体の直列化用ロック
+/// pdfium は同時使用に対応せず pdfium-render の thread_safe も直列化はしないため
+/// 初期化から文書クローズまでをこのロックで守る
+#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
+static PDFIUM_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
+fn lock_pdfium() -> MutexGuard<'static, ()> {
+    PDFIUM_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 #[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
 pub fn set_pdfium_dll_dir(dir: impl AsRef<Path>) -> Result<()> {
+    let _guard = lock_pdfium();
     if PDFIUM.get().is_some() {
         return Err(crate::error::Error::PdfiumBind(
             "pdfium is already initialized; set_pdfium_dll_dir must be called before any extract()"
@@ -85,6 +97,7 @@ pub fn set_pdfium_dll_dir(dir: impl AsRef<Path>) -> Result<()> {
     Ok(())
 }
 
+/// PDFIUM_LOCK を保持した状態で呼ぶ
 #[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
 fn pdfium() -> Result<&'static Pdfium> {
     if let Some(p) = PDFIUM.get() {
@@ -176,7 +189,10 @@ fn cell_text(chars: &[Glyph], cell: &BBox) -> String {
     for mut line in lines {
         line.sort_by(|a, b| a.1.bbox.x0.partial_cmp(&b.1.bbox.x0).unwrap());
         let s: String = line.iter().map(|(_, g)| g.ch).collect();
-        out.push(s.trim().to_string());
+        let s = s.trim();
+        if !s.is_empty() {
+            out.push(s.to_string());
+        }
     }
     strip_cjk_spaces(&out.join("\n"))
 }
@@ -324,6 +340,26 @@ fn prune_empty(t: &mut Table) {
     t.n_rows = data.len();
     t.n_cols = keep_cols.len();
     t.data = data;
+
+    // 面積ゼロの placeholder セルを除き bbox を残セルの外接に更新する
+    let mut bb: Option<BBox> = None;
+    for c in t.data.iter().flatten() {
+        if c.bbox.width() <= 0.0 || c.bbox.height() <= 0.0 {
+            continue;
+        }
+        bb = Some(match bb {
+            Some(b) => BBox {
+                x0: b.x0.min(c.bbox.x0),
+                top: b.top.min(c.bbox.top),
+                x1: b.x1.max(c.bbox.x1),
+                bottom: b.bottom.max(c.bbox.bottom),
+            },
+            None => c.bbox,
+        });
+    }
+    if let Some(b) = bb {
+        t.bbox = b;
+    }
 }
 
 /// PDFからの全ページ表抽出
@@ -338,6 +374,8 @@ pub fn extract_with_options(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<Document> {
+    // doc の drop (FPDF_CloseDocument) までロック下に置く
+    let _guard = lock_pdfium();
     let pdfium = pdfium()?;
     let path = path.as_ref();
     let doc = pdfium.load_pdf_from_file(path, password)?;
@@ -360,6 +398,8 @@ pub fn extract_from_bytes_with_options(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<Document> {
+    // doc の drop (FPDF_CloseDocument) までロック下に置く
+    let _guard = lock_pdfium();
     let pdfium = pdfium()?;
     let doc = pdfium.load_pdf_from_byte_vec(bytes.to_vec(), password)?;
     Ok(Document {
@@ -375,8 +415,9 @@ fn extract_pages(doc: &PdfDocument<'_>, options: &ExtractOptions) -> Result<Vec<
     for (pi, page) in doc.pages().iter().enumerate() {
         let h = page.height().value as f64;
         let w = page.width().value as f64;
-        let edges = reader::extract_edges(&page, h);
-        let chars = reader::extract_chars(&page, h)?;
+        let origin = reader::page_origin(&page, h);
+        let edges = reader::extract_edges(&page, origin);
+        let chars = reader::extract_chars(&page, origin)?;
         let tables = detect_tables(&chars, &edges, options);
         pages.push(Page {
             page_number: pi + 1,
@@ -390,9 +431,13 @@ fn extract_pages(doc: &PdfDocument<'_>, options: &ExtractOptions) -> Result<Vec<
 
 /// wasm 上の pdfium でバイト列から全ページ表抽出
 #[cfg(all(feature = "pdfium", target_arch = "wasm32"))]
-pub fn extract_from_bytes_wasm(bytes: &[u8], options: &ExtractOptions) -> Result<Document> {
+pub fn extract_from_bytes_wasm(
+    bytes: &[u8],
+    password: Option<&str>,
+    options: &ExtractOptions,
+) -> Result<Document> {
     let pdfium = reader::bind_pdfium()?;
-    let doc = pdfium.load_pdf_from_byte_vec(bytes.to_vec(), None)?;
+    let doc = pdfium.load_pdf_from_byte_vec(bytes.to_vec(), password)?;
     Ok(Document {
         source: "<pdf>".to_string(),
         pages: extract_pages(&doc, options)?,
@@ -457,7 +502,7 @@ fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> V
     for t in &mut tables {
         prune_empty(t);
     }
-    tables.retain(|t| t.n_rows >= 2 && t.n_cols >= 2);
+    tables.retain(|t| t.n_rows >= options.lattice.min_rows && t.n_cols >= options.lattice.min_cols);
 
     // 確定したlattice表の領域内の文字は後続の検出の入力から除く
     let segs: Vec<Seg> = build_segments(chars)
@@ -474,7 +519,10 @@ fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> V
         prune_empty(t);
     }
     for t in hybrid_tables {
-        if t.n_rows >= 2 && t.n_cols >= 2 && !overlaps_any(&t.bbox, &tables) {
+        if t.n_rows >= options.hybrid.min_rows
+            && t.n_cols >= options.hybrid.min_cols
+            && !overlaps_any(&t.bbox, &tables)
+        {
             tables.push(t);
         }
     }
@@ -493,9 +541,21 @@ fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> V
         prune_empty(t);
     }
     for t in text_tables {
-        if t.n_rows >= 2 && t.n_cols >= 2 && !overlaps_any(&t.bbox, &tables) {
+        if t.n_rows >= options.text.min_rows
+            && t.n_cols >= options.text.min_cols
+            && !overlaps_any(&t.bbox, &tables)
+        {
             tables.push(t);
         }
     }
+
+    // ページ内の読み順に揃える
+    tables.sort_by(|a, b| {
+        a.bbox
+            .top
+            .partial_cmp(&b.bbox.top)
+            .unwrap()
+            .then_with(|| a.bbox.x0.partial_cmp(&b.bbox.x0).unwrap())
+    });
     tables
 }

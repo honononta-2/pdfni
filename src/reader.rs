@@ -1,5 +1,5 @@
 //! pdfium リーダー層
-//! 座標は top-down に揃える
+//! pdfium は生のユーザー空間座標を返すため CropBox 原点基準の top-down に揃える
 
 use crate::error::{Error, Result};
 use crate::model::{BBox, Edge, Glyph, Orientation};
@@ -40,7 +40,18 @@ pub(crate) fn bind_pdfium() -> Result<Pdfium> {
     Ok(Pdfium::new(bindings))
 }
 
-pub(crate) fn extract_chars(page: &PdfPage, page_h: f64) -> Result<Vec<Glyph>> {
+/// ページ左端と上端のユーザー空間座標
+/// CropBox 優先で MediaBox に落ち、どちらも無ければ原点 (0, page_h) とみなす
+pub(crate) fn page_origin(page: &PdfPage, page_h: f64) -> (f64, f64) {
+    let b = page.boundaries();
+    match b.crop().or_else(|_| b.media()) {
+        Ok(bb) => (bb.bounds.left().value as f64, bb.bounds.top().value as f64),
+        Err(_) => (0.0, page_h),
+    }
+}
+
+pub(crate) fn extract_chars(page: &PdfPage, origin: (f64, f64)) -> Result<Vec<Glyph>> {
+    let (ox, oy) = origin;
     let text = page
         .text()
         .map_err(|e| Error::PageRead(format!("text: {e:?}")))?;
@@ -58,10 +69,10 @@ pub(crate) fn extract_chars(page: &PdfPage, page_h: f64) -> Result<Vec<Glyph>> {
             Err(_) => continue,
         };
         let bbox = BBox {
-            x0: r.left().value as f64,
-            x1: r.right().value as f64,
-            top: page_h - r.top().value as f64,
-            bottom: page_h - r.bottom().value as f64,
+            x0: r.left().value as f64 - ox,
+            x1: r.right().value as f64 - ox,
+            top: oy - r.top().value as f64,
+            bottom: oy - r.bottom().value as f64,
         };
         glyphs.push(Glyph { ch, bbox });
     }
@@ -69,22 +80,23 @@ pub(crate) fn extract_chars(page: &PdfPage, page_h: f64) -> Result<Vec<Glyph>> {
 }
 
 /// 2点を結ぶ軸平行な線分を辺にする
-fn axis_edge(a: (f32, f32), b: (f32, f32), page_h: f64, eps: f32) -> Option<Edge> {
+fn axis_edge(a: (f32, f32), b: (f32, f32), origin: (f64, f64), eps: f32) -> Option<Edge> {
+    let (ox, oy) = origin;
     let (px, py) = a;
     let (x, y) = b;
     if (x - px).abs() <= eps && (y - py).abs() > eps {
         Some(Edge {
-            x0: x as f64,
-            x1: x as f64,
-            top: page_h - py.max(y) as f64,
-            bottom: page_h - py.min(y) as f64,
+            x0: x as f64 - ox,
+            x1: x as f64 - ox,
+            top: oy - py.max(y) as f64,
+            bottom: oy - py.min(y) as f64,
             orientation: Orientation::Vertical,
         })
     } else if (y - py).abs() <= eps && (x - px).abs() > eps {
-        let yy = page_h - y as f64;
+        let yy = oy - y as f64;
         Some(Edge {
-            x0: px.min(x) as f64,
-            x1: px.max(x) as f64,
+            x0: px.min(x) as f64 - ox,
+            x1: px.max(x) as f64 - ox,
             top: yy,
             bottom: yy,
             orientation: Orientation::Horizontal,
@@ -94,11 +106,11 @@ fn axis_edge(a: (f32, f32), b: (f32, f32), page_h: f64, eps: f32) -> Option<Edge
     }
 }
 
-pub(crate) fn extract_edges(page: &PdfPage, page_h: f64) -> Vec<Edge> {
+pub(crate) fn extract_edges(page: &PdfPage, origin: (f64, f64)) -> Vec<Edge> {
     let eps = 0.8_f32;
     let mut edges: Vec<Edge> = Vec::new();
     for obj in page.objects().iter() {
-        collect_edges(&obj, &PdfMatrix::IDENTITY, page_h, eps, &mut edges);
+        collect_edges(&obj, &PdfMatrix::IDENTITY, origin, eps, &mut edges);
     }
     edges
 }
@@ -107,7 +119,7 @@ pub(crate) fn extract_edges(page: &PdfPage, page_h: f64) -> Vec<Edge> {
 fn collect_edges(
     obj: &PdfPageObject,
     parent: &PdfMatrix,
-    page_h: f64,
+    origin: (f64, f64),
     eps: f32,
     edges: &mut Vec<Edge>,
 ) {
@@ -115,7 +127,7 @@ fn collect_edges(
         // 入れ子の行列の合成
         let m = form.matrix().unwrap_or(PdfMatrix::IDENTITY).multiply(*parent);
         for child in form.iter() {
-            collect_edges(&child, &m, page_h, eps, edges);
+            collect_edges(&child, &m, origin, eps, edges);
         }
     } else if let Some(path_obj) = obj.as_path_object() {
         // ページ座標への変換
@@ -140,7 +152,7 @@ fn collect_edges(
                 PdfPathSegmentType::MoveTo => {
                     // 塗りの閉じ線
                     if filled && let (Some(s), Some(p)) = (sub_start, prev) {
-                        if let Some(e) = axis_edge(p, s, page_h, eps) {
+                        if let Some(e) = axis_edge(p, s, origin, eps) {
                             edges.push(e);
                         }
                     }
@@ -149,7 +161,7 @@ fn collect_edges(
                 }
                 PdfPathSegmentType::LineTo => {
                     if let Some(p) = prev {
-                        if let Some(e) = axis_edge(p, pt, page_h, eps) {
+                        if let Some(e) = axis_edge(p, pt, origin, eps) {
                             edges.push(e);
                         }
                     }
@@ -161,7 +173,7 @@ fn collect_edges(
             }
             // 明示的な閉じの閉じ線
             if seg.is_close() && let Some(s) = sub_start {
-                if let Some(e) = axis_edge(pt, s, page_h, eps) {
+                if let Some(e) = axis_edge(pt, s, origin, eps) {
                     edges.push(e);
                 }
                 prev = Some(s);
@@ -169,7 +181,7 @@ fn collect_edges(
         }
         // 塗りの閉じ線
         if filled && let (Some(s), Some(p)) = (sub_start, prev) {
-            if let Some(e) = axis_edge(p, s, page_h, eps) {
+            if let Some(e) = axis_edge(p, s, origin, eps) {
                 edges.push(e);
             }
         }

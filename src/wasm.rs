@@ -24,14 +24,18 @@ pub fn extract_tables(input_json: &str) -> Result<String, JsError> {
 /// PDF バイト列から表抽出し Document の JSON を返す
 #[cfg(feature = "pdfium")]
 #[wasm_bindgen]
-pub fn extract_tables_from_pdf(bytes: &[u8], options_json: Option<String>) -> Result<String, JsError> {
+pub fn extract_tables_from_pdf(
+    bytes: &[u8],
+    options_json: Option<String>,
+    password: Option<String>,
+) -> Result<String, JsError> {
     let options: ExtractOptions = match options_json {
         Some(s) if !s.is_empty() => {
             serde_json::from_str(&s).map_err(|e| JsError::new(&e.to_string()))?
         }
         _ => ExtractOptions::default(),
     };
-    let doc = crate::extract::extract_from_bytes_wasm(bytes, &options)
+    let doc = crate::extract::extract_from_bytes_wasm(bytes, password.as_deref(), &options)
         .map_err(|e| JsError::new(&e.to_string()))?;
     serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
 }

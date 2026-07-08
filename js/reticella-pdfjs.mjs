@@ -12,7 +12,7 @@ export function init(wasmUrl) {
 }
 
 // PDF バイト列から表を抽出する
-// pdfjs: pdfjs-dist のモジュール、opts: { cMapUrl, standardFontDataUrl, options }
+// pdfjs: pdfjs-dist のモジュール、opts: { cMapUrl, standardFontDataUrl, options, password }
 export async function extractTables(pdfjs, pdfBytes, opts = {}) {
   await (ready ?? init());
   const task = pdfjs.getDocument({
@@ -20,6 +20,7 @@ export async function extractTables(pdfjs, pdfBytes, opts = {}) {
     cMapUrl: opts.cMapUrl,
     cMapPacked: true,
     standardFontDataUrl: opts.standardFontDataUrl,
+    password: opts.password,
     isEvalSupported: false,
   });
   const doc = await task.promise;

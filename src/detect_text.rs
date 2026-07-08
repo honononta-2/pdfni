@@ -73,11 +73,12 @@ pub(crate) fn is_prose_cell(s: &str) -> bool {
 }
 
 /// 数値や日付とみなせるセルか
+/// 「1月」「100円」等の単位付き数値を含めるため CJK は弾かず ASCII 英字のみ弾く
 fn is_typed_cell(s: &str) -> bool {
     let t = s.trim();
     !t.is_empty()
         && t.chars().any(|c| c.is_ascii_digit())
-        && !t.chars().any(|c| c.is_alphabetic())
+        && !t.chars().any(|c| c.is_ascii_alphabetic())
 }
 
 /// 型の揃った列を持つか

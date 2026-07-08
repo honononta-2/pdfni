@@ -19,8 +19,12 @@ export async function init({ pdfiumModule, wasmUrl, debug = false } = {}) {
 }
 
 // PDF バイト列から表を抽出する
-export function extractTables(pdfBytes, options) {
+export function extractTables(pdfBytes, options, password) {
   if (!ready) throw new Error('先に init() を呼んでください');
-  const json = core.extract_tables_from_pdf(pdfBytes, options ? JSON.stringify(options) : undefined);
+  const json = core.extract_tables_from_pdf(
+    pdfBytes,
+    options ? JSON.stringify(options) : undefined,
+    password ?? undefined,
+  );
   return JSON.parse(json);
 }
