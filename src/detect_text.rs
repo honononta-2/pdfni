@@ -262,7 +262,7 @@ fn bands_match(a: &[(f64, f64)], b: &[(f64, f64)]) -> bool {
 }
 
 /// 文字整列方式による1ページの表検出
-pub fn detect(segs: &[Seg], s: &TextSettings) -> Vec<Table> {
+pub fn detect(segs: &[Seg], s: &TextSettings, scale: Option<f64>) -> Vec<Table> {
     if segs.len() < s.min_table_segs {
         return Vec::new();
     }
@@ -272,7 +272,9 @@ pub fn detect(segs: &[Seg], s: &TextSettings) -> Vec<Table> {
         return Vec::new();
     }
 
-    let med_h = median(active.iter().map(|&i| segs[i].bbox.height()).collect());
+    let med_h = scale.unwrap_or_else(|| {
+        median(active.iter().map(|&i| segs[i].bbox.height()).collect())
+    });
     let row_tol = (med_h * 0.5).max(0.5);
 
     let bottoms: Vec<f64> = active.iter().map(|&i| segs[i].bbox.bottom).collect();
@@ -401,7 +403,9 @@ pub fn detect(segs: &[Seg], s: &TextSettings) -> Vec<Table> {
             }
         }
 
-        let med_h = median(members.iter().map(|&i| segs[i].bbox.height()).collect());
+        let med_h = scale.unwrap_or_else(|| {
+            median(members.iter().map(|&i| segs[i].bbox.height()).collect())
+        });
         let member_row_tol = (med_h * 0.5).max(0.5);
         let bottoms: Vec<f64> = members.iter().map(|&i| segs[i].bbox.bottom).collect();
         let member_row_ids = cluster_ids(&bottoms, member_row_tol);

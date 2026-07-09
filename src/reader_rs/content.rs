@@ -43,7 +43,77 @@ pub(crate) fn extract_parts(
         &mut visiting,
         [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
     );
+    let spaces = synth_word_spaces(&glyphs);
+    glyphs.extend(spaces);
     (glyphs, edges)
+}
+
+/// 語間ギャップに空白グリフを合成する
+///
+/// 既存2ルート（pdfium / pdf.js）は語間の空白グリフを出力するが、
+/// show 列をそのまま辿る本リーダーでは TJ / Td による語間が無音になる。
+/// 検出コアはセル文の空白を文章判定に使うため、行内の小さなギャップ
+/// （字高の 0.12〜1.0 倍）を空白1文字で埋めて出力を揃える
+fn synth_word_spaces(glyphs: &[GlyphPart]) -> Vec<GlyphPart> {
+    let mut hs: Vec<f64> = glyphs
+        .iter()
+        .filter(|g| !g.ch.is_whitespace())
+        .map(|g| g.bottom - g.top)
+        .collect();
+    if hs.len() < 2 {
+        return Vec::new();
+    }
+    hs.sort_by(|a, b| a.total_cmp(b));
+    let med_h = hs[hs.len() / 2];
+    let line_tol = (med_h * 0.6).max(0.5);
+
+    // bottom の近さで行にまとめる（既存の空白も行に含めて重複合成を防ぐ）
+    let mut all: Vec<&GlyphPart> = glyphs.iter().collect();
+    all.sort_by(|a, b| a.bottom.total_cmp(&b.bottom));
+    let mut lines: Vec<Vec<&GlyphPart>> = Vec::new();
+    let mut cur: Vec<&GlyphPart> = Vec::new();
+    let mut last_b = f64::NEG_INFINITY;
+    for g in all {
+        if !cur.is_empty() && g.bottom - last_b > line_tol {
+            lines.push(std::mem::take(&mut cur));
+        }
+        last_b = g.bottom;
+        cur.push(g);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+
+    let mut spaces = Vec::new();
+    for mut line in lines {
+        line.sort_by(|a, b| a.left.total_cmp(&b.left));
+        let mut prev_solid: Option<&GlyphPart> = None;
+        let mut space_between = false;
+        for g in line {
+            if g.ch.is_whitespace() {
+                space_between = true;
+                continue;
+            }
+            if let Some(a) = prev_solid {
+                let gap = g.left - a.right;
+                let h = a.bottom - a.top;
+                if !space_between && gap > 0.12 * h && gap < 1.0 * h {
+                    spaces.push(GlyphPart {
+                        ch: ' ',
+                        left: a.right,
+                        right: g.left,
+                        top: a.top,
+                        bottom: a.bottom,
+                        font_size: a.font_size,
+                        upright: a.upright,
+                    });
+                }
+            }
+            prev_solid = Some(g);
+            space_between = false;
+        }
+    }
+    spaces
 }
 
 /// コンテンツストリームから軸平行な辺を抽出する
@@ -850,6 +920,8 @@ fn show_text_bytes(
         let (ex, ey) = (end_trm[4], end_trm[5]);
         let uy = if dlen > 0.0 { trm[1] / dlen } else { 0.0 };
         let device_w = (ex - ox) * ux + (ey - oy) * uy;
+        // 前進方向が水平（回転・鏡映なし）か
+        let upright = uy.abs() <= 0.05 && ux > 0.05;
 
         // コードポイントごとに分割し幅を等分
         let chars: Vec<char> = unicode.chars().collect();
@@ -873,6 +945,8 @@ fn show_text_bytes(
                 right: gx0.max(gx1) - view_left,
                 top,
                 bottom,
+                font_size: Some(font_size_dev),
+                upright,
             });
         }
 
@@ -1420,6 +1494,28 @@ Q
         assert!(approx(g[1].right, 14.0), "space right={}", g[1].right);
         assert_eq!(g[2].ch, 'B');
         assert!(approx(g[2].left, 14.0));
+    }
+
+    /// 語間ギャップへの空白合成
+    #[test]
+    fn word_space_synthesis() {
+        // "AB"(0..10) と "CD"(13..23): ギャップ3 = 字高10 の 0.3 倍 → 空白1つ合成
+        let contents = b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (AB) Tj 1 0 0 1 13 50 Tm (CD) Tj ET";
+        let g = glyphs_of(contents, default_view());
+        let sp: Vec<_> = g.iter().filter(|x| x.ch == ' ').collect();
+        assert_eq!(sp.len(), 1, "got {g:?}");
+        assert!(approx(sp[0].left, 10.0), "left={}", sp[0].left);
+        assert!(approx(sp[0].right, 13.0), "right={}", sp[0].right);
+
+        // ギャップ15 > 字高 → 列間とみなし合成しない
+        let contents = b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (AB) Tj 1 0 0 1 25 50 Tm (CD) Tj ET";
+        let g = glyphs_of(contents, default_view());
+        assert!(g.iter().all(|x| x.ch != ' '), "got {g:?}");
+
+        // 実在する空白の上には重ねて合成しない
+        let contents = b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (A B) Tj ET";
+        let g = glyphs_of(contents, default_view());
+        assert_eq!(g.iter().filter(|x| x.ch == ' ').count(), 1, "got {g:?}");
     }
 
     /// q/Q でテキスト状態（Tw 等）が保存・復元される

@@ -60,6 +60,7 @@ pub fn detect<F: Fn(&BBox) -> String>(
     edges: &[Edge],
     fill: &F,
     s: &HybridSettings,
+    scale: Option<f64>,
 ) -> Vec<Table> {
     if segs.is_empty() || edges.is_empty() {
         return Vec::new();
@@ -74,8 +75,8 @@ pub fn detect<F: Fn(&BBox) -> String>(
     }
 
     let mut tables = Vec::new();
-    for members in split_regions(segs) {
-        if let Some(t) = detect_region(segs, &members, &joined, fill, s) {
+    for members in split_regions(segs, scale) {
+        if let Some(t) = detect_region(segs, &members, &joined, fill, s, scale) {
             tables.push(t);
         }
     }
@@ -83,8 +84,8 @@ pub fn detect<F: Fn(&BBox) -> String>(
 }
 
 /// 行間ギャップで文字塊を縦の領域に分ける
-fn split_regions(segs: &[Seg]) -> Vec<Vec<usize>> {
-    let med_h = median(segs.iter().map(|g| g.bbox.height()).collect());
+fn split_regions(segs: &[Seg], scale: Option<f64>) -> Vec<Vec<usize>> {
+    let med_h = scale.unwrap_or_else(|| median(segs.iter().map(|g| g.bbox.height()).collect()));
     let row_tol = (med_h * 0.5).max(0.5);
     let bottoms: Vec<f64> = segs.iter().map(|g| g.bbox.bottom).collect();
     let row_ids = cluster_ids(&bottoms, row_tol);
@@ -130,6 +131,7 @@ fn detect_region<F: Fn(&BBox) -> String>(
     edges: &[Edge],
     fill: &F,
     s: &HybridSettings,
+    scale: Option<f64>,
 ) -> Option<Table> {
     let mut bbox = segs[*members.first()?].bbox;
     for &i in &members[1..] {
@@ -167,10 +169,10 @@ fn detect_region<F: Fn(&BBox) -> String>(
     let (row_bounds, col_bounds) = if hs.len() >= s.min_lines && vs.len() < s.min_lines {
         let cols = band_bounds(segs, members, bbox.x0, bbox.x1, s);
         let lines = line_bounds(hs, bbox.top, bbox.bottom);
-        let rows = refine_row_bounds(segs, members, lines, &cols);
+        let rows = refine_row_bounds(segs, members, lines, &cols, scale);
         (rows, cols)
     } else if vs.len() >= s.min_lines && hs.len() < s.min_lines {
-        let rows = row_cluster_bounds(segs, members, bbox.top, bbox.bottom);
+        let rows = row_cluster_bounds(segs, members, bbox.top, bbox.bottom, scale);
         let cols = line_bounds(vs, bbox.x0, bbox.x1);
         (rows, cols)
     } else {
@@ -275,8 +277,10 @@ fn refine_row_bounds(
     members: &[usize],
     bounds: Vec<f64>,
     col_bounds: &[f64],
+    scale: Option<f64>,
 ) -> Vec<f64> {
-    let med_h = median(members.iter().map(|&i| segs[i].bbox.height()).collect());
+    let med_h = scale
+        .unwrap_or_else(|| median(members.iter().map(|&i| segs[i].bbox.height()).collect()));
     let row_tol = (med_h * 0.5).max(0.5);
     let col_of = |x: f64| col_bounds.iter().take_while(|&&b| b < x).count();
 
@@ -327,8 +331,15 @@ fn refine_row_bounds(
 }
 
 /// 文字塊の行クラスタから区切り座標列を作る
-fn row_cluster_bounds(segs: &[Seg], members: &[usize], lo: f64, hi: f64) -> Vec<f64> {
-    let med_h = median(members.iter().map(|&i| segs[i].bbox.height()).collect());
+fn row_cluster_bounds(
+    segs: &[Seg],
+    members: &[usize],
+    lo: f64,
+    hi: f64,
+    scale: Option<f64>,
+) -> Vec<f64> {
+    let med_h = scale
+        .unwrap_or_else(|| median(members.iter().map(|&i| segs[i].bbox.height()).collect()));
     let row_tol = (med_h * 0.5).max(0.5);
     let bottoms: Vec<f64> = members.iter().map(|&i| segs[i].bbox.bottom).collect();
     let ids = cluster_ids(&bottoms, row_tol);

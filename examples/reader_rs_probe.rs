@@ -10,6 +10,9 @@ struct Glyph {
     x1: f64,
     top: f64,
     bottom: f64,
+    /// デバイス座標のフォントサイズ（0 = 不明）
+    fs: f64,
+    upright: bool,
 }
 
 #[derive(Serialize)]
@@ -78,6 +81,8 @@ fn main() {
                     x1: g.right,
                     top: g.top,
                     bottom: g.bottom,
+                    fs: g.font_size.unwrap_or(0.0),
+                    upright: g.upright,
                 })
                 .collect(),
             edges: p

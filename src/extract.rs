@@ -34,6 +34,16 @@ pub struct GlyphPart {
     pub right: f64,
     pub top: f64,
     pub bottom: f64,
+    /// デバイス座標のフォントサイズ。無い場合は bbox 高さから推定する従来動作
+    #[serde(default)]
+    pub font_size: Option<f64>,
+    /// 回転していない横書きグリフか。false は表の材料から除外される
+    #[serde(default = "upright_default")]
+    pub upright: bool,
+}
+
+fn upright_default() -> bool {
+    true
 }
 
 /// 外部リーダーから受け取る軸平行な線分
@@ -196,7 +206,7 @@ fn cell_text(chars: &[Glyph], cell: &BBox) -> String {
 }
 
 /// 文字を行内の塊に切り分ける
-fn build_segments(chars: &[Glyph]) -> Vec<Seg> {
+fn build_segments(chars: &[Glyph], scale: Option<f64>) -> Vec<Seg> {
     let solid: Vec<usize> = (0..chars.len())
         .filter(|&i| !chars[i].ch.is_whitespace())
         .collect();
@@ -205,7 +215,7 @@ fn build_segments(chars: &[Glyph]) -> Vec<Seg> {
     }
     let mut heights: Vec<f64> = solid.iter().map(|&i| chars[i].bbox.height()).collect();
     heights.sort_by(|a, b| a.total_cmp(b));
-    let med_h = heights[heights.len() / 2];
+    let med_h = scale.unwrap_or(heights[heights.len() / 2]);
     let line_tol = (med_h * 0.6).max(0.5);
     let seg_gap = (med_h).max(1.0);
 
@@ -302,7 +312,7 @@ fn push_seg(segs: &mut Vec<Seg>, text: &mut String, bb: &mut Option<BBox>) {
     text.clear();
 }
 
-fn lattice_cols_too_coarse(t: &Table, segs: &[Seg], margin: usize) -> bool {
+fn lattice_cols_too_coarse(t: &Table, segs: &[Seg], margin: usize, scale: Option<f64>) -> bool {
     let inside: Vec<&Seg> = segs
         .iter()
         .filter(|s| t.bbox.contains_center(&s.bbox))
@@ -312,7 +322,7 @@ fn lattice_cols_too_coarse(t: &Table, segs: &[Seg], margin: usize) -> bool {
     }
     let mut hs: Vec<f64> = inside.iter().map(|s| s.bbox.height()).collect();
     hs.sort_by(|a, b| a.total_cmp(b));
-    let line_tol = (hs[hs.len() / 2] * 0.6).max(0.5);
+    let line_tol = (scale.unwrap_or(hs[hs.len() / 2]) * 0.6).max(0.5);
     let bottoms: Vec<f64> = inside.iter().map(|s| s.bbox.bottom).collect();
     let ids = detect_text::cluster_ids(&bottoms, line_tol);
     let n = ids.iter().copied().max().unwrap_or(0) + 1;
@@ -357,7 +367,7 @@ struct LineMark {
 }
 
 /// 罫線行内を細分する行境界の算出
-fn row_split_boundaries(row: &[Cell], chars: &[Glyph]) -> Vec<f64> {
+fn row_split_boundaries(row: &[Cell], chars: &[Glyph], scale: Option<f64>) -> Vec<f64> {
     let mut marks: Vec<LineMark> = Vec::new();
     let mut heights: Vec<f64> = Vec::new();
     for (c, cell) in row.iter().enumerate() {
@@ -373,11 +383,11 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph]) -> Vec<f64> {
         }
         heights.extend(gs.iter().map(|g| g.bbox.height()));
         gs.sort_by(|a, b| a.bbox.bottom.total_cmp(&b.bbox.bottom));
-        let med_h = {
+        let med_h = scale.unwrap_or_else(|| {
             let mut hs: Vec<f64> = gs.iter().map(|g| g.bbox.height()).collect();
             hs.sort_by(|a, b| a.total_cmp(b));
             hs[hs.len() / 2]
-        };
+        });
         let line_tol = (med_h * 0.6).max(0.5);
         let mut lines: Vec<Vec<&Glyph>> = Vec::new();
         let mut cur: Vec<&Glyph> = Vec::new();
@@ -414,7 +424,7 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph]) -> Vec<f64> {
     }
 
     heights.sort_by(|a, b| a.total_cmp(b));
-    let row_tol = (heights[heights.len() / 2] * 0.6).max(0.5);
+    let row_tol = (scale.unwrap_or(heights[heights.len() / 2]) * 0.6).max(0.5);
     let ids = detect_text::cluster_ids(&marks.iter().map(|m| m.bot).collect::<Vec<_>>(), row_tol);
     let n = ids.iter().copied().max().unwrap_or(0) + 1;
     if n < 2 {
@@ -444,11 +454,11 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph]) -> Vec<f64> {
 }
 
 /// 疎罫線の罫線行内をテキスト行で細分する
-fn refine_lattice_rows(t: &mut Table, chars: &[Glyph]) {
+fn refine_lattice_rows(t: &mut Table, chars: &[Glyph], scale: Option<f64>) {
     let mut new_data: Vec<Vec<Cell>> = Vec::with_capacity(t.data.len());
     let mut changed = false;
     for row in &t.data {
-        let bounds = row_split_boundaries(row, chars);
+        let bounds = row_split_boundaries(row, chars, scale);
         if bounds.is_empty() {
             new_data.push(row.clone());
             continue;
@@ -630,7 +640,7 @@ fn extract_pages(doc: &PdfDocument<'_>, options: &ExtractOptions) -> Result<Vec<
         let origin = reader::page_origin(&page, h);
         let edges = reader::extract_edges(&page, origin);
         let chars = reader::extract_chars(&page, origin)?;
-        let tables = detect_tables(&chars, &edges, options);
+        let tables = detect_tables(&chars, &edges, options, None);
         pages.push(Page {
             page_number: pi + 1,
             width: w,
@@ -666,15 +676,49 @@ pub fn extract_from_bytes_wasm(
     })
 }
 
+/// fs 供給ページの閾値スケール係数（フォントサイズ→行/分割スケール）
+const FS_SCALE_LATIN: f64 = 0.85;
+const FS_SCALE_CJK: f64 = 1.10;
+
+/// フォントサイズ供給時の閾値スケールを求める
+///
+/// 過半のグリフが font_size を持つときだけ Some。スケールは
+/// fs 中央値×係数で、CJK 優勢ページは全角前提の広い係数を使う
+fn fs_threshold_scale(glyphs: &[GlyphPart]) -> Option<f64> {
+    let solid: Vec<&GlyphPart> = glyphs.iter().filter(|g| !g.ch.is_whitespace()).collect();
+    if solid.is_empty() {
+        return None;
+    }
+    let mut fss: Vec<f64> = solid
+        .iter()
+        .filter_map(|g| g.font_size)
+        .filter(|v| *v > 0.0)
+        .collect();
+    if fss.len() * 2 < solid.len() {
+        return None;
+    }
+    fss.sort_by(|a, b| a.total_cmp(b));
+    let med_fs = fss[fss.len() / 2];
+    let cjk = solid.iter().filter(|g| is_cjk(g.ch)).count();
+    let coef = if cjk * 10 >= solid.len() * 3 {
+        FS_SCALE_CJK
+    } else {
+        FS_SCALE_LATIN
+    };
+    Some(med_fs * coef)
+}
+
 /// 外部リーダーが取り出した文字と線分からの全ページ表抽出
 pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Document {
     let out = pages
         .into_iter()
         .enumerate()
         .map(|(pi, part)| {
+            let scale = fs_threshold_scale(&part.glyphs);
             let chars: Vec<Glyph> = part
                 .glyphs
                 .into_iter()
+                .filter(|g| g.upright)
                 .map(|g| Glyph {
                     ch: g.ch,
                     bbox: BBox {
@@ -685,7 +729,7 @@ pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Doc
                     },
                 })
                 .collect();
-            let edges: Vec<Edge> = part
+            let mut edges: Vec<Edge> = part
                 .edges
                 .into_iter()
                 .map(|e| Edge {
@@ -696,11 +740,15 @@ pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Doc
                     orientation: e.orientation,
                 })
                 .collect();
+            // 字高スケール未満の線分片（グラフの曲線・破線の断片）は罫線候補にしない
+            if let Some(s) = scale {
+                edges.retain(|e| e.length() >= 0.5 * s);
+            }
             Page {
                 page_number: pi + 1,
                 width: part.width,
                 height: part.height,
-                tables: detect_tables(&chars, &edges, options),
+                tables: detect_tables(&chars, &edges, options, scale),
             }
         })
         .collect();
@@ -711,7 +759,12 @@ pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Doc
 }
 
 /// 3方式の検出を優先順で実行し1ページ分の表を確定する
-fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> Vec<Table> {
+fn detect_tables(
+    chars: &[Glyph],
+    edges: &[Edge],
+    options: &ExtractOptions,
+    scale: Option<f64>,
+) -> Vec<Table> {
     let fill = |b: &BBox| cell_text(chars, b);
     let use_lattice = options.mode != DetectMode::Borderless;
     let use_hybrid = options.mode == DetectMode::Auto;
@@ -721,13 +774,15 @@ fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> V
     } else {
         Vec::new()
     };
-    let all_segs = build_segments(chars);
+    let all_segs = build_segments(chars, scale);
     if options.lattice.col_check && (use_hybrid || use_text) {
-        tables.retain(|t| !lattice_cols_too_coarse(t, &all_segs, options.lattice.col_check_margin));
+        tables.retain(|t| {
+            !lattice_cols_too_coarse(t, &all_segs, options.lattice.col_check_margin, scale)
+        });
     }
     if options.lattice.refine_rows {
         for t in &mut tables {
-            refine_lattice_rows(t, chars);
+            refine_lattice_rows(t, chars, scale);
         }
     }
     for t in &mut tables {
@@ -742,7 +797,7 @@ fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> V
         .collect();
 
     let mut hybrid_tables = if use_hybrid {
-        detect_hybrid::detect(&segs, edges, &fill, &options.hybrid)
+        detect_hybrid::detect(&segs, edges, &fill, &options.hybrid, scale)
     } else {
         Vec::new()
     };
@@ -764,7 +819,7 @@ fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> V
         .filter(|seg| !tables.iter().any(|t| t.bbox.contains_center(&seg.bbox)))
         .collect();
     let mut text_tables = if use_text {
-        detect_text::detect(&segs, &options.text)
+        detect_text::detect(&segs, &options.text, scale)
     } else {
         Vec::new()
     };
