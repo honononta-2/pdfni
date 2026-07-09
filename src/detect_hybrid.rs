@@ -97,7 +97,7 @@ fn split_regions(segs: &[Seg]) -> Vec<Vec<usize>> {
         row_bot[rid] = row_bot[rid].max(segs[i].bbox.bottom);
     }
     let mut ordered: Vec<usize> = (0..n_rows).collect();
-    ordered.sort_by(|&a, &b| row_top[a].partial_cmp(&row_top[b]).unwrap());
+    ordered.sort_by(|&a, &b| row_top[a].total_cmp(&row_top[b]));
 
     let gaps: Vec<f64> = ordered
         .windows(2)
@@ -232,7 +232,7 @@ fn detect_region<F: Fn(&BBox) -> String>(
 /// 罫線位置から区切り座標列を作る
 /// 文字が最外の線からはみ出す場合は端に仮想の区切りを足す
 fn line_bounds(mut pos: Vec<f64>, lo: f64, hi: f64) -> Vec<f64> {
-    pos.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    pos.sort_by(|a, b| a.total_cmp(b));
     pos.dedup_by(|a, b| (*a - *b).abs() < 1.0);
     let mut bounds = Vec::with_capacity(pos.len() + 2);
     if lo < pos[0] - 1.0 {
@@ -314,7 +314,7 @@ fn refine_row_bounds(
             continue;
         }
         let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by(|&a, &b| top[a].partial_cmp(&top[b]).unwrap());
+        order.sort_by(|&a, &b| top[a].total_cmp(&top[b]));
         // 折り返し行の連結
         for ww in order.windows(2) {
             if cols[ww[1]].len() >= 2 {
@@ -342,7 +342,7 @@ fn row_cluster_bounds(segs: &[Seg], members: &[usize], lo: f64, hi: f64) -> Vec<
         bot[rid] = bot[rid].max(b.bottom);
     }
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| top[a].partial_cmp(&top[b]).unwrap());
+    order.sort_by(|&a, &b| top[a].total_cmp(&top[b]));
 
     let mut bounds = Vec::with_capacity(n + 1);
     bounds.push(lo - 0.5);

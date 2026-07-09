@@ -13,16 +13,48 @@ name = "reticella"
 path = "src/bin/main.rs"
 required-features = ["pdfium"]
 
+[[example]]
+name = "reader_rs_smoke"
+required-features = ["reader-rs"]
+
+[[example]]
+name = "reader_rs_probe"
+required-features = ["reader-rs"]
+
 [features]
 default = ["pdfium"]
 # pdfium による読み取り経路（機械語・wasm 両ビルドで使う）
 pdfium = ["dep:pdfium-render"]
+# 純Rustリーダーによる読み取り経路（既定で全言語 CMap を同梱）
+reader-rs = [
+    "dep:flate2",
+    "dep:aes",
+    "dep:cbc",
+    "dep:md-5",
+    "dep:sha2",
+    "cmap-japan1",
+    "cmap-gb1",
+    "cmap-cns1",
+    "cmap-korea1",
+]
+# 定義済み CMap の言語系統（空 feature。reader-rs から個別に外せる）
+cmap-japan1 = []
+cmap-gb1 = []
+cmap-cns1 = []
+cmap-korea1 = []
 
 [dependencies]
 anyhow = "1.0.102"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# FlateDecode 用。既定バックエンドは純Rustのため wasm32 でもビルド可能
+flate2 = { version = "1", optional = true }
+# PDF Standard セキュリティハンドラ用（reader-rs のみ）
+aes = { version = "0.8", optional = true }
+cbc = { version = "0.1", optional = true }
+md-5 = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 # pdfium-render は機械語ビルドとwasmで別系統のバインドを使うためターゲット別に指定する。
 # 画像(ビットマップ)描画は使わないため image 系の既定featureを外す。

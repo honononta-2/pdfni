@@ -26,7 +26,7 @@ function applyMatrix(m, x, y) {
   return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 }
 function isSpace(c) {
-  return c === ' ' || c === ' ' || c === '　';
+  return c === ' ' || c === '\u00A0' || c === '　';
 }
 
 // 1ページ分の文字を按分で1文字ずつの bbox にする

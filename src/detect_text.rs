@@ -99,7 +99,7 @@ fn has_typed_column(t: &Table) -> bool {
 /// 各値が属する許容差クラスタのid
 pub(crate) fn cluster_ids(vals: &[f64], tol: f64) -> Vec<usize> {
     let mut idx: Vec<usize> = (0..vals.len()).collect();
-    idx.sort_by(|&a, &b| vals[a].partial_cmp(&vals[b]).unwrap());
+    idx.sort_by(|&a, &b| vals[a].total_cmp(&vals[b]));
     let mut ids = vec![0usize; vals.len()];
     let mut cur = 0usize;
     let mut prev = f64::NEG_INFINITY;
@@ -128,7 +128,7 @@ pub(crate) fn median(mut v: Vec<f64>) -> f64 {
     if v.is_empty() {
         return 0.0;
     }
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v.sort_by(|a, b| a.total_cmp(b));
     v[v.len() / 2]
 }
 
@@ -176,7 +176,7 @@ pub(crate) fn column_bands(segs: &[Seg], members: &[usize], gap: f64) -> Vec<(f6
         .iter()
         .map(|&i| (segs[i].bbox.x0, segs[i].bbox.x1))
         .collect();
-    iv.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    iv.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut bands: Vec<(f64, f64)> = Vec::new();
     for (lo, hi) in iv {
         match bands.last_mut() {
@@ -244,7 +244,7 @@ fn anchor_column_bands(
         .collect();
     if !extras.is_empty() {
         bands.extend(column_bands(segs, &extras, s.col_gap));
-        bands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        bands.sort_by(|a, b| a.0.total_cmp(&b.0));
     }
     bands
 }
@@ -292,7 +292,7 @@ pub fn detect(segs: &[Seg], s: &TextSettings) -> Vec<Table> {
     }
 
     let mut ordered: Vec<usize> = (0..n_total_rows).collect();
-    ordered.sort_by(|&a, &b| row_top[a].partial_cmp(&row_top[b]).unwrap());
+    ordered.sort_by(|&a, &b| row_top[a].total_cmp(&row_top[b]));
 
     let gaps: Vec<f64> = ordered
         .windows(2)
@@ -441,7 +441,7 @@ fn build_table(
                     .min_by(|(_, a), (_, b)| {
                         let da = (x - (a.0 + a.1) / 2.0).abs();
                         let db = (x - (b.0 + b.1) / 2.0).abs();
-                        da.partial_cmp(&db).unwrap()
+                        da.total_cmp(&db)
                     })
                     .map(|(i, _)| i)
                     .unwrap_or(0)

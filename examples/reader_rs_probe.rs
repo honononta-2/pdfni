@@ -1,0 +1,120 @@
+//! 純Rustリーダーの parts を pdfium_probe 同一スキーマで JSON 出力する
+
+use reticella::{Orientation, read_pages_rs};
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct Glyph {
+    ch: char,
+    x0: f64,
+    x1: f64,
+    top: f64,
+    bottom: f64,
+}
+
+#[derive(Serialize)]
+struct Edge {
+    orient: &'static str,
+    x0: f64,
+    x1: f64,
+    top: f64,
+    bottom: f64,
+}
+
+#[derive(Serialize)]
+struct PageOut {
+    width: f64,
+    height: f64,
+    rotate: i32,
+    glyphs: Vec<Glyph>,
+    edges: Vec<Edge>,
+}
+
+#[derive(Serialize)]
+struct DocOut {
+    source: String,
+    pages: Vec<PageOut>,
+}
+
+fn main() {
+    let mut args = std::env::args().skip(1);
+    let input = args.next().unwrap_or_else(|| {
+        eprintln!("usage: reader_rs_probe <input.pdf> <output.json>");
+        std::process::exit(2);
+    });
+    let out_path = args.next().unwrap_or_else(|| {
+        eprintln!("usage: reader_rs_probe <input.pdf> <output.json>");
+        std::process::exit(2);
+    });
+
+    let bytes = match std::fs::read(&input) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("failed to read {input}: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let pages_in = match read_pages_rs(&bytes, None) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("read failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let pages: Vec<PageOut> = pages_in
+        .into_iter()
+        .map(|p| PageOut {
+            width: p.width,
+            height: p.height,
+            rotate: 0,
+            glyphs: p
+                .glyphs
+                .into_iter()
+                .map(|g| Glyph {
+                    ch: g.ch,
+                    x0: g.left,
+                    x1: g.right,
+                    top: g.top,
+                    bottom: g.bottom,
+                })
+                .collect(),
+            edges: p
+                .edges
+                .into_iter()
+                .map(|e| Edge {
+                    orient: match e.orientation {
+                        Orientation::Vertical => "V",
+                        Orientation::Horizontal => "H",
+                    },
+                    x0: e.left,
+                    x1: e.right,
+                    top: e.top,
+                    bottom: e.bottom,
+                })
+                .collect(),
+        })
+        .collect();
+
+    let out = DocOut {
+        source: input,
+        pages,
+    };
+    let json = serde_json::to_string(&out).unwrap();
+    if let Err(e) = std::fs::write(&out_path, json) {
+        eprintln!("failed to write {out_path}: {e}");
+        std::process::exit(1);
+    }
+    eprintln!("=> {out_path}");
+    for pg in &out.pages {
+        eprintln!(
+            "  page rotate={} {:.0}x{:.0} glyphs={} edges={}",
+            pg.rotate,
+            pg.width,
+            pg.height,
+            pg.glyphs.len(),
+            pg.edges.len()
+        );
+    }
+}

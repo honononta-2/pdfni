@@ -25,6 +25,9 @@ pub enum Error {
 
     #[error("pdfium error: {0}")]
     Pdfium(String),
+
+    #[error("pure Rust reader error: {0}")]
+    ReaderRs(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -1,4 +1,6 @@
 //! 罫線方式の表検出
+//!
+//! 行細分と列整合検査の考え方は特許 US 11977534 の明細書に由来
 
 use crate::edges_geom::{join_edge_group, snap_edges};
 use crate::model::{BBox, Cell, Edge, Orientation, Table};

@@ -152,11 +152,11 @@ fn cell_text(chars: &[Glyph], cell: &BBox) -> String {
     }
 
     let mut heights: Vec<f64> = hits.iter().map(|(_, g)| g.bbox.height()).collect();
-    heights.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    heights.sort_by(|a, b| a.total_cmp(b));
     let median_h = heights[heights.len() / 2];
     let line_tol = (median_h * 0.6).max(0.5);
 
-    hits.sort_by(|a, b| a.1.bbox.bottom.partial_cmp(&b.1.bbox.bottom).unwrap());
+    hits.sort_by(|a, b| a.1.bbox.bottom.total_cmp(&b.1.bbox.bottom));
     let mut lines: Vec<Vec<(usize, &Glyph)>> = Vec::new();
     let mut cur: Vec<(usize, &Glyph)> = Vec::new();
     let mut last_bottom = f64::NEG_INFINITY;
@@ -185,7 +185,7 @@ fn cell_text(chars: &[Glyph], cell: &BBox) -> String {
 
     let mut out = Vec::with_capacity(lines.len());
     for mut line in lines {
-        line.sort_by(|a, b| a.1.bbox.x0.partial_cmp(&b.1.bbox.x0).unwrap());
+        line.sort_by(|a, b| a.1.bbox.x0.total_cmp(&b.1.bbox.x0));
         let s: String = line.iter().map(|(_, g)| g.ch).collect();
         let s = s.trim();
         if !s.is_empty() {
@@ -204,7 +204,7 @@ fn build_segments(chars: &[Glyph]) -> Vec<Seg> {
         return Vec::new();
     }
     let mut heights: Vec<f64> = solid.iter().map(|&i| chars[i].bbox.height()).collect();
-    heights.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    heights.sort_by(|a, b| a.total_cmp(b));
     let med_h = heights[heights.len() / 2];
     let line_tol = (med_h * 0.6).max(0.5);
     let seg_gap = (med_h).max(1.0);
@@ -214,8 +214,7 @@ fn build_segments(chars: &[Glyph]) -> Vec<Seg> {
         chars[a]
             .bbox
             .bottom
-            .partial_cmp(&chars[b].bbox.bottom)
-            .unwrap()
+            .total_cmp(&chars[b].bbox.bottom)
     });
 
     let mut lines: Vec<Vec<usize>> = Vec::new();
@@ -259,7 +258,7 @@ fn build_segments(chars: &[Glyph]) -> Vec<Seg> {
 
     let mut segs = Vec::new();
     for mut line in lines {
-        line.sort_by(|&a, &b| chars[a].bbox.x0.partial_cmp(&chars[b].bbox.x0).unwrap());
+        line.sort_by(|&a, &b| chars[a].bbox.x0.total_cmp(&chars[b].bbox.x0));
         let mut text = String::new();
         let mut bb: Option<BBox> = None;
         let mut last_x1 = f64::NEG_INFINITY;
@@ -312,7 +311,7 @@ fn lattice_cols_too_coarse(t: &Table, segs: &[Seg], margin: usize) -> bool {
         return false;
     }
     let mut hs: Vec<f64> = inside.iter().map(|s| s.bbox.height()).collect();
-    hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    hs.sort_by(|a, b| a.total_cmp(b));
     let line_tol = (hs[hs.len() / 2] * 0.6).max(0.5);
     let bottoms: Vec<f64> = inside.iter().map(|s| s.bbox.bottom).collect();
     let ids = detect_text::cluster_ids(&bottoms, line_tol);
@@ -373,10 +372,10 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph]) -> Vec<f64> {
             continue;
         }
         heights.extend(gs.iter().map(|g| g.bbox.height()));
-        gs.sort_by(|a, b| a.bbox.bottom.partial_cmp(&b.bbox.bottom).unwrap());
+        gs.sort_by(|a, b| a.bbox.bottom.total_cmp(&b.bbox.bottom));
         let med_h = {
             let mut hs: Vec<f64> = gs.iter().map(|g| g.bbox.height()).collect();
-            hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            hs.sort_by(|a, b| a.total_cmp(b));
             hs[hs.len() / 2]
         };
         let line_tol = (med_h * 0.6).max(0.5);
@@ -414,7 +413,7 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph]) -> Vec<f64> {
         return Vec::new();
     }
 
-    heights.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    heights.sort_by(|a, b| a.total_cmp(b));
     let row_tol = (heights[heights.len() / 2] * 0.6).max(0.5);
     let ids = detect_text::cluster_ids(&marks.iter().map(|m| m.bot).collect::<Vec<_>>(), row_tol);
     let n = ids.iter().copied().max().unwrap_or(0) + 1;
@@ -434,7 +433,7 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph]) -> Vec<f64> {
     let splits = |i: usize| cols[i].len() >= 2 && typed_any[i];
 
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| top[a].partial_cmp(&top[b]).unwrap());
+    order.sort_by(|&a, &b| top[a].total_cmp(&top[b]));
     let mut out = Vec::new();
     for w in order.windows(2) {
         if splits(w[1]) {
@@ -534,9 +533,23 @@ fn prune_empty(t: &mut Table) {
         .filter(|&r| t.data[r].iter().any(|cell| !cell.text.trim().is_empty()))
         .collect();
 
+    let empty_cell = || Cell {
+        text: String::new(),
+        bbox: BBox {
+            x0: 0.0,
+            top: 0.0,
+            x1: 0.0,
+            bottom: 0.0,
+        },
+    };
     let data: Vec<Vec<Cell>> = keep_rows
         .iter()
-        .map(|&r| keep_cols.iter().map(|&c| t.data[r][c].clone()).collect())
+        .map(|&r| {
+            keep_cols
+                .iter()
+                .map(|&c| t.data[r].get(c).cloned().unwrap_or_else(empty_cell))
+                .collect()
+        })
         .collect();
     t.n_rows = data.len();
     t.n_cols = keep_cols.len();
@@ -635,11 +648,21 @@ pub fn extract_from_bytes_wasm(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<Document> {
-    let pdfium = reader::bind_pdfium()?;
-    let doc = pdfium.load_pdf_from_byte_vec(bytes.to_vec(), password)?;
-    Ok(Document {
-        source: "<pdf>".to_string(),
-        pages: extract_pages(&doc, options)?,
+    use std::cell::OnceCell;
+    // wasm 用の pdfium シングルトン
+    thread_local! {
+        static PDFIUM_WASM: OnceCell<Pdfium> = const { OnceCell::new() };
+    }
+    PDFIUM_WASM.with(|cell| {
+        if cell.get().is_none() {
+            let _ = cell.set(reader::bind_pdfium()?);
+        }
+        let pdfium = cell.get().expect("just initialized");
+        let doc = pdfium.load_pdf_from_byte_vec(bytes.to_vec(), password)?;
+        Ok(Document {
+            source: "<pdf>".to_string(),
+            pages: extract_pages(&doc, options)?,
+        })
     })
 }
 
@@ -655,10 +678,10 @@ pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Doc
                 .map(|g| Glyph {
                     ch: g.ch,
                     bbox: BBox {
-                        x0: g.left,
-                        top: g.top,
-                        x1: g.right,
-                        bottom: g.bottom,
+                        x0: g.left.min(g.right),
+                        top: g.top.min(g.bottom),
+                        x1: g.left.max(g.right),
+                        bottom: g.top.max(g.bottom),
                     },
                 })
                 .collect();
@@ -666,10 +689,10 @@ pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Doc
                 .edges
                 .into_iter()
                 .map(|e| Edge {
-                    x0: e.left,
-                    top: e.top,
-                    x1: e.right,
-                    bottom: e.bottom,
+                    x0: e.left.min(e.right),
+                    top: e.top.min(e.bottom),
+                    x1: e.left.max(e.right),
+                    bottom: e.top.max(e.bottom),
                     orientation: e.orientation,
                 })
                 .collect();
@@ -761,9 +784,8 @@ fn detect_tables(chars: &[Glyph], edges: &[Edge], options: &ExtractOptions) -> V
     tables.sort_by(|a, b| {
         a.bbox
             .top
-            .partial_cmp(&b.bbox.top)
-            .unwrap()
-            .then_with(|| a.bbox.x0.partial_cmp(&b.bbox.x0).unwrap())
+            .total_cmp(&b.bbox.top)
+            .then_with(|| a.bbox.x0.total_cmp(&b.bbox.x0))
     });
     tables
 }

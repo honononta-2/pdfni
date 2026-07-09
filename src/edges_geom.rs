@@ -50,7 +50,7 @@ where
         return;
     }
 
-    edges.sort_by(|a, b| key(a).partial_cmp(&key(b)).unwrap());
+    edges.sort_by(|a, b| key(a).total_cmp(&key(b)));
 
     let mut cluster_start = 0;
     let mut prev = key(&edges[0]);
@@ -137,9 +137,8 @@ where
 
     edges.sort_by(|a, b| {
         key(a)
-            .partial_cmp(&key(b))
-            .unwrap()
-            .then_with(|| span(a).0.partial_cmp(&span(b).0).unwrap())
+            .total_cmp(&key(b))
+            .then_with(|| span(a).0.total_cmp(&span(b).0))
     });
 
     let mut result = Vec::new();

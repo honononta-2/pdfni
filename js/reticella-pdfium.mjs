@@ -4,18 +4,32 @@
 
 import initWasm, * as core from '../pkg-pdfium/reticella.js';
 
-let ready;
+// 初回 init の完了を共有する Promise
+let initializing;
+let ready = false;
 
 // wasm コアと pdfium モジュールを束ねて初期化する
 // pdfiumModule: pdfium.wasm のグルーが公開する Emscripten Module オブジェクト
 // wasmUrl: pkg-pdfium/reticella_bg.wasm の場所、省略時は同梱を new URL で解決
 // ローカルモジュールはオブジェクトである必要がある
-export async function init({ pdfiumModule, wasmUrl, debug = false } = {}) {
+export function init(opts = {}) {
+  initializing ??= doInit(opts).then(
+    () => {
+      ready = true;
+    },
+    (e) => {
+      initializing = undefined;
+      throw e;
+    },
+  );
+  return initializing;
+}
+
+async function doInit({ pdfiumModule, wasmUrl, debug = false }) {
   const local = await initWasm(wasmUrl ? { module_or_path: wasmUrl } : undefined);
   if (!core.initialize_pdfium_render(pdfiumModule, local, debug)) {
     throw new Error('initialize_pdfium_render に失敗しました');
   }
-  ready = true;
 }
 
 // PDF バイト列から表を抽出する
