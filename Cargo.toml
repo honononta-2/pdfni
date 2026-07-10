@@ -43,6 +43,10 @@ cmap-gb1 = []
 cmap-cns1 = []
 cmap-korea1 = []
 
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
 [dependencies]
 anyhow = "1.0.102"
 thiserror = "2"

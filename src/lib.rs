@@ -7,6 +7,7 @@ mod edges_geom;
 mod error;
 mod extract;
 mod model;
+mod par;
 #[cfg(feature = "pdfium")]
 mod reader;
 #[cfg(feature = "reader-rs")]

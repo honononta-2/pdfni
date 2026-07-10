@@ -2,8 +2,9 @@
 //!
 //! 幅・ToUnicode・ascent/descent。準拠: pdf.js evaluator/fonts、specs/05
 
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use super::cmap::{utf16be_bytes_to_string, CMap, MapValue};
 use super::data::{
@@ -66,8 +67,8 @@ impl LoadedFont {
     /// 文字列バイト列をグリフ列に分解する
     ///
     /// 戻り値: (unicode文字列, グリフ空間の字送り幅(/1000), 元コードが1バイト空白か)
-    pub fn chars_to_glyphs(&self, bytes: &[u8]) -> Vec<(String, f64, bool)> {
-        let mut out = Vec::new();
+    pub fn chars_to_glyphs(&self, bytes: &[u8]) -> Vec<(Cow<'_, str>, f64, bool)> {
+        let mut out = Vec::with_capacity(bytes.len());
         if let Some(cmap) = &self.encoding_cmap {
             let mut i = 0;
             while i < bytes.len() {
@@ -99,30 +100,30 @@ impl LoadedFont {
         out
     }
 
-    fn resolve_unicode(&self, charcode: u32, cid: u32, composite: bool) -> String {
+    fn resolve_unicode(&self, charcode: u32, cid: u32, composite: bool) -> Cow<'_, str> {
         if let Some(s) = self.to_unicode.get(&charcode) {
-            return s.clone();
+            return Cow::Borrowed(s.as_str());
         }
         if self.identity_tounicode {
-            return codepoint_to_string(charcode);
+            return Cow::Owned(codepoint_to_string(charcode));
         }
         if composite {
             if let Some(ucs2) = &self.ucs2_cmap {
                 if let Some(MapValue::Bytes(b)) = ucs2.lookup(cid) {
                     let s = utf16be_bytes_to_string(&b);
                     if !s.is_empty() {
-                        return s;
+                        return Cow::Owned(s);
                     }
                 }
             }
-            return codepoint_to_string(charcode);
+            return Cow::Owned(codepoint_to_string(charcode));
         }
         // 単純フォント: Encoding+AGL は load 時に to_unicode へ展開済み
         // ここに来るのは未登録スロット → Latin-1 暫定
         if charcode <= 0xff {
-            return char::from(charcode as u8).to_string();
+            return Cow::Owned(char::from(charcode as u8).to_string());
         }
-        codepoint_to_string(charcode)
+        Cow::Owned(codepoint_to_string(charcode))
     }
 
     /// 符号化 CMap が縦書きか
@@ -156,8 +157,8 @@ fn charcode_to_cid(cmap: &CMap, charcode: u32) -> u32 {
 }
 
 /// オブジェクト番号 → フォントのプロセス内キャッシュ
-fn font_cache() -> &'static Mutex<HashMap<u32, LoadedFont>> {
-    static CACHE: OnceLock<Mutex<HashMap<u32, LoadedFont>>> = OnceLock::new();
+fn font_cache() -> &'static Mutex<HashMap<u32, Arc<LoadedFont>>> {
+    static CACHE: OnceLock<Mutex<HashMap<u32, Arc<LoadedFont>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -167,16 +168,16 @@ pub(crate) fn lookup_font(
     name: &str,
     data: &[u8],
     xref: Option<&XRef>,
-) -> LoadedFont {
+) -> Arc<LoadedFont> {
     let Some(font_res) = resources.get("Font") else {
-        return LoadedFont::stub(name);
+        return Arc::new(LoadedFont::stub(name));
     };
     let fonts = match resolve_obj(font_res, data, xref) {
         Object::Dict(d) => d,
-        _ => return LoadedFont::stub(name),
+        _ => return Arc::new(LoadedFont::stub(name)),
     };
     let Some(entry) = fonts.get(name) else {
-        return LoadedFont::stub(name);
+        return Arc::new(LoadedFont::stub(name));
     };
 
     // 参照番号でキャッシュ
@@ -186,14 +187,14 @@ pub(crate) fn lookup_font(
                 return cached.clone();
             }
         }
-        let loaded = load_font_object(entry, name, data, xref);
+        let loaded = Arc::new(load_font_object(entry, name, data, xref));
         if let Ok(mut guard) = font_cache().lock() {
             guard.insert(r.num, loaded.clone());
         }
         return loaded;
     }
 
-    load_font_object(entry, name, data, xref)
+    Arc::new(load_font_object(entry, name, data, xref))
 }
 
 fn load_font_object(

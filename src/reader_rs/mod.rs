@@ -37,33 +37,34 @@ pub fn read_pages_rs(bytes: &[u8], password: Option<&str>) -> Result<Vec<PagePar
     // 空パスワード → 引数パスワードは CipherFactory 内で試す
     let xref = XRef::parse_with_password(bytes, password)?;
     let page_infos = collect_pages(bytes, &xref)?;
-    let ctx = ContentCtx {
-        data: bytes,
-        xref: Some(&xref),
-    };
-    Ok(page_infos
-        .into_iter()
-        .map(|p| {
-            let (glyphs, edges, graphics, norm_rotate) =
-                extract_parts(&p.contents, &p.resources, p.view, ContentCtx {
-                    data: ctx.data,
-                    xref: ctx.xref,
-                }, p.rotate);
-            let (mut width, mut height) = (view_width(p.view), view_height(p.view));
-            if p.rotate == 90 || p.rotate == 270 {
-                std::mem::swap(&mut width, &mut height);
-            }
-            if norm_rotate == 90 || norm_rotate == 270 {
-                std::mem::swap(&mut width, &mut height);
-            }
-            PagePart {
-                width,
-                height,
-                glyphs,
-                edges,
-                norm_rotate,
-                graphics,
-            }
-        })
-        .collect())
+    // xref の内部キャッシュはスレッド共有できないためスレッドごとに複製する
+    Ok(crate::par::map_ordered(
+        page_infos,
+        || xref.clone(),
+        |xref, _, p| build_page_part(p, bytes, xref),
+    ))
+}
+
+/// ページ1枚分の parts を構築する
+fn build_page_part(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> PagePart {
+    let (glyphs, edges, graphics, norm_rotate) =
+        extract_parts(&p.contents, &p.resources, p.view, ContentCtx {
+            data: bytes,
+            xref: Some(xref),
+        }, p.rotate);
+    let (mut width, mut height) = (view_width(p.view), view_height(p.view));
+    if p.rotate == 90 || p.rotate == 270 {
+        std::mem::swap(&mut width, &mut height);
+    }
+    if norm_rotate == 90 || norm_rotate == 270 {
+        std::mem::swap(&mut width, &mut height);
+    }
+    PagePart {
+        width,
+        height,
+        glyphs,
+        edges,
+        norm_rotate,
+        graphics,
+    }
 }

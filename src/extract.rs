@@ -171,12 +171,44 @@ fn strip_cjk_spaces(s: &str) -> String {
     out
 }
 
+/// センターY昇順の文字索引
+///
+/// セル充当の文字走査をページ全文字からY範囲内へ絞る
+struct CharIndex {
+    by_cy: Vec<(f64, u32)>,
+}
+
+impl CharIndex {
+    fn new(chars: &[Glyph]) -> Self {
+        let mut by_cy: Vec<(f64, u32)> = chars
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (g.bbox.cy(), i as u32))
+            .collect();
+        by_cy.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        Self { by_cy }
+    }
+
+    /// bb にセンターが入る文字の元indexを昇順で返す
+    fn in_box(&self, chars: &[Glyph], bb: &BBox) -> Vec<usize> {
+        let lo = self.by_cy.partition_point(|&(cy, _)| cy < bb.top);
+        let hi = self.by_cy.partition_point(|&(cy, _)| cy < bb.bottom);
+        let mut ids: Vec<usize> = self.by_cy[lo..hi]
+            .iter()
+            .filter(|&&(_, i)| bb.contains_center(&chars[i as usize].bbox))
+            .map(|&(_, i)| i as usize)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+}
+
 /// セル内テキストの組み立て
-fn cell_text(chars: &[Glyph], cell: &BBox) -> String {
-    let mut hits: Vec<(usize, &Glyph)> = chars
-        .iter()
-        .enumerate()
-        .filter(|(_, g)| cell.contains_center(&g.bbox))
+fn cell_text(chars: &[Glyph], index: &CharIndex, cell: &BBox) -> String {
+    let mut hits: Vec<(usize, &Glyph)> = index
+        .in_box(chars, cell)
+        .into_iter()
+        .map(|i| (i, &chars[i]))
         .collect();
     if hits.is_empty() {
         return String::new();
@@ -398,16 +430,23 @@ struct LineMark {
 }
 
 /// 罫線行内を細分する行境界の算出
-fn row_split_boundaries(row: &[Cell], chars: &[Glyph], scale: Option<f64>) -> Vec<f64> {
+fn row_split_boundaries(
+    row: &[Cell],
+    chars: &[Glyph],
+    index: &CharIndex,
+    scale: Option<f64>,
+) -> Vec<f64> {
     let mut marks: Vec<LineMark> = Vec::new();
     let mut heights: Vec<f64> = Vec::new();
     for (c, cell) in row.iter().enumerate() {
         if cell.bbox.width() <= 0.0 || cell.bbox.height() <= 0.0 {
             continue;
         }
-        let mut gs: Vec<&Glyph> = chars
-            .iter()
-            .filter(|g| !g.ch.is_whitespace() && cell.bbox.contains_center(&g.bbox))
+        let mut gs: Vec<&Glyph> = index
+            .in_box(chars, &cell.bbox)
+            .into_iter()
+            .map(|i| &chars[i])
+            .filter(|g| !g.ch.is_whitespace())
             .collect();
         if gs.is_empty() {
             continue;
@@ -498,7 +537,7 @@ fn col_split_allowed(gs: &[&Glyph], x: f64, gap_min: f64) -> bool {
 }
 
 /// 疎罫線で複数列にまたがるセルを格子の列軸で細分する
-fn refine_lattice_cols(t: &mut Table, chars: &[Glyph], scale: Option<f64>) {
+fn refine_lattice_cols(t: &mut Table, chars: &[Glyph], index: &CharIndex, scale: Option<f64>) {
     if t.n_cols < 2 {
         return;
     }
@@ -526,9 +565,11 @@ fn refine_lattice_cols(t: &mut Table, chars: &[Glyph], scale: Option<f64>) {
             if bounds.is_empty() {
                 continue;
             }
-            let gs: Vec<&Glyph> = chars
-                .iter()
-                .filter(|g| !g.ch.is_whitespace() && cell.bbox.contains_center(&g.bbox))
+            let gs: Vec<&Glyph> = index
+                .in_box(chars, &cell.bbox)
+                .into_iter()
+                .map(|i| &chars[i])
+                .filter(|g| !g.ch.is_whitespace())
                 .collect();
             let gap_min = 0.5
                 * scale.unwrap_or_else(|| {
@@ -554,7 +595,7 @@ fn refine_lattice_cols(t: &mut Table, chars: &[Glyph], scale: Option<f64>) {
                     bottom,
                 };
                 row[slot] = Cell {
-                    text: cell_text(chars, &bb),
+                    text: cell_text(chars, index, &bb),
                     bbox: bb,
                 };
                 slot = b;
@@ -565,11 +606,11 @@ fn refine_lattice_cols(t: &mut Table, chars: &[Glyph], scale: Option<f64>) {
 }
 
 /// 疎罫線の罫線行内をテキスト行で細分する
-fn refine_lattice_rows(t: &mut Table, chars: &[Glyph], scale: Option<f64>) {
+fn refine_lattice_rows(t: &mut Table, chars: &[Glyph], index: &CharIndex, scale: Option<f64>) {
     let mut new_data: Vec<Vec<Cell>> = Vec::with_capacity(t.data.len());
     let mut changed = false;
     for row in &t.data {
-        let bounds = row_split_boundaries(row, chars, scale);
+        let bounds = row_split_boundaries(row, chars, index, scale);
         if bounds.is_empty() {
             new_data.push(row.clone());
             continue;
@@ -602,7 +643,7 @@ fn refine_lattice_rows(t: &mut Table, chars: &[Glyph], scale: Option<f64>) {
                         bottom,
                     };
                     new_row.push(Cell {
-                        text: cell_text(chars, &bb),
+                        text: cell_text(chars, index, &bb),
                         bbox: bb,
                     });
                 } else {
@@ -821,139 +862,138 @@ fn fs_threshold_scale(glyphs: &[GlyphPart]) -> Option<f64> {
 
 /// 外部リーダーが取り出した文字と線分からの全ページ表抽出
 pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Document {
-    let out = pages
-        .into_iter()
-        .enumerate()
-        .map(|(pi, part)| {
-            let scale = fs_threshold_scale(&part.glyphs);
-            let to_glyph = |g: &GlyphPart| Glyph {
-                ch: g.ch,
-                bbox: BBox {
-                    x0: g.left.min(g.right),
-                    top: g.top.min(g.bottom),
-                    x1: g.left.max(g.right),
-                    bottom: g.top.max(g.bottom),
-                },
-            };
-            let chars: Vec<Glyph> = part.glyphs.iter().filter(|g| g.upright).map(to_glyph).collect();
-            let mut edges: Vec<Edge> = part
-                .edges
-                .iter()
-                .map(|e| Edge {
-                    x0: e.left.min(e.right),
-                    top: e.top.min(e.bottom),
-                    x1: e.left.max(e.right),
-                    bottom: e.top.max(e.bottom),
-                    orientation: e.orientation,
-                })
-                .collect();
-            // 字高スケール未満の線分片（グラフの曲線・破線の断片）は罫線候補にしない
-            if let Some(s) = scale {
-                edges.retain(|e| e.length() >= 0.5 * s);
-            }
-            let mut tables = detect_tables(&chars, &edges, options, scale);
-
-            // ページ内で部分的に回転している表の検出
-            // 同じ回転角のグリフ群を回転フレームへ写して検出し 結果を戻して合流する
-            for rot in [90, 180, 270] {
-                let group: Vec<&GlyphPart> = part
-                    .glyphs
-                    .iter()
-                    .filter(|g| !g.upright && g.rot == rot)
-                    .collect();
-                if group.iter().filter(|g| !g.ch.is_whitespace()).count()
-                    < options.text.min_table_segs
-                {
-                    continue;
-                }
-                let (w, h) = (part.width, part.height);
-                let chars_r: Vec<Glyph> = group
-                    .iter()
-                    .map(|g| {
-                        let mut gl = to_glyph(g);
-                        gl.bbox = norm_box(&gl.bbox, rot, w, h);
-                        gl
-                    })
-                    .collect();
-                let edges_r: Vec<Edge> = edges
-                    .iter()
-                    .map(|e| {
-                        let bb = norm_box(
-                            &BBox {
-                                x0: e.x0,
-                                top: e.top,
-                                x1: e.x1,
-                                bottom: e.bottom,
-                            },
-                            rot,
-                            w,
-                            h,
-                        );
-                        Edge {
-                            x0: bb.x0,
-                            top: bb.top,
-                            x1: bb.x1,
-                            bottom: bb.bottom,
-                            orientation: if rot == 180 {
-                                e.orientation
-                            } else {
-                                match e.orientation {
-                                    Orientation::Horizontal => Orientation::Vertical,
-                                    Orientation::Vertical => Orientation::Horizontal,
-                                }
-                            },
-                        }
-                    })
-                    .collect();
-                let (fw, fh) = if rot == 180 { (w, h) } else { (h, w) };
-                for mut t in detect_tables(&chars_r, &edges_r, options, scale) {
-                    t.bbox = denorm_box(&t.bbox, rot, fw, fh);
-                    for cell in t.data.iter_mut().flatten() {
-                        if cell.bbox.width() > 0.0 || cell.bbox.height() > 0.0 {
-                            cell.bbox = denorm_box(&cell.bbox, rot, fw, fh);
-                        }
-                    }
-                    if !overlaps_any(&t.bbox, &tables) {
-                        tables.push(t);
-                    }
-                }
-            }
-            // チャート領域(曲線・斜め線に覆われた領域)の候補を棄却する
-            tables.retain(|t| graphics_coverage(&t.bbox, &part.graphics) < GRAPHICS_COVER_MAX);
-            tables.sort_by(|a, b| {
-                a.bbox
-                    .top
-                    .total_cmp(&b.bbox.top)
-                    .then_with(|| a.bbox.x0.total_cmp(&b.bbox.x0))
-            });
-
-            let (mut width, mut height) = (part.width, part.height);
-            if part.norm_rotate != 0 {
-                // リーダーの正規化回転を戻し元のページ座標系で出力する
-                for t in &mut tables {
-                    t.bbox = denorm_box(&t.bbox, part.norm_rotate, part.width, part.height);
-                    for cell in t.data.iter_mut().flatten() {
-                        if cell.bbox.width() > 0.0 || cell.bbox.height() > 0.0 {
-                            cell.bbox =
-                                denorm_box(&cell.bbox, part.norm_rotate, part.width, part.height);
-                        }
-                    }
-                }
-                if part.norm_rotate != 180 {
-                    std::mem::swap(&mut width, &mut height);
-                }
-            }
-            Page {
-                page_number: pi + 1,
-                width,
-                height,
-                tables,
-            }
-        })
-        .collect();
+    let out = crate::par::map_ordered(pages, || (), |_, pi, part| detect_page(pi, part, options));
     Document {
         source: "<parts>".to_string(),
         pages: out,
+    }
+}
+
+/// 1ページ分の表検出と出力座標系への復元
+fn detect_page(pi: usize, part: PagePart, options: &ExtractOptions) -> Page {
+    let scale = fs_threshold_scale(&part.glyphs);
+    let to_glyph = |g: &GlyphPart| Glyph {
+        ch: g.ch,
+        bbox: BBox {
+            x0: g.left.min(g.right),
+            top: g.top.min(g.bottom),
+            x1: g.left.max(g.right),
+            bottom: g.top.max(g.bottom),
+        },
+    };
+    let chars: Vec<Glyph> = part.glyphs.iter().filter(|g| g.upright).map(to_glyph).collect();
+    let mut edges: Vec<Edge> = part
+        .edges
+        .iter()
+        .map(|e| Edge {
+            x0: e.left.min(e.right),
+            top: e.top.min(e.bottom),
+            x1: e.left.max(e.right),
+            bottom: e.top.max(e.bottom),
+            orientation: e.orientation,
+        })
+        .collect();
+    // 字高スケール未満の線分片（グラフの曲線・破線の断片）は罫線候補にしない
+    if let Some(s) = scale {
+        edges.retain(|e| e.length() >= 0.5 * s);
+    }
+    let mut tables = detect_tables(&chars, &edges, options, scale);
+
+    // ページ内で部分的に回転している表の検出
+    // 同じ回転角のグリフ群を回転フレームへ写して検出し 結果を戻して合流する
+    for rot in [90, 180, 270] {
+        let group: Vec<&GlyphPart> = part
+            .glyphs
+            .iter()
+            .filter(|g| !g.upright && g.rot == rot)
+            .collect();
+        if group.iter().filter(|g| !g.ch.is_whitespace()).count()
+            < options.text.min_table_segs
+        {
+            continue;
+        }
+        let (w, h) = (part.width, part.height);
+        let chars_r: Vec<Glyph> = group
+            .iter()
+            .map(|g| {
+                let mut gl = to_glyph(g);
+                gl.bbox = norm_box(&gl.bbox, rot, w, h);
+                gl
+            })
+            .collect();
+        let edges_r: Vec<Edge> = edges
+            .iter()
+            .map(|e| {
+                let bb = norm_box(
+                    &BBox {
+                        x0: e.x0,
+                        top: e.top,
+                        x1: e.x1,
+                        bottom: e.bottom,
+                    },
+                    rot,
+                    w,
+                    h,
+                );
+                Edge {
+                    x0: bb.x0,
+                    top: bb.top,
+                    x1: bb.x1,
+                    bottom: bb.bottom,
+                    orientation: if rot == 180 {
+                        e.orientation
+                    } else {
+                        match e.orientation {
+                            Orientation::Horizontal => Orientation::Vertical,
+                            Orientation::Vertical => Orientation::Horizontal,
+                        }
+                    },
+                }
+            })
+            .collect();
+        let (fw, fh) = if rot == 180 { (w, h) } else { (h, w) };
+        for mut t in detect_tables(&chars_r, &edges_r, options, scale) {
+            t.bbox = denorm_box(&t.bbox, rot, fw, fh);
+            for cell in t.data.iter_mut().flatten() {
+                if cell.bbox.width() > 0.0 || cell.bbox.height() > 0.0 {
+                    cell.bbox = denorm_box(&cell.bbox, rot, fw, fh);
+                }
+            }
+            if !overlaps_any(&t.bbox, &tables) {
+                tables.push(t);
+            }
+        }
+    }
+    // チャート領域(曲線・斜め線に覆われた領域)の候補を棄却する
+    tables.retain(|t| graphics_coverage(&t.bbox, &part.graphics) < GRAPHICS_COVER_MAX);
+    tables.sort_by(|a, b| {
+        a.bbox
+            .top
+            .total_cmp(&b.bbox.top)
+            .then_with(|| a.bbox.x0.total_cmp(&b.bbox.x0))
+    });
+
+    let (mut width, mut height) = (part.width, part.height);
+    if part.norm_rotate != 0 {
+        // リーダーの正規化回転を戻し元のページ座標系で出力する
+        for t in &mut tables {
+            t.bbox = denorm_box(&t.bbox, part.norm_rotate, part.width, part.height);
+            for cell in t.data.iter_mut().flatten() {
+                if cell.bbox.width() > 0.0 || cell.bbox.height() > 0.0 {
+                    cell.bbox =
+                        denorm_box(&cell.bbox, part.norm_rotate, part.width, part.height);
+                }
+            }
+        }
+        if part.norm_rotate != 180 {
+            std::mem::swap(&mut width, &mut height);
+        }
+    }
+    Page {
+        page_number: pi + 1,
+        width,
+        height,
+        tables,
     }
 }
 
@@ -1048,7 +1088,8 @@ fn detect_tables(
     options: &ExtractOptions,
     scale: Option<f64>,
 ) -> Vec<Table> {
-    let fill = |b: &BBox| cell_text(chars, b);
+    let index = CharIndex::new(chars);
+    let fill = |b: &BBox| cell_text(chars, &index, b);
     let use_lattice = options.mode != DetectMode::Borderless;
     let use_hybrid = options.mode == DetectMode::Auto;
     let use_text = options.mode != DetectMode::Ruled;
@@ -1065,12 +1106,12 @@ fn detect_tables(
     }
     if options.lattice.refine_cols {
         for t in &mut tables {
-            refine_lattice_cols(t, chars, scale);
+            refine_lattice_cols(t, chars, &index, scale);
         }
     }
     if options.lattice.refine_rows {
         for t in &mut tables {
-            refine_lattice_rows(t, chars, scale);
+            refine_lattice_rows(t, chars, &index, scale);
         }
     }
     for t in &mut tables {
@@ -1258,7 +1299,7 @@ mod tests {
             glyph('a', 5.0, 10.0, 12.0, 18.0),
             glyph('b', 55.0, 60.0, 12.0, 18.0),
         ];
-        refine_lattice_cols(&mut t, &chars, None);
+        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None);
         assert_eq!(t.data[1][0].text, "a");
         assert_eq!(t.data[1][1].text, "b");
         assert_eq!(t.data[1][0].bbox.x1, 50.0);
@@ -1272,7 +1313,7 @@ mod tests {
             glyph('a', 5.0, 10.0, 12.0, 18.0),
             glyph('c', 45.0, 55.0, 12.0, 18.0),
         ];
-        refine_lattice_cols(&mut t, &chars, None);
+        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None);
         assert_eq!(t.data[1][0].bbox.x1, 100.0);
         assert_eq!(t.data[1][1].bbox.width(), 0.0);
     }
@@ -1284,7 +1325,7 @@ mod tests {
             glyph('a', 5.0, 49.0, 12.0, 18.0),
             glyph('b', 51.0, 95.0, 12.0, 18.0),
         ];
-        refine_lattice_cols(&mut t, &chars, None);
+        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None);
         assert_eq!(t.data[1][0].bbox.x1, 100.0);
     }
 
@@ -1324,7 +1365,7 @@ mod tests {
         let mut chars = Vec::new();
         two_lines(&mut chars, 0, "ab", "cd");
         two_lines(&mut chars, 1, "1E5", "2E6");
-        refine_lattice_rows(&mut t, &chars, None);
+        refine_lattice_rows(&mut t, &chars, &CharIndex::new(&chars), None);
         assert_eq!(t.n_rows, 2);
         assert_eq!(t.data[0][1].text, "1E5");
         assert_eq!(t.data[1][1].text, "2E6");
@@ -1339,7 +1380,7 @@ mod tests {
             for j in 0..n_cells {
                 two_lines(&mut chars, j, "ab", "cd");
             }
-            refine_lattice_rows(&mut t, &chars, None);
+            refine_lattice_rows(&mut t, &chars, &CharIndex::new(&chars), None);
             assert_eq!(t.n_rows, 1);
         }
     }
@@ -1374,7 +1415,7 @@ mod tests {
             glyph('b', 95.0, 99.0, 12.0, 18.0),
             glyph('c', 101.0, 110.0, 12.0, 18.0),
         ];
-        refine_lattice_cols(&mut t, &chars, None);
+        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None);
         assert_eq!(t.data[1][0].text, "a");
         assert_eq!(t.data[1][0].bbox.x1, 50.0);
         assert_eq!(t.data[1][1].text, "bc");

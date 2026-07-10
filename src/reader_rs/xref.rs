@@ -24,7 +24,7 @@ pub(crate) enum XrefEntry {
 }
 
 /// 相互参照表とオブジェクトキャッシュ
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) struct XRef {
     /// `%PDF-` 署名のファイル内オフセット（オフセット基準）

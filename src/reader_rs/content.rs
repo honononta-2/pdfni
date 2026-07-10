@@ -3,6 +3,7 @@
 //! 準拠: pdf.js evaluator.js、specs/04
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crate::extract::{EdgePart, GlyphPart, GraphicPart};
 use crate::model::Orientation;
@@ -301,7 +302,7 @@ struct TextState {
     text_h_scale: f64,
     text_rise: f64,
     leading: f64,
-    font: Option<LoadedFont>,
+    font: Option<Arc<LoadedFont>>,
 }
 
 impl TextState {
@@ -1091,14 +1092,13 @@ fn show_text_bytes(
         let upright = uy.abs() <= 0.05 && ux > 0.05;
 
         // コードポイントごとに分割し幅を等分
-        let chars: Vec<char> = unicode.chars().collect();
-        let nch = chars.len().max(1);
+        let nch = unicode.chars().count().max(1);
         let per_w = device_w / nch as f64;
         let a_off = ascent * font_size_dev;
         let d_off = descent * font_size_dev;
 
         let rot = quantize_rot(ux, uy);
-        for (k, ch) in chars.into_iter().enumerate() {
+        for (k, ch) in unicode.chars().enumerate() {
             if ch == '\n' || ch == '\r' || ch == '\t' {
                 continue;
             }
