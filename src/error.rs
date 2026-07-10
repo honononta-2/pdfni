@@ -19,7 +19,7 @@ pub enum Error {
     PageRead(String),
 
     #[error("pure Rust reader error: {0}")]
-    ReaderRs(String),
+    Reader(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

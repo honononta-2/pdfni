@@ -19,7 +19,7 @@
   <h1>reticella browser test</h1>
 
   <section>
-    <h2>reader-rs route (pure Rust wasm)</h2>
+    <h2>reader route (pure Rust wasm)</h2>
     <div class="row">
       <input type="file" id="pdf1" accept="application/pdf">
       <button id="run1">Extract</button>
@@ -29,7 +29,7 @@
   </section>
 
   <script type="module">
-    import init, { extract_tables_from_pdf_rs } from './pkg/reticella.js';
+    import init, { extract_tables_from_pdf } from './pkg/reticella.js';
 
     function fmt(doc) {
       const summary = doc.pages.map(p =>
@@ -46,7 +46,7 @@
       if (!f) { s.textContent = 'Choose a PDF first'; return; }
       s.textContent = 'Working...'; out.textContent = ''; out.className = '';
       try {
-        const doc = JSON.parse(extract_tables_from_pdf_rs(await bytes(f), undefined, undefined));
+        const doc = JSON.parse(extract_tables_from_pdf(await bytes(f), undefined, undefined));
         out.textContent = fmt(doc); s.textContent = 'Done';
       } catch (e) { out.className = 'err'; out.textContent = String(e && e.stack || e); s.textContent = 'Failed'; }
     };

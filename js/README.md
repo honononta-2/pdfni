@@ -1,20 +1,20 @@
 # reticella (JS/wasm)
 
-テキスト埋め込みPDFから表を抽出しJSONで返す。読み取りも検出も純Rustリーダー（reader_rs）の wasm ビルドで行い、pdf.js や pdfium などの外部PDFライブラリは不要。
+テキスト埋め込みPDFから表を抽出しJSONで返す。読み取りも検出も純Rustリーダー（reader）の wasm ビルドで行い、pdf.js や pdfium などの外部PDFライブラリは不要。
 
 ## ビルド
 
 ```
-wasm-pack build --release --target web --out-dir pkg --no-default-features --features reader-rs
+wasm-pack build --release --target web --out-dir pkg --no-default-features --features reader
 ```
 
 ## 使い方
 
 ```js
-import init, { extract_tables_from_pdf_rs } from './pkg/reticella.js';
+import init, { extract_tables_from_pdf } from './pkg/reticella.js';
 
 await init(); // 既定で pkg/reticella_bg.wasm を解決する
-const json = extract_tables_from_pdf_rs(pdfBytes, undefined, undefined); // 第2引数: オプションJSON、第3引数: パスワード（省略可）
+const json = extract_tables_from_pdf(pdfBytes, undefined, undefined); // 第2引数: オプションJSON、第3引数: パスワード（省略可）
 const doc = JSON.parse(json);
 ```
 

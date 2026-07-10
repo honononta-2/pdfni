@@ -1,6 +1,6 @@
 //! 純Rustリーダーの parts を pdfium_probe 同一スキーマで JSON 出力する
 
-use reticella::{GraphicPart, Orientation, read_pages_rs};
+use reticella::{GraphicPart, Orientation, read_pages};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -56,11 +56,11 @@ struct DocOut {
 fn main() {
     let mut args = std::env::args().skip(1);
     let input = args.next().unwrap_or_else(|| {
-        eprintln!("usage: reader_rs_probe <input.pdf> <output.json>");
+        eprintln!("usage: reader_probe <input.pdf> <output.json>");
         std::process::exit(2);
     });
     let out_path = args.next().unwrap_or_else(|| {
-        eprintln!("usage: reader_rs_probe <input.pdf> <output.json>");
+        eprintln!("usage: reader_probe <input.pdf> <output.json>");
         std::process::exit(2);
     });
 
@@ -72,7 +72,7 @@ fn main() {
         }
     };
 
-    let pages_in = match read_pages_rs(&bytes, None) {
+    let pages_in = match read_pages(&bytes, None) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("read failed: {e}");

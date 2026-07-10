@@ -22,9 +22,9 @@ pub fn extract_tables(input_json: &str) -> Result<String, JsError> {
 }
 
 /// PDF バイト列から純Rustリーダーで表抽出し Document の JSON を返す
-#[cfg(feature = "reader-rs")]
+#[cfg(feature = "reader")]
 #[wasm_bindgen]
-pub fn extract_tables_from_pdf_rs(
+pub fn extract_tables_from_pdf(
     bytes: &[u8],
     options_json: Option<String>,
     password: Option<String>,
@@ -35,7 +35,7 @@ pub fn extract_tables_from_pdf_rs(
         }
         _ => ExtractOptions::default(),
     };
-    let doc = crate::reader_rs::extract_from_bytes_rs(bytes, password.as_deref(), &options)
+    let doc = crate::reader::extract_from_bytes(bytes, password.as_deref(), &options)
         .map_err(|e| JsError::new(&e.to_string()))?;
     serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
 }

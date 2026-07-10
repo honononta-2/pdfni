@@ -1294,7 +1294,7 @@ fn parse_matrix(obj: Option<&Object>, ctx: &ContentCtx<'_>) -> Option<[f64; 6]> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reader_rs::object::Stream;
+    use crate::reader::object::Stream;
 
     fn edges_of(contents: &[u8], view: [f64; 4]) -> Vec<EdgePart> {
         extract_edges(

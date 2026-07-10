@@ -1,6 +1,6 @@
 # wasm-test
 
-Browser test page for the reader-rs wasm route (pure Rust reader + detection).
+Browser test page for the reader wasm route (pure Rust reader + detection).
 Open a PDF in the page and see the detected tables.
 
 Generated artifacts are not committed; produce them with the steps below.
@@ -10,7 +10,7 @@ Generated artifacts are not committed; produce them with the steps below.
 From the crate root (`reticella/`):
 
 ```sh
-wasm-pack build --release --target web --out-dir test/wasm-test/pkg --no-default-features --features reader-rs
+wasm-pack build --release --target web --out-dir test/wasm-test/pkg --no-default-features --features reader
 ```
 
 ## 2. Run

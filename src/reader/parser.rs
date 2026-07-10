@@ -157,7 +157,7 @@ impl<'a> Parser<'a> {
             length
         } else {
             self.find_stream_length(start).ok_or_else(|| {
-                Error::ReaderRs("Missing endstream command.".into())
+                Error::Reader("Missing endstream command.".into())
             })?
         };
 

@@ -158,17 +158,17 @@ impl CMap {
             return Ok(c);
         }
         if !is_built_in_cmap(name) {
-            return Err(Error::ReaderRs(format!("Unknown CMap name: {name}")));
+            return Err(Error::Reader(format!("Unknown CMap name: {name}")));
         }
         let Some(bytes) = bcmap_bytes(name) else {
-            return Err(Error::ReaderRs(format!(
+            return Err(Error::Reader(format!(
                 "CMap not bundled (feature disabled or missing): {name}"
             )));
         };
         let mut cmap = Self::new();
         cmap.set_name(name);
         let use_parent = decode_bcmap(bytes, &mut cmap).map_err(|e| {
-            Error::ReaderRs(format!("failed to decode bcmap {name}: {e}"))
+            Error::Reader(format!("failed to decode bcmap {name}: {e}"))
         })?;
         if let Some(parent_name) = use_parent {
             cmap.use_cmap = Some(parent_name.clone());
@@ -913,7 +913,7 @@ endcmap
     fn feature_gates_bcmap_bytes() {
         use super::super::data::bcmaps::{bcmap_bytes, bundled_features};
         let f = bundled_features();
-        // reader-rs 既定では全系統有効
+        // reader 既定では全系統有効
         assert!(f.japan1);
         assert!(f.gb1);
         assert!(bcmap_bytes("90ms-RKSJ-H").is_some());

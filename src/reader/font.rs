@@ -540,7 +540,7 @@ fn extract_cid_widths(
 /// /Encoding を CMap に解決する。戻り値の bool は定義済み（builtin）か
 fn load_encoding_cmap(type0: &Dict, data: &[u8], xref: Option<&XRef>) -> (CMap, bool) {
     let Some(enc) = type0.get("Encoding") else {
-        eprintln!("reader_rs: Type0 font missing /Encoding; treating as Identity-H");
+        eprintln!("reader: Type0 font missing /Encoding; treating as Identity-H");
         return (CMap::identity_h(), true);
     };
     match resolve_obj(enc, data, xref) {
@@ -552,7 +552,7 @@ fn load_encoding_cmap(type0: &Dict, data: &[u8], xref: Option<&XRef>) -> (CMap, 
                 Ok(c) => (c, true),
                 Err(e) => {
                     eprintln!(
-                        "reader_rs: failed to load predefined CMap '{n}' ({e}); treating as Identity-H"
+                        "reader: failed to load predefined CMap '{n}' ({e}); treating as Identity-H"
                     );
                     (CMap::identity_h(), true)
                 }
@@ -563,7 +563,7 @@ fn load_encoding_cmap(type0: &Dict, data: &[u8], xref: Option<&XRef>) -> (CMap, 
             (CMap::parse_embedded(&decoded), false)
         }
         _ => {
-            eprintln!("reader_rs: invalid /Encoding; treating as Identity-H");
+            eprintln!("reader: invalid /Encoding; treating as Identity-H");
             (CMap::identity_h(), true)
         }
     }
@@ -590,7 +590,7 @@ fn load_ucs2_companion(
     match CMap::load_predefined(&name) {
         Ok(c) => Some(c),
         Err(e) => {
-            eprintln!("reader_rs: failed to load UCS2 CMap '{name}' ({e})");
+            eprintln!("reader: failed to load UCS2 CMap '{name}' ({e})");
             None
         }
     }
@@ -643,7 +643,7 @@ fn load_tounicode(
                 return (HashMap::new(), true);
             }
             // その他の名前付き ToUnicode は第2段階
-            eprintln!("reader_rs: named ToUnicode '{n}' not loaded yet");
+            eprintln!("reader: named ToUnicode '{n}' not loaded yet");
             (HashMap::new(), false)
         }
         Object::Stream(s) => {

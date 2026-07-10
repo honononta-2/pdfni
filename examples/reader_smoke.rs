@@ -1,10 +1,10 @@
-//! Smoke test: print page count, size, glyph and edge counts via reader-rs.
+//! Smoke test: print page count, size, glyph and edge counts via reader.
 
-use reticella::read_pages_rs;
+use reticella::read_pages;
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
-        eprintln!("usage: reader_rs_smoke <input.pdf>");
+        eprintln!("usage: reader_smoke <input.pdf>");
         std::process::exit(2);
     });
 
@@ -16,7 +16,7 @@ fn main() {
         }
     };
 
-    let pages = match read_pages_rs(&bytes, None) {
+    let pages = match read_pages(&bytes, None) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("read failed: {e}");

@@ -26,9 +26,9 @@ pub(crate) fn decode_stream(
     let end = stream
         .start
         .checked_add(stream.length)
-        .ok_or_else(|| Error::ReaderRs("stream range overflow".into()))?;
+        .ok_or_else(|| Error::Reader("stream range overflow".into()))?;
     if end > data.len() {
-        return Err(Error::ReaderRs(format!(
+        return Err(Error::Reader(format!(
             "stream range out of bounds: start={}, length={}, data_len={}",
             stream.start,
             stream.length,
@@ -80,7 +80,7 @@ pub(crate) fn decode_stream(
             for (i, f) in filters.iter().enumerate() {
                 let f = resolve_owned(f, resolver);
                 let Object::Name(name) = f else {
-                    return Err(Error::ReaderRs(format!("Bad filter name: {f:?}")));
+                    return Err(Error::Reader(format!("Bad filter name: {f:?}")));
                 };
                 let params = match &params_root {
                     Some(Object::Array(arr)) => arr.get(i).map(|p| resolve_owned(p, resolver)),
@@ -102,7 +102,7 @@ pub(crate) fn decode_stream(
         }
         Object::Null => {}
         other => {
-            return Err(Error::ReaderRs(format!("invalid /Filter value: {other:?}")));
+            return Err(Error::Reader(format!("invalid /Filter value: {other:?}")));
         }
     }
 
@@ -177,7 +177,7 @@ fn apply_filter(
                 });
             factory.decrypt_stream(data, r.num, r.generation, filter_name)
         }
-        other => Err(Error::ReaderRs(format!(
+        other => Err(Error::Reader(format!(
             "unsupported filter: \"{other}\""
         ))),
     }
@@ -272,7 +272,7 @@ fn decode_lzw(data: &[u8], early_change: i64) -> Result<Vec<u8>> {
                 let mut q = code as usize;
                 current_sequence_length = dictionary_lengths[q] as usize;
                 if current_sequence_length > MAX_DICT {
-                    return Err(Error::ReaderRs("LZW dictionary sequence too long".into()));
+                    return Err(Error::Reader("LZW dictionary sequence too long".into()));
                 }
                 for j in (0..current_sequence_length).rev() {
                     current_sequence[j] = dictionary_values[q];
@@ -281,7 +281,7 @@ fn decode_lzw(data: &[u8], early_change: i64) -> Result<Vec<u8>> {
             } else {
                 // KwKwK: 直前系列 + その先頭
                 if current_sequence_length >= MAX_DICT {
-                    return Err(Error::ReaderRs("LZW KwKwK overflow".into()));
+                    return Err(Error::Reader("LZW KwKwK overflow".into()));
                 }
                 current_sequence[current_sequence_length] = current_sequence[0];
                 current_sequence_length += 1;
@@ -490,7 +490,7 @@ fn apply_predictor_if_needed(data: Vec<u8>, params: Option<&Dict>) -> Result<Vec
 
 fn apply_predictor(data: &[u8], params: &Dict, predictor: i64) -> Result<Vec<u8>> {
     if predictor != 2 && !(10..=15).contains(&predictor) {
-        return Err(Error::ReaderRs(format!(
+        return Err(Error::Reader(format!(
             "unsupported predictor: {predictor}"
         )));
     }
@@ -508,7 +508,7 @@ fn apply_predictor(data: &[u8], params: &Dict, predictor: i64) -> Result<Vec<u8>
 
     if predictor == 2 {
         if bits != 8 {
-            return Err(Error::ReaderRs(format!(
+            return Err(Error::Reader(format!(
                 "TIFF predictor only supports 8-bit, got BitsPerComponent={bits}"
             )));
         }
@@ -605,7 +605,7 @@ fn predict_png(data: &[u8], pix_bytes: usize, row_bytes: usize) -> Result<Vec<u8
                 }
             }
             other => {
-                return Err(Error::ReaderRs(format!(
+                return Err(Error::Reader(format!(
                     "unsupported PNG predictor filter type: {other}"
                 )));
             }

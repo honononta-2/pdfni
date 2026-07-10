@@ -8,8 +8,8 @@ mod error;
 mod extract;
 mod model;
 mod par;
-#[cfg(feature = "reader-rs")]
-mod reader_rs;
+#[cfg(feature = "reader")]
+mod reader;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
@@ -21,5 +21,5 @@ pub use extract::{
     DetectMode, EdgePart, ExtractOptions, GlyphPart, GraphicPart, PagePart, extract_from_parts,
 };
 pub use model::{BBox, Cell, Document, Orientation, Page, Table};
-#[cfg(feature = "reader-rs")]
-pub use reader_rs::{extract_from_bytes_rs, read_pages_rs};
+#[cfg(feature = "reader")]
+pub use reader::{extract_from_bytes, read_pages};

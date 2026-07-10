@@ -43,14 +43,14 @@ pub(crate) fn collect_pages(data: &[u8], xref: &XRef) -> Result<Vec<PageInfo>> {
     let root_raw = xref
         .trailer()
         .get("Root")
-        .ok_or_else(|| Error::ReaderRs("trailer missing /Root".into()))?;
+        .ok_or_else(|| Error::Reader("trailer missing /Root".into()))?;
     let root = xref.resolve(root_raw, data);
     let Object::Dict(catalog) = root else {
-        return Err(Error::ReaderRs("catalog is not a dictionary".into()));
+        return Err(Error::Reader("catalog is not a dictionary".into()));
     };
     let pages_raw = catalog
         .get("Pages")
-        .ok_or_else(|| Error::ReaderRs("catalog missing /Pages".into()))?;
+        .ok_or_else(|| Error::Reader("catalog missing /Pages".into()))?;
 
     let mut visited: HashSet<(u32, u16)> = HashSet::new();
     if let Object::Ref(r) = pages_raw {
@@ -64,7 +64,7 @@ pub(crate) fn collect_pages(data: &[u8], xref: &XRef) -> Result<Vec<PageInfo>> {
         match node {
             Object::Ref(r) => {
                 if !visited.insert((r.num, r.generation)) {
-                    return Err(Error::ReaderRs(format!(
+                    return Err(Error::Reader(format!(
                         "Pages tree contains circular reference: {} {}",
                         r.num, r.generation
                     )));
@@ -102,7 +102,7 @@ pub(crate) fn collect_pages(data: &[u8], xref: &XRef) -> Result<Vec<PageInfo>> {
             }
             Object::Null => {}
             other => {
-                return Err(Error::ReaderRs(format!(
+                return Err(Error::Reader(format!(
                     "Page dictionary kid reference points to wrong type of object: {other:?}"
                 )));
             }

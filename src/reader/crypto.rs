@@ -63,22 +63,22 @@ impl CipherFactory {
         let filter = match encrypt.get("Filter") {
             Some(Object::Name(n)) => n.as_str(),
             _ => {
-                return Err(Error::ReaderRs(
+                return Err(Error::Reader(
                     "unknown encryption method: missing /Filter".into(),
                 ));
             }
         };
         if filter != "Standard" {
-            return Err(Error::ReaderRs(format!(
+            return Err(Error::Reader(format!(
                 "unknown encryption method: {filter}"
             )));
         }
 
         let algorithm = dict_int(encrypt, "V").ok_or_else(|| {
-            Error::ReaderRs("unsupported encryption algorithm: missing /V".into())
+            Error::Reader("unsupported encryption algorithm: missing /V".into())
         })?;
         if !matches!(algorithm, 1 | 2 | 4 | 5) {
-            return Err(Error::ReaderRs(format!(
+            return Err(Error::Reader(format!(
                 "unsupported encryption algorithm: V={algorithm}"
             )));
         }
@@ -115,7 +115,7 @@ impl CipherFactory {
             }
         }
         if key_length_bits < 40 || key_length_bits % 8 != 0 {
-            return Err(Error::ReaderRs(format!(
+            return Err(Error::Reader(format!(
                 "invalid key length: {key_length_bits}"
             )));
         }
@@ -129,10 +129,10 @@ impl CipherFactory {
         let (cf, stm_method, str_method) = parse_crypt_filters(encrypt, algorithm)?;
 
         let o_bytes = dict_bytes(encrypt, "O").ok_or_else(|| {
-            Error::ReaderRs("encryption dictionary missing /O".into())
+            Error::Reader("encryption dictionary missing /O".into())
         })?;
         let u_bytes = dict_bytes(encrypt, "U").ok_or_else(|| {
-            Error::ReaderRs("encryption dictionary missing /U".into())
+            Error::Reader("encryption dictionary missing /U".into())
         })?;
 
         let flags = dict_int(encrypt, "P").unwrap_or(0);
@@ -285,7 +285,7 @@ fn cfm_to_method(handler: &Dict, algorithm: i64) -> Result<CryptMethod> {
         Some(Object::Name(n)) => n.as_str(),
         None => return Ok(CryptMethod::None),
         _ => {
-            return Err(Error::ReaderRs("invalid /CFM value".into()));
+            return Err(Error::Reader("invalid /CFM value".into()));
         }
     };
     // V=5 は常に AES-256（AESV2 誤記の救済）
@@ -301,7 +301,7 @@ fn cfm_to_method(handler: &Dict, algorithm: i64) -> Result<CryptMethod> {
         "AESV2" => CryptMethod::AesV2,
         "AESV3" => CryptMethod::AesV3,
         other => {
-            return Err(Error::ReaderRs(format!("Unknown crypto method: {other}")));
+            return Err(Error::Reader(format!("Unknown crypto method: {other}")));
         }
     })
 }
@@ -419,7 +419,7 @@ fn create_encryption_key_v5(
     u_bytes: &[u8],
 ) -> Result<Option<Vec<u8>>> {
     if o_bytes.len() < 48 || u_bytes.len() < 48 {
-        return Err(Error::ReaderRs(
+        return Err(Error::Reader(
             "invalid /O or /U length for R5/R6".into(),
         ));
     }
@@ -432,10 +432,10 @@ fn create_encryption_key_v5(
     let user_password = &u_bytes[..32];
 
     let oe = dict_bytes(encrypt, "OE").ok_or_else(|| {
-        Error::ReaderRs("encryption dictionary missing /OE".into())
+        Error::Reader("encryption dictionary missing /OE".into())
     })?;
     let ue = dict_bytes(encrypt, "UE").ok_or_else(|| {
-        Error::ReaderRs("encryption dictionary missing /UE".into())
+        Error::Reader("encryption dictionary missing /UE".into())
     })?;
 
     let pw = if password.len() > 127 {
@@ -589,29 +589,29 @@ pub(crate) fn rc4_process(key: &[u8], data: &[u8]) -> Vec<u8> {
 
 fn aes_cbc_decrypt_pkcs7(key: &[u8], data: &[u8], key_len: usize) -> Result<Vec<u8>> {
     if data.len() < 16 {
-        return Err(Error::ReaderRs("AES ciphertext too short".into()));
+        return Err(Error::Reader("AES ciphertext too short".into()));
     }
     if key.len() < key_len {
-        return Err(Error::ReaderRs("AES key too short".into()));
+        return Err(Error::Reader("AES key too short".into()));
     }
     let iv = &data[..16];
     let ciphertext = &data[16..];
     if ciphertext.is_empty() || ciphertext.len() % 16 != 0 {
-        return Err(Error::ReaderRs("AES ciphertext length invalid".into()));
+        return Err(Error::Reader("AES ciphertext length invalid".into()));
     }
     let mut buf = ciphertext.to_vec();
     let key = &key[..key_len];
     let plain = if key_len == 16 {
         Aes128CbcDec::new_from_slices(key, iv)
-            .map_err(|_| Error::ReaderRs("AES-128 init failed".into()))?
+            .map_err(|_| Error::Reader("AES-128 init failed".into()))?
             .decrypt_padded_mut::<Pkcs7>(&mut buf)
-            .map_err(|_| Error::ReaderRs("AES-128 decrypt failed".into()))?
+            .map_err(|_| Error::Reader("AES-128 decrypt failed".into()))?
             .to_vec()
     } else {
         Aes256CbcDec::new_from_slices(key, iv)
-            .map_err(|_| Error::ReaderRs("AES-256 init failed".into()))?
+            .map_err(|_| Error::Reader("AES-256 init failed".into()))?
             .decrypt_padded_mut::<Pkcs7>(&mut buf)
-            .map_err(|_| Error::ReaderRs("AES-256 decrypt failed".into()))?
+            .map_err(|_| Error::Reader("AES-256 decrypt failed".into()))?
             .to_vec()
     };
     Ok(plain)
@@ -619,16 +619,16 @@ fn aes_cbc_decrypt_pkcs7(key: &[u8], data: &[u8], key_len: usize) -> Result<Vec<
 
 fn aes256_cbc_decrypt_no_pad(key: &[u8], data: &[u8], iv: &[u8; 16]) -> Result<Vec<u8>> {
     if data.is_empty() || data.len() % 16 != 0 {
-        return Err(Error::ReaderRs("AES-256 no-pad length invalid".into()));
+        return Err(Error::Reader("AES-256 no-pad length invalid".into()));
     }
     if key.len() < 32 {
-        return Err(Error::ReaderRs("AES-256 key too short".into()));
+        return Err(Error::Reader("AES-256 key too short".into()));
     }
     let mut buf = data.to_vec();
     let plain = Aes256CbcDec::new_from_slices(&key[..32], iv)
-        .map_err(|_| Error::ReaderRs("AES-256 init failed".into()))?
+        .map_err(|_| Error::Reader("AES-256 init failed".into()))?
         .decrypt_padded_mut::<NoPadding>(&mut buf)
-        .map_err(|_| Error::ReaderRs("AES-256 decrypt failed".into()))?
+        .map_err(|_| Error::Reader("AES-256 decrypt failed".into()))?
         .to_vec();
     Ok(plain)
 }
@@ -656,18 +656,18 @@ pub(crate) fn aes_cbc_encrypt_pkcs7(key: &[u8], plaintext: &[u8], iv: &[u8; 16])
     let data_len = plaintext.len();
     let ct = if key.len() == 16 {
         let enc = Aes128CbcEnc::new_from_slices(key, iv)
-            .map_err(|_| Error::ReaderRs("AES-128 enc init failed".into()))?;
+            .map_err(|_| Error::Reader("AES-128 enc init failed".into()))?;
         enc.encrypt_padded_mut::<Pkcs7>(&mut buf, data_len)
-            .map_err(|_| Error::ReaderRs("AES-128 encrypt failed".into()))?
+            .map_err(|_| Error::Reader("AES-128 encrypt failed".into()))?
             .to_vec()
     } else if key.len() == 32 {
         let enc = Aes256CbcEnc::new_from_slices(key, iv)
-            .map_err(|_| Error::ReaderRs("AES-256 enc init failed".into()))?;
+            .map_err(|_| Error::Reader("AES-256 enc init failed".into()))?;
         enc.encrypt_padded_mut::<Pkcs7>(&mut buf, data_len)
-            .map_err(|_| Error::ReaderRs("AES-256 encrypt failed".into()))?
+            .map_err(|_| Error::Reader("AES-256 encrypt failed".into()))?
             .to_vec()
     } else {
-        return Err(Error::ReaderRs("invalid AES key length".into()));
+        return Err(Error::Reader("invalid AES key length".into()));
     };
     let mut out = Vec::with_capacity(16 + ct.len());
     out.extend_from_slice(iv);
@@ -680,13 +680,13 @@ fn aes256_cbc_encrypt_no_pad(key: &[u8], data: &[u8], iv: &[u8; 16]) -> Result<V
     let mut buf = data.to_vec();
     let len = buf.len();
     if len % 16 != 0 {
-        return Err(Error::ReaderRs("AES-256 no-pad encrypt length invalid".into()));
+        return Err(Error::Reader("AES-256 no-pad encrypt length invalid".into()));
     }
     let enc = Aes256CbcEnc::new_from_slices(&key[..32], iv)
-        .map_err(|_| Error::ReaderRs("AES-256 enc init failed".into()))?;
+        .map_err(|_| Error::Reader("AES-256 enc init failed".into()))?;
     let out = enc
         .encrypt_padded_mut::<NoPadding>(&mut buf, len)
-        .map_err(|_| Error::ReaderRs("AES-256 encrypt failed".into()))?
+        .map_err(|_| Error::Reader("AES-256 encrypt failed".into()))?
         .to_vec();
     Ok(out)
 }

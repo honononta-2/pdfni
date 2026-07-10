@@ -23,17 +23,17 @@ use pages::{collect_pages, view_height, view_width};
 use xref::XRef;
 
 /// 純Rustリーダーによるバイト列からの表抽出
-pub fn extract_from_bytes_rs(
+pub fn extract_from_bytes(
     bytes: &[u8],
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<Document> {
-    let pages = read_pages_rs(bytes, password)?;
+    let pages = read_pages(bytes, password)?;
     Ok(extract_from_parts(pages, options))
 }
 
 /// PDFバイト列からページ単位の parts を構築する
-pub fn read_pages_rs(bytes: &[u8], password: Option<&str>) -> Result<Vec<PagePart>> {
+pub fn read_pages(bytes: &[u8], password: Option<&str>) -> Result<Vec<PagePart>> {
     // 空パスワード → 引数パスワードは CipherFactory 内で試す
     let xref = XRef::parse_with_password(bytes, password)?;
     let page_infos = collect_pages(bytes, &xref)?;

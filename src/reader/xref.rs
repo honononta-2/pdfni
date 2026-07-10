@@ -130,7 +130,7 @@ impl XRef {
         }
 
         xref.trailer = top_trailer.ok_or_else(|| {
-            Error::ReaderRs("Failed to parse XRef: no trailer dictionary".into())
+            Error::Reader("Failed to parse XRef: no trailer dictionary".into())
         })?;
 
         xref.init_cipher(data, password)?;
@@ -368,7 +368,7 @@ impl XRef {
         }
 
         xref.trailer = chosen.ok_or_else(|| {
-            Error::ReaderRs("Invalid PDF structure: no usable trailer in recovery".into())
+            Error::Reader("Invalid PDF structure: no usable trailer in recovery".into())
         })?;
 
         // キャッシュを空にして暗号初期化（fetch 結果が混ざるのを防ぐ）
@@ -376,7 +376,7 @@ impl XRef {
         xref.init_cipher(data, password)?;
 
         if !xref.has_usable_root(data) {
-            return Err(Error::ReaderRs(
+            return Err(Error::Reader(
                 "Invalid PDF structure: recovery could not resolve /Root /Pages".into(),
             ));
         }
@@ -443,15 +443,15 @@ impl XRef {
                 let obj = self.fetch(*r, data)?;
                 match obj {
                     Object::Dict(d) => Ok((d, Some(r.num))),
-                    other => Err(Error::ReaderRs(format!(
+                    other => Err(Error::Reader(format!(
                         "Encrypt is not a dictionary: {other:?}"
                     ))),
                 }
             }
-            Some(other) => Err(Error::ReaderRs(format!(
+            Some(other) => Err(Error::Reader(format!(
                 "invalid /Encrypt value: {other:?}"
             ))),
-            None => Err(Error::ReaderRs("missing /Encrypt".into())),
+            None => Err(Error::Reader("missing /Encrypt".into())),
         }
     }
 
@@ -482,7 +482,7 @@ impl XRef {
         {
             let mut pending = self.pending.borrow_mut();
             if pending.contains(&(num, generation)) {
-                return Err(Error::ReaderRs(format!(
+                return Err(Error::Reader(format!(
                     "circular reference detected: {} {}",
                     num, generation
                 )));
@@ -518,7 +518,7 @@ impl XRef {
         data: &[u8],
     ) -> Result<Object> {
         if entry_gen != r.generation {
-            return Err(Error::ReaderRs(format!(
+            return Err(Error::Reader(format!(
                 "Inconsistent generation in XRef: {} {}",
                 r.num, r.generation
             )));
@@ -527,9 +527,9 @@ impl XRef {
         let abs = self
             .header_offset
             .checked_add(offset)
-            .ok_or_else(|| Error::ReaderRs("xref offset overflow".into()))?;
+            .ok_or_else(|| Error::Reader("xref offset overflow".into()))?;
         if abs >= data.len() {
-            return Err(Error::ReaderRs(format!(
+            return Err(Error::Reader(format!(
                 "Bad (uncompressed) XRef entry: {} {} (offset out of bounds)",
                 r.num, r.generation
             )));
@@ -554,19 +554,19 @@ impl XRef {
         let cmd_tok = lexer.next_token();
 
         let Token::Int(header_num) = num_tok else {
-            return Err(Error::ReaderRs(format!(
+            return Err(Error::Reader(format!(
                 "Bad (uncompressed) XRef entry: {} {}",
                 r.num, r.generation
             )));
         };
         let Token::Int(header_gen) = gen_tok else {
-            return Err(Error::ReaderRs(format!(
+            return Err(Error::Reader(format!(
                 "Bad (uncompressed) XRef entry: {} {}",
                 r.num, r.generation
             )));
         };
         if header_num != i64::from(r.num) || header_gen != i64::from(r.generation) {
-            return Err(Error::ReaderRs(format!(
+            return Err(Error::Reader(format!(
                 "Bad (uncompressed) XRef entry: {} {}",
                 r.num, r.generation
             )));
@@ -577,7 +577,7 @@ impl XRef {
                 let mut parser = Parser::new(data, lexer.byte_pos());
                 let mut obj = parser.get_obj(resolver)?;
                 if let Some(msg) = self.resolve_error.borrow_mut().take() {
-                    return Err(Error::ReaderRs(msg));
+                    return Err(Error::Reader(msg));
                 }
                 // /Encrypt オブジェクト自体は復号しない
                 let skip = self.encrypt_num == Some(r.num);
@@ -594,12 +594,12 @@ impl XRef {
                 if let Ok(n) = rest.parse::<i64>() {
                     return Ok(Object::Int(n));
                 }
-                Err(Error::ReaderRs(format!(
+                Err(Error::Reader(format!(
                     "Bad (uncompressed) XRef entry: {} {}",
                     r.num, r.generation
                 )))
             }
-            _ => Err(Error::ReaderRs(format!(
+            _ => Err(Error::Reader(format!(
                 "Bad (uncompressed) XRef entry: {} {}",
                 r.num, r.generation
             ))),
@@ -616,17 +616,17 @@ impl XRef {
         let stm_ref = Ref::new(objstm_num, 0);
         let stm_obj = self.fetch(stm_ref, data)?;
         let Object::Stream(stream) = stm_obj else {
-            return Err(Error::ReaderRs("bad ObjStm stream".into()));
+            return Err(Error::Reader("bad ObjStm stream".into()));
         };
 
         let first = dict_int(&stream.dict, "First").ok_or_else(|| {
-            Error::ReaderRs("invalid first and n parameters for ObjStm stream".into())
+            Error::Reader("invalid first and n parameters for ObjStm stream".into())
         })?;
         let n = dict_int(&stream.dict, "N").ok_or_else(|| {
-            Error::ReaderRs("invalid first and n parameters for ObjStm stream".into())
+            Error::Reader("invalid first and n parameters for ObjStm stream".into())
         })?;
         if first < 0 || n < 0 {
-            return Err(Error::ReaderRs(
+            return Err(Error::Reader(
                 "invalid first and n parameters for ObjStm stream".into(),
             ));
         }
@@ -637,7 +637,7 @@ impl XRef {
         // ObjStm 本文はストリームとして復号。中身のオブジェクトは再復号しない
         let decoded = decode_stream(data, &stream, &resolver, self.cipher.as_ref())?;
         if let Some(msg) = self.resolve_error.borrow_mut().take() {
-            return Err(Error::ReaderRs(msg));
+            return Err(Error::Reader(msg));
         }
 
         // 先頭の `<num> <相対offset>` ペア N 個
@@ -646,17 +646,17 @@ impl XRef {
         let mut offsets = Vec::with_capacity(n);
         for _ in 0..n {
             let Token::Int(num) = lexer.next_token() else {
-                return Err(Error::ReaderRs(
+                return Err(Error::Reader(
                     "invalid object number in the ObjStm stream".into(),
                 ));
             };
             let Token::Int(off) = lexer.next_token() else {
-                return Err(Error::ReaderRs(
+                return Err(Error::Reader(
                     "invalid object offset in the ObjStm stream".into(),
                 ));
             };
             if num < 0 || off < 0 {
-                return Err(Error::ReaderRs(
+                return Err(Error::Reader(
                     "invalid object number/offset in the ObjStm stream".into(),
                 ));
             }
@@ -674,20 +674,20 @@ impl XRef {
             chosen = Some(index as usize);
         }
         let i = chosen.ok_or_else(|| {
-            Error::ReaderRs(format!("Bad (compressed) XRef entry: {} {}", r.num, r.generation))
+            Error::Reader(format!("Bad (compressed) XRef entry: {} {}", r.num, r.generation))
         })?;
 
         let obj_start = first
             .checked_add(offsets[i])
-            .ok_or_else(|| Error::ReaderRs("Invalid offset in the ObjStm stream.".into()))?;
+            .ok_or_else(|| Error::Reader("Invalid offset in the ObjStm stream.".into()))?;
         if obj_start > decoded.len() {
-            return Err(Error::ReaderRs("Invalid offset in the ObjStm stream.".into()));
+            return Err(Error::Reader("Invalid offset in the ObjStm stream.".into()));
         }
 
         let mut parser = Parser::new(&decoded, obj_start);
         let obj = parser.get_obj(&resolver)?;
         if let Some(msg) = self.resolve_error.borrow_mut().take() {
-            return Err(Error::ReaderRs(msg));
+            return Err(Error::Reader(msg));
         }
 
         // 同ストリーム内の非 Stream オブジェクトをキャッシュ
@@ -724,7 +724,7 @@ impl XRef {
         queue: &mut VecDeque<usize>,
     ) -> Result<Dict> {
         if pos >= body.len() {
-            return Err(Error::ReaderRs("Invalid XRef position".into()));
+            return Err(Error::Reader("Invalid XRef position".into()));
         }
 
         let mut lexer = Lexer::new_at(body, pos);
@@ -748,24 +748,24 @@ impl XRef {
                 let gen_tok = lexer.next_token();
                 let obj_tok = lexer.next_token();
                 let Token::Int(_) = gen_tok else {
-                    return Err(Error::ReaderRs("Invalid XRef stream".into()));
+                    return Err(Error::Reader("Invalid XRef stream".into()));
                 };
                 match obj_tok {
                     Token::Cmd(cmd) if cmd == "obj" => {}
-                    _ => return Err(Error::ReaderRs("Invalid XRef stream".into())),
+                    _ => return Err(Error::Reader("Invalid XRef stream".into())),
                 }
 
                 let mut parser = Parser::new(body, lexer.byte_pos());
                 // xref ストリーム自身の /Length は通常直接値
                 let obj = parser.get_obj(&NullResolver)?;
                 let Object::Stream(stream) = obj else {
-                    return Err(Error::ReaderRs("Invalid XRef stream".into()));
+                    return Err(Error::Reader("Invalid XRef stream".into()));
                 };
                 let dict = self.read_xref_stream(body, &stream)?;
                 push_prev(&dict, queue);
                 Ok(dict)
             }
-            _ => Err(Error::ReaderRs("Invalid XRef stream header".into())),
+            _ => Err(Error::Reader("Invalid XRef stream header".into())),
         }
     }
 
@@ -778,12 +778,12 @@ impl XRef {
                 Token::Cmd(cmd) if cmd == "trailer" => break,
                 Token::Int(first_raw) => {
                     let Token::Int(count_raw) = lexer.next_token() else {
-                        return Err(Error::ReaderRs(
+                        return Err(Error::Reader(
                             "Invalid XRef table: wrong types in subsection header".into(),
                         ));
                     };
                     if first_raw < 0 || count_raw < 0 {
-                        return Err(Error::ReaderRs(
+                        return Err(Error::Reader(
                             "Invalid XRef table: wrong types in subsection header".into(),
                         ));
                     }
@@ -792,12 +792,12 @@ impl XRef {
 
                     for i in 0..count {
                         let Token::Int(off) = lexer.next_token() else {
-                            return Err(Error::ReaderRs(format!(
+                            return Err(Error::Reader(format!(
                                 "Invalid entry in XRef subsection: {first}, {count}"
                             )));
                         };
                         let Token::Int(gen_i) = lexer.next_token() else {
-                            return Err(Error::ReaderRs(format!(
+                            return Err(Error::Reader(format!(
                                 "Invalid entry in XRef subsection: {first}, {count}"
                             )));
                         };
@@ -806,13 +806,13 @@ impl XRef {
                             Token::Cmd(ref s) if s == "f" => (true, false),
                             Token::Cmd(ref s) if s == "n" => (false, true),
                             _ => {
-                                return Err(Error::ReaderRs(format!(
+                                return Err(Error::Reader(format!(
                                     "Invalid entry in XRef subsection: {first}, {count}"
                                 )));
                             }
                         };
                         if off < 0 || gen_i < 0 || gen_i > i64::from(u16::MAX) {
-                            return Err(Error::ReaderRs(format!(
+                            return Err(Error::Reader(format!(
                                 "Invalid entry in XRef subsection: {first}, {count}"
                             )));
                         }
@@ -841,12 +841,12 @@ impl XRef {
                     }
                 }
                 Token::Eof => {
-                    return Err(Error::ReaderRs(
+                    return Err(Error::Reader(
                         "Invalid XRef table: could not find trailer dictionary".into(),
                     ));
                 }
                 _ => {
-                    return Err(Error::ReaderRs(
+                    return Err(Error::Reader(
                         "Invalid XRef table: wrong types in subsection header".into(),
                     ));
                 }
@@ -856,7 +856,7 @@ impl XRef {
         // 仕様: 先頭オブジェクトは free
         if let Some(e) = self.entries.get(&0) {
             if !matches!(e, XrefEntry::Free) {
-                return Err(Error::ReaderRs(
+                return Err(Error::Reader(
                     "Invalid XRef table: unexpected first object".into(),
                 ));
             }
@@ -867,7 +867,7 @@ impl XRef {
         match trailer_obj {
             Object::Dict(d) => Ok(d),
             Object::Stream(s) => Ok(s.dict),
-            _ => Err(Error::ReaderRs(
+            _ => Err(Error::Reader(
                 "Invalid XRef table: could not parse trailer dictionary".into(),
             )),
         }
@@ -877,17 +877,17 @@ impl XRef {
         let w = match stream.dict.get("W") {
             Some(Object::Array(a)) if a.len() >= 3 => a,
             _ => {
-                return Err(Error::ReaderRs("Invalid XRef entry fields length".into()));
+                return Err(Error::Reader("Invalid XRef entry fields length".into()));
             }
         };
         let type_w = as_nonneg_usize(&w[0]).ok_or_else(|| {
-            Error::ReaderRs("Invalid XRef entry fields length".into())
+            Error::Reader("Invalid XRef entry fields length".into())
         })?;
         let offset_w = as_nonneg_usize(&w[1]).ok_or_else(|| {
-            Error::ReaderRs("Invalid XRef entry fields length".into())
+            Error::Reader("Invalid XRef entry fields length".into())
         })?;
         let gen_w = as_nonneg_usize(&w[2]).ok_or_else(|| {
-            Error::ReaderRs("Invalid XRef entry fields length".into())
+            Error::Reader("Invalid XRef entry fields length".into())
         })?;
 
         let size = dict_int(&stream.dict, "Size").unwrap_or(0).max(0) as usize;
@@ -897,10 +897,10 @@ impl XRef {
                 let mut i = 0;
                 while i + 1 < arr.len() {
                     let first = as_nonneg_u32(&arr[i]).ok_or_else(|| {
-                        Error::ReaderRs("Invalid XRef range fields".into())
+                        Error::Reader("Invalid XRef range fields".into())
                     })?;
                     let n = as_nonneg_u32(&arr[i + 1]).ok_or_else(|| {
-                        Error::ReaderRs("Invalid XRef range fields".into())
+                        Error::Reader("Invalid XRef range fields".into())
                     })?;
                     pairs.push((first, n));
                     i += 2;
@@ -918,7 +918,7 @@ impl XRef {
         for (first, n) in index_pairs {
             for i in 0..n {
                 if entry_width > 0 && cursor + entry_width > decoded.len() {
-                    return Err(Error::ReaderRs("Invalid XRef stream data".into()));
+                    return Err(Error::Reader("Invalid XRef stream data".into()));
                 }
                 let type_val = if type_w == 0 {
                     1u32
@@ -946,7 +946,7 @@ impl XRef {
                         index: field3,
                     },
                     other => {
-                        return Err(Error::ReaderRs(format!(
+                        return Err(Error::Reader(format!(
                             "Invalid XRef entry type: {other}"
                         )));
                     }
@@ -1022,7 +1022,7 @@ fn read_be(data: &[u8], offset: usize, width: usize) -> Result<u32> {
         return Ok(0);
     }
     if offset + width > data.len() {
-        return Err(Error::ReaderRs("Invalid XRef stream data".into()));
+        return Err(Error::Reader("Invalid XRef stream data".into()));
     }
     let mut v = 0u32;
     for j in 0..width {

@@ -15,19 +15,19 @@ const STARTXREF_STEP: usize = 1024;
 pub(crate) fn find_pdf_header_offset(data: &[u8]) -> Result<usize> {
     let limit = data.len().min(HEADER_SCAN_LIMIT);
     if limit < PDF_HEADER_SIGNATURE.len() {
-        return Err(Error::ReaderRs("PDF header signature not found".into()));
+        return Err(Error::Reader("PDF header signature not found".into()));
     }
     let window = &data[..limit];
     window
         .windows(PDF_HEADER_SIGNATURE.len())
         .position(|w| w == PDF_HEADER_SIGNATURE)
-        .ok_or_else(|| Error::ReaderRs("PDF header signature not found".into()))
+        .ok_or_else(|| Error::Reader("PDF header signature not found".into()))
 }
 
 /// ファイル末尾側から得た startxref オフセット
 pub(crate) fn find_startxref(data: &[u8]) -> Result<usize> {
     if data.len() < STARTXREF_SIGNATURE.len() {
-        return Err(Error::ReaderRs("startxref not found".into()));
+        return Err(Error::Reader("startxref not found".into()));
     }
 
     let sig_len = STARTXREF_SIGNATURE.len();
@@ -44,7 +44,7 @@ pub(crate) fn find_startxref(data: &[u8]) -> Result<usize> {
             break;
         }
     }
-    Err(Error::ReaderRs("startxref not found".into()))
+    Err(Error::Reader("startxref not found".into()))
 }
 
 /// スライス末尾側から部分列を探す
@@ -66,14 +66,14 @@ fn parse_offset_after_startxref(data: &[u8], mut i: usize) -> Result<usize> {
         i += 1;
     }
     if start == i {
-        return Err(Error::ReaderRs(
+        return Err(Error::Reader(
             "startxref offset is missing or invalid".into(),
         ));
     }
     let s = std::str::from_utf8(&data[start..i])
-        .map_err(|_| Error::ReaderRs("startxref offset is missing or invalid".into()))?;
+        .map_err(|_| Error::Reader("startxref offset is missing or invalid".into()))?;
     s.parse::<usize>()
-        .map_err(|_| Error::ReaderRs("startxref offset is missing or invalid".into()))
+        .map_err(|_| Error::Reader("startxref offset is missing or invalid".into()))
 }
 
 fn is_pdf_whitespace(b: u8) -> bool {
