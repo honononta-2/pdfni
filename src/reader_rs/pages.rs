@@ -20,6 +20,8 @@ const LETTER_SIZE: [f64; 4] = [0.0, 0.0, 612.0, 792.0];
 pub(crate) struct PageInfo {
     /// 正規化済み [x0, y0, x1, y1]（PDF 座標系のまま）
     pub view: [f64; 4],
+    /// ページ回転 /Rotate（0/90/180/270へ正規化済み）
+    pub rotate: i32,
     pub resources: Dict,
     pub contents: Vec<u8>,
 }
@@ -132,13 +134,31 @@ fn build_page_info(data: &[u8], xref: &XRef, page_dict: &Dict) -> Result<PageInf
     let media = resolve_media_box(data, xref, page_dict);
     let crop = resolve_crop_box(data, xref, page_dict, media);
     let view = compute_view(crop, media);
+    let rotate = resolve_rotate(data, xref, page_dict);
     let resources = resolve_resources(data, xref, page_dict);
     let contents = load_contents(data, xref, page_dict)?;
     Ok(PageInfo {
         view,
+        rotate,
         resources,
         contents,
     })
+}
+
+/// 継承つき /Rotate の解決。90度の倍数以外は0として扱う
+fn resolve_rotate(data: &[u8], xref: &XRef, page_dict: &Dict) -> i32 {
+    let mut visited: HashSet<(u32, u16)> = HashSet::new();
+    let mut current: Option<Dict> = Some(page_dict.clone());
+    while let Some(dict) = current {
+        if let Some(obj) = dict.get("Rotate") {
+            if let Object::Int(r) = xref.resolve(obj, data) {
+                let r = r.rem_euclid(360);
+                return if r % 90 == 0 { r as i32 } else { 0 };
+            }
+        }
+        current = follow_parent(data, xref, &dict, &mut visited);
+    }
+    0
 }
 
 fn resolve_media_box(data: &[u8], xref: &XRef, page_dict: &Dict) -> [f64; 4] {
@@ -473,6 +493,27 @@ mod tests {
             pages[0].resources.has("Font"),
             "Resources should inherit /Font from parent"
         );
+    }
+
+    /// /Rotate の継承（親定義・子未定義）と正規化
+    #[test]
+    fn inherit_rotate_from_parent() {
+        let mut b = PdfBuilder::new();
+        let page = b.add_obj(b"<< /Type /Page /Parent 2 0 R >>");
+        let pages_root = b.add_obj(
+            format!(
+                "<< /Type /Pages /Kids [{page} 0 R] /Count 1 \
+                 /MediaBox [0 0 200 300] /Rotate 450 >>"
+            )
+            .as_bytes(),
+        );
+        let catalog = b.add_obj(
+            format!("<< /Type /Catalog /Pages {pages_root} 0 R >>").as_bytes(),
+        );
+        let data = b.finish(catalog);
+        let xref = XRef::parse(&data).expect("parse");
+        let pages = collect_pages(&data, &xref).expect("collect");
+        assert_eq!(pages[0].rotate, 90);
     }
 
     /// CropBox が MediaBox からはみ出すときの交差

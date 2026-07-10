@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use crate::extract::{EdgePart, GlyphPart};
+use crate::extract::{EdgePart, GlyphPart, GraphicPart};
 use crate::model::Orientation;
 
 use super::filters::decode_stream;
@@ -24,28 +24,156 @@ pub(crate) struct ContentCtx<'a> {
 }
 
 /// コンテンツストリームから glyphs と edges を抽出する
+///
+/// page_rotate はページ属性 /Rotate（表示座標系へ回してから返す）
+/// 返り値3つ目はページ内容の支配回転を正規化した角度(0/90/180/270)
 pub(crate) fn extract_parts(
     contents: &[u8],
     resources: &Dict,
     view: [f64; 4],
     ctx: ContentCtx<'_>,
-) -> (Vec<GlyphPart>, Vec<EdgePart>) {
-    let mut glyphs = Vec::new();
+    page_rotate: i32,
+) -> (Vec<GlyphPart>, Vec<EdgePart>, Vec<GraphicPart>, i32) {
+    let mut tagged = Vec::new();
     let mut edges = Vec::new();
+    let mut graphics = Vec::new();
     let mut visiting = HashSet::new();
     interpret(
         contents,
         resources,
         view,
         &ctx,
-        &mut glyphs,
+        &mut tagged,
         &mut edges,
+        &mut graphics,
         &mut visiting,
         [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
     );
+
+    let (mut w, mut h) = (view[2] - view[0], view[3] - view[1]);
+
+    // ページ属性 /Rotate の適用（表示座標系へ）
+    let page_rot = (page_rotate.rem_euclid(360) / 90) as u8;
+    if page_rot != 0 {
+        rotate_parts(&mut tagged, &mut edges, &mut graphics, w, h, page_rot);
+        for (g, r) in &mut tagged {
+            if *r < 4 {
+                *r = (*r + 4 - page_rot) % 4;
+            }
+            g.upright = *r == 0;
+        }
+        if page_rot != 2 {
+            std::mem::swap(&mut w, &mut h);
+        }
+    }
+
+    // ページ内容の支配回転の正規化
+    let rot = dominant_rotation(&tagged);
+    if rot != 0 {
+        rotate_parts(&mut tagged, &mut edges, &mut graphics, w, h, rot);
+        for (g, r) in &mut tagged {
+            g.upright = *r == rot;
+        }
+    }
+    let mut glyphs: Vec<GlyphPart> = tagged
+        .into_iter()
+        .map(|(mut g, r)| {
+            g.rot = if r < 4 { r as i32 * 90 } else { 0 };
+            g
+        })
+        .collect();
     let spaces = synth_word_spaces(&glyphs);
     glyphs.extend(spaces);
-    (glyphs, edges)
+    (glyphs, edges, graphics, rot as i32 * 90)
+}
+
+/// グリフと線分とグラフィックの座標を正規化回転で移す
+fn rotate_parts(
+    tagged: &mut [(GlyphPart, u8)],
+    edges: &mut [EdgePart],
+    graphics: &mut [GraphicPart],
+    w: f64,
+    h: f64,
+    rot: u8,
+) {
+    for (g, _) in tagged.iter_mut() {
+        let (l, t, r, b) = rotate_box_td(g.left, g.top, g.right, g.bottom, w, h, rot);
+        g.left = l;
+        g.top = t;
+        g.right = r;
+        g.bottom = b;
+    }
+    for e in edges.iter_mut() {
+        let (l, t, r, b) = rotate_box_td(e.left, e.top, e.right, e.bottom, w, h, rot);
+        e.left = l;
+        e.top = t;
+        e.right = r;
+        e.bottom = b;
+        if rot != 2 {
+            e.orientation = match e.orientation {
+                Orientation::Horizontal => Orientation::Vertical,
+                Orientation::Vertical => Orientation::Horizontal,
+            };
+        }
+    }
+    for g in graphics.iter_mut() {
+        let (l, t, r, b) = rotate_box_td(g.left, g.top, g.right, g.bottom, w, h, rot);
+        g.left = l;
+        g.top = t;
+        g.right = r;
+        g.bottom = b;
+    }
+}
+
+/// ページ内容の支配回転の判定に必要な非空白グリフの割合
+const NORM_ROT_MIN_RATIO: f64 = 0.9;
+
+/// 非空白グリフの9割以上が同一の非ゼロ回転を持つときその回転を返す
+///
+/// 返り値は量子化回転(1/2/3 = 90/180/270度)で 支配回転が無ければ0
+fn dominant_rotation(tagged: &[(GlyphPart, u8)]) -> u8 {
+    let mut counts = [0usize; 4];
+    let mut total = 0usize;
+    for (g, r) in tagged {
+        if g.ch.is_whitespace() {
+            continue;
+        }
+        total += 1;
+        if (*r as usize) < 4 {
+            counts[*r as usize] += 1;
+        }
+    }
+    if total == 0 {
+        return 0;
+    }
+    (1..4)
+        .find(|&i| counts[i] as f64 >= NORM_ROT_MIN_RATIO * total as f64)
+        .unwrap_or(0) as u8
+}
+
+/// 進行方向を0/90/180/270度へ量子化する(PDF空間 反時計回り 255=軸外)
+fn quantize_rot(ux: f64, uy: f64) -> u8 {
+    if uy.abs() <= 0.05 && ux > 0.05 {
+        0
+    } else if ux.abs() <= 0.05 && uy > 0.05 {
+        1
+    } else if uy.abs() <= 0.05 && ux < -0.05 {
+        2
+    } else if ux.abs() <= 0.05 && uy < -0.05 {
+        3
+    } else {
+        255
+    }
+}
+
+/// top-down座標の矩形を正規化回転で移す
+fn rotate_box_td(l: f64, t: f64, r: f64, b: f64, w: f64, h: f64, rot: u8) -> (f64, f64, f64, f64) {
+    match rot {
+        1 => (h - b, l, h - t, r),
+        2 => (w - r, h - b, w - l, h - t),
+        3 => (t, w - r, b, w - l),
+        _ => (l, t, r, b),
+    }
 }
 
 /// 語間ギャップに空白グリフを合成する
@@ -106,6 +234,7 @@ fn synth_word_spaces(glyphs: &[GlyphPart]) -> Vec<GlyphPart> {
                         bottom: a.bottom,
                         font_size: a.font_size,
                         upright: a.upright,
+                        rot: a.rot,
                     });
                 }
             }
@@ -124,7 +253,7 @@ pub(crate) fn extract_edges(
     view: [f64; 4],
     ctx: ContentCtx<'_>,
 ) -> Vec<EdgePart> {
-    extract_parts(contents, resources, view, ctx).1
+    extract_parts(contents, resources, view, ctx, 0).1
 }
 
 /// 単位行列
@@ -309,17 +438,33 @@ fn axis_edge(a: (f64, f64), b: (f64, f64), view: [f64; 4]) -> Option<EdgePart> {
 }
 
 /// パスを辺化しバッファを空にする
+///
+/// 軸平行にならない線分と曲線はパス1回分の外接矩形として graphics に集約する
 fn finalize_path(
     path: &mut PathBuilder,
     filled: bool,
     ctm: [f64; 6],
     view: [f64; 4],
     edges: &mut Vec<EdgePart>,
+    graphics: &mut Vec<GraphicPart>,
 ) {
     let segs = std::mem::take(&mut path.segs);
     path.current = None;
 
     let apply = |x: f64, y: f64| apply_ctm(ctm, x, y);
+    let (ox, oy) = (view[0], view[3]);
+    let mut gbox: Option<[f64; 4]> = None;
+    let mut grow = |a: (f64, f64), b: (f64, f64), gbox: &mut Option<[f64; 4]>| {
+        if (a.0 - b.0).abs() <= 0.01 && (a.1 - b.1).abs() <= 0.01 {
+            return;
+        }
+        let (l, r) = (a.0.min(b.0) - ox, a.0.max(b.0) - ox);
+        let (t, bo) = (oy - a.1.max(b.1), oy - a.1.min(b.1));
+        *gbox = Some(match gbox {
+            Some(g) => [g[0].min(l), g[1].min(t), g[2].max(r), g[3].max(bo)],
+            None => [l, t, r, bo],
+        });
+    };
 
     let mut sub_start: Option<(f64, f64)> = None;
     let mut prev: Option<(f64, f64)> = None;
@@ -332,6 +477,8 @@ fn finalize_path(
                     if let (Some(s), Some(p)) = (sub_start, prev) {
                         if let Some(e) = axis_edge(p, s, view) {
                             edges.push(e);
+                        } else {
+                            grow(p, s, &mut gbox);
                         }
                     }
                 }
@@ -343,17 +490,25 @@ fn finalize_path(
                 if let Some(p) = prev {
                     if let Some(e) = axis_edge(p, pt, view) {
                         edges.push(e);
+                    } else {
+                        grow(p, pt, &mut gbox);
                     }
                 }
                 prev = Some(pt);
             }
             Seg::CurveTo(x, y) => {
-                prev = Some(apply(x, y));
+                let pt = apply(x, y);
+                if let Some(p) = prev {
+                    grow(p, pt, &mut gbox);
+                }
+                prev = Some(pt);
             }
             Seg::Close => {
                 if let (Some(s), Some(p)) = (sub_start, prev) {
                     if let Some(e) = axis_edge(p, s, view) {
                         edges.push(e);
+                    } else {
+                        grow(p, s, &mut gbox);
                     }
                     prev = Some(s);
                 }
@@ -365,8 +520,18 @@ fn finalize_path(
         if let (Some(s), Some(p)) = (sub_start, prev) {
             if let Some(e) = axis_edge(p, s, view) {
                 edges.push(e);
+            } else {
+                grow(p, s, &mut gbox);
             }
         }
+    }
+    if let Some(g) = gbox {
+        graphics.push(GraphicPart {
+            left: g[0],
+            top: g[1],
+            right: g[2],
+            bottom: g[3],
+        });
     }
 }
 
@@ -559,8 +724,9 @@ fn interpret(
     resources: &Dict,
     view: [f64; 4],
     ctx: &ContentCtx<'_>,
-    glyphs: &mut Vec<GlyphPart>,
+    glyphs: &mut Vec<(GlyphPart, u8)>,
     edges: &mut Vec<EdgePart>,
+    graphics: &mut Vec<GraphicPart>,
     visiting: &mut HashSet<(u32, u16)>,
     ctm0: [f64; 6],
 ) {
@@ -617,6 +783,7 @@ fn interpret(
                             ctx,
                             glyphs,
                             edges,
+                            graphics,
                             visiting,
                         );
                         stack.clear();
@@ -637,8 +804,9 @@ fn dispatch_op(
     resources: &Dict,
     view: [f64; 4],
     ctx: &ContentCtx<'_>,
-    glyphs: &mut Vec<GlyphPart>,
+    glyphs: &mut Vec<(GlyphPart, u8)>,
     edges: &mut Vec<EdgePart>,
+    graphics: &mut Vec<GraphicPart>,
     visiting: &mut HashSet<(u32, u16)>,
 ) {
     match op {
@@ -691,16 +859,16 @@ fn dispatch_op(
         }
 
         // ペイント（close 系は確定前に閉じを追加）
-        "S" => finalize_path(path, false, *ctm, view, edges),
+        "S" => finalize_path(path, false, *ctm, view, edges, graphics),
         "s" => {
             path.close();
-            finalize_path(path, false, *ctm, view, edges);
+            finalize_path(path, false, *ctm, view, edges, graphics);
         }
-        "f" | "F" | "f*" => finalize_path(path, true, *ctm, view, edges),
-        "B" | "B*" => finalize_path(path, true, *ctm, view, edges),
+        "f" | "F" | "f*" => finalize_path(path, true, *ctm, view, edges, graphics),
+        "B" | "B*" => finalize_path(path, true, *ctm, view, edges, graphics),
         "b" | "b*" => {
             path.close();
-            finalize_path(path, true, *ctm, view, edges);
+            finalize_path(path, true, *ctm, view, edges, graphics);
         }
         "n" => path.clear(),
 
@@ -710,7 +878,7 @@ fn dispatch_op(
         // Form XObject
         "Do" => {
             if let Some(name) = take_name(stack) {
-                do_form_xobject(&name, *ctm, resources, view, ctx, glyphs, edges, visiting);
+                do_form_xobject(&name, *ctm, resources, view, ctx, glyphs, edges, graphics, visiting);
             }
         }
 
@@ -817,7 +985,7 @@ fn show_text_array(
     arr: &[Object],
     ctm: [f64; 6],
     view: [f64; 4],
-    glyphs: &mut Vec<GlyphPart>,
+    glyphs: &mut Vec<(GlyphPart, u8)>,
 ) {
     let mut buf: Vec<u8> = Vec::new();
     for item in arr {
@@ -855,7 +1023,7 @@ fn show_text_bytes(
     extra_spacing: f64,
     ctm: [f64; 6],
     view: [f64; 4],
-    glyphs: &mut Vec<GlyphPart>,
+    glyphs: &mut Vec<(GlyphPart, u8)>,
 ) {
     let Some(font) = text.font.clone() else {
         // フォント未設定時は extra だけの平行移動（TJ 数値のみ）
@@ -887,7 +1055,7 @@ fn show_text_bytes(
         let (ox, oy) = (trm[4], trm[5]);
         let font_size_dev = (trm[2] * trm[2] + trm[3] * trm[3]).sqrt();
         let dlen = (trm[0] * trm[0] + trm[1] * trm[1]).sqrt();
-        let (ux, _uy) = if dlen > 0.0 {
+        let (ux, uy) = if dlen > 0.0 {
             (trm[0] / dlen, trm[1] / dlen)
         } else {
             (1.0, 0.0)
@@ -918,7 +1086,6 @@ fn show_text_bytes(
             mat_mul(ctm, mat_mul(end_tm, tsm))
         };
         let (ex, ey) = (end_trm[4], end_trm[5]);
-        let uy = if dlen > 0.0 { trm[1] / dlen } else { 0.0 };
         let device_w = (ex - ox) * ux + (ey - oy) * uy;
         // 前進方向が水平（回転・鏡映なし）か
         let upright = uy.abs() <= 0.05 && ux > 0.05;
@@ -927,31 +1094,72 @@ fn show_text_bytes(
         let chars: Vec<char> = unicode.chars().collect();
         let nch = chars.len().max(1);
         let per_w = device_w / nch as f64;
+        let a_off = ascent * font_size_dev;
+        let d_off = descent * font_size_dev;
 
-        let top_pdf = oy + ascent * font_size_dev;
-        let bot_pdf = oy + descent * font_size_dev;
-        let top = view_top - top_pdf;
-        let bottom = view_top - bot_pdf;
-
+        let rot = quantize_rot(ux, uy);
         for (k, ch) in chars.into_iter().enumerate() {
             if ch == '\n' || ch == '\r' || ch == '\t' {
                 continue;
             }
-            let gx0 = ox + ux * per_w * k as f64;
-            let gx1 = ox + ux * per_w * (k as f64 + 1.0);
-            glyphs.push(GlyphPart {
-                ch,
-                left: gx0.min(gx1) - view_left,
-                right: gx0.max(gx1) - view_left,
-                top,
-                bottom,
-                font_size: Some(font_size_dev),
-                upright,
-            });
+            let (x0, x1, y0, y1) =
+                glyph_box(ox, oy, ux, uy, per_w * k as f64, per_w * (k as f64 + 1.0), a_off, d_off);
+            glyphs.push((
+                GlyphPart {
+                    ch,
+                    left: x0 - view_left,
+                    right: x1 - view_left,
+                    top: view_top - y1,
+                    bottom: view_top - y0,
+                    font_size: Some(font_size_dev),
+                    upright,
+                    rot: 0,
+                },
+                rot,
+            ));
         }
 
         text.text_matrix = translate_mat(text.text_matrix, advance, 0.0);
     }
+}
+
+/// 進行方向とその直交方向から字箱の外接軸平行矩形を求める
+///
+/// 0/90/180/270度では正確な箱 任意角では外接箱になる
+/// 返り値はPDF空間の (x_min, x_max, y_min, y_max)
+fn glyph_box(
+    ox: f64,
+    oy: f64,
+    ux: f64,
+    uy: f64,
+    s: f64,
+    t: f64,
+    a_off: f64,
+    d_off: f64,
+) -> (f64, f64, f64, f64) {
+    // 上方向は進行方向を+90度回した向き
+    let (px, py) = (-uy, ux);
+    let xs = [
+        ox + ux * s + px * d_off,
+        ox + ux * s + px * a_off,
+        ox + ux * t + px * d_off,
+        ox + ux * t + px * a_off,
+    ];
+    let ys = [
+        oy + uy * s + py * d_off,
+        oy + uy * s + py * a_off,
+        oy + uy * t + py * d_off,
+        oy + uy * t + py * a_off,
+    ];
+    let fold = |v: &[f64; 4]| {
+        v.iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &x| {
+                (lo.min(x), hi.max(x))
+            })
+    };
+    let (x0, x1) = fold(&xs);
+    let (y0, y1) = fold(&ys);
+    (x0, x1, y0, y1)
 }
 
 fn do_form_xobject(
@@ -960,8 +1168,9 @@ fn do_form_xobject(
     resources: &Dict,
     view: [f64; 4],
     ctx: &ContentCtx<'_>,
-    glyphs: &mut Vec<GlyphPart>,
+    glyphs: &mut Vec<(GlyphPart, u8)>,
     edges: &mut Vec<EdgePart>,
+    graphics: &mut Vec<GraphicPart>,
     visiting: &mut HashSet<(u32, u16)>,
 ) {
     let Some(xo_obj) = resources.get("XObject") else {
@@ -1050,6 +1259,7 @@ fn do_form_xobject(
         ctx,
         glyphs,
         edges,
+        graphics,
         visiting,
         mat_mul(ctm, form_mat),
     );
@@ -1121,6 +1331,54 @@ mod tests {
                 && approx(e.top, top)
                 && approx(e.bottom, bottom)
         })
+    }
+
+    /// 90度正規化の座標移送
+    #[test]
+    fn rotate_box_td_90_moves_axes() {
+        let (l, t, r, b) = rotate_box_td(10.0, 20.0, 30.0, 40.0, 100.0, 200.0, 1);
+        assert!(approx(l, 160.0) && approx(t, 10.0) && approx(r, 180.0) && approx(b, 30.0));
+    }
+
+    /// 270度正規化の座標移送
+    #[test]
+    fn rotate_box_td_270_moves_axes() {
+        let (l, t, r, b) = rotate_box_td(10.0, 20.0, 30.0, 40.0, 100.0, 200.0, 3);
+        assert!(approx(l, 20.0) && approx(t, 70.0) && approx(r, 40.0) && approx(b, 90.0));
+    }
+
+    /// 正立: xが進行区間 yがディセント〜アセント
+    #[test]
+    fn glyph_box_upright_matches_axes() {
+        let (x0, x1, y0, y1) = glyph_box(10.0, 100.0, 1.0, 0.0, 0.0, 5.0, 8.0, -2.0);
+        assert!(approx(x0, 10.0) && approx(x1, 15.0));
+        assert!(approx(y0, 98.0) && approx(y1, 108.0));
+    }
+
+    /// 90度回転: 幅がアセント幅になり 進行区間がyへ移る
+    #[test]
+    fn glyph_box_rotated_90_has_width() {
+        let (x0, x1, y0, y1) = glyph_box(10.0, 100.0, 0.0, 1.0, 0.0, 5.0, 8.0, -2.0);
+        assert!(approx(x0, 2.0) && approx(x1, 12.0));
+        assert!(approx(y0, 100.0) && approx(y1, 105.0));
+    }
+
+    /// /Rotate 90 で線分が表示座標系へ回る
+    #[test]
+    fn page_rotate_moves_edges_to_display_frame() {
+        let (_, edges, _, _) = extract_parts(
+            b"10 20 50 50 re S",
+            &Dict::new(),
+            [0.0, 0.0, 100.0, 200.0],
+            ContentCtx {
+                data: &[],
+                xref: None,
+            },
+            90,
+        );
+        assert_eq!(edges.len(), 4);
+        // 元の下辺 (10..60, y_pdf=20 -> td180) が x=20 の縦線 y=[10..60] になる
+        assert!(find_edge(&edges, Orientation::Vertical, 20.0, 20.0, 10.0, 60.0));
     }
 
     /// re + S で4辺
@@ -1410,6 +1668,7 @@ Q
                 data: &[],
                 xref: None,
             },
+            0,
         )
         .0
     }

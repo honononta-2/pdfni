@@ -23,6 +23,12 @@ pub struct TextSettings {
     pub untyped_min_rows: usize,
     /// 文章らしいセルの許容割合
     pub max_prose_ratio: f64,
+    /// 文章比率超過を整列で救済する場合の最小充填率
+    pub prose_override_min_fill: f64,
+    /// 同じく各列の左端整列率の下限
+    pub prose_override_min_align: f64,
+    /// 同じく最小行数
+    pub prose_override_min_rows: usize,
 }
 
 impl Default for TextSettings {
@@ -36,6 +42,9 @@ impl Default for TextSettings {
             min_fill: 0.3,
             untyped_min_rows: 4,
             max_prose_ratio: 0.4,
+            prose_override_min_fill: 0.9,
+            prose_override_min_align: 0.95,
+            prose_override_min_rows: 4,
         }
     }
 }
@@ -71,6 +80,42 @@ pub(crate) fn is_prose_cell(s: &str) -> bool {
         || t.ends_with('：')
         || t.contains('：')
         || t.contains(": ")
+}
+
+/// 文章比率が高くても表として受理する整列条件
+///
+/// ほぼ全セルが埋まり各列の左端が揃う候補は長文セルの表とみなす
+fn aligned_full_grid(t: &Table, s: &TextSettings) -> bool {
+    if t.n_rows < s.prose_override_min_rows {
+        return false;
+    }
+    let filled = t
+        .data
+        .iter()
+        .flatten()
+        .filter(|c| !c.text.trim().is_empty())
+        .count();
+    if (filled as f64) < s.prose_override_min_fill * (t.n_rows * t.n_cols) as f64 {
+        return false;
+    }
+    let mut aligns: Vec<f64> = Vec::new();
+    for c in 0..t.n_cols {
+        let x0s: Vec<f64> = t
+            .data
+            .iter()
+            .filter_map(|r| r.get(c))
+            .filter(|cell| !cell.text.trim().is_empty() && cell.bbox.width() > 0.0)
+            .map(|cell| cell.bbox.x0)
+            .collect();
+        if x0s.len() < 2 {
+            continue;
+        }
+        let med = median(x0s.clone());
+        let hit = x0s.iter().filter(|x| (*x - med).abs() <= 2.0).count();
+        aligns.push(hit as f64 / x0s.len() as f64);
+    }
+    !aligns.is_empty()
+        && aligns.iter().sum::<f64>() / aligns.len() as f64 >= s.prose_override_min_align
 }
 
 /// 数値や日付とみなせるセルか
@@ -412,7 +457,9 @@ pub fn detect(segs: &[Seg], s: &TextSettings, scale: Option<f64>) -> Vec<Table> 
         let n_rows = member_row_ids.iter().copied().max().unwrap_or(0) + 1;
         if let Some(t) = build_table(segs, &members, &member_row_ids, n_rows, s) {
             // 表らしさによる棄却
-            if (t.n_rows >= s.untyped_min_rows || has_typed_column(&t)) && !prose_heavy(&t, s) {
+            if (t.n_rows >= s.untyped_min_rows || has_typed_column(&t))
+                && (!prose_heavy(&t, s) || aligned_full_grid(&t, s))
+            {
                 tables.push(t);
             }
         }
@@ -518,6 +565,65 @@ fn build_table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 25文字の長文セルで埋めた表を作る x0sは列0の各行の左端
+    fn long_text_table(n_rows: usize, x0s: &[f64], fill_all: bool) -> Table {
+        let text = "a".repeat(25);
+        let mut data = Vec::new();
+        for r in 0..n_rows {
+            let mut row = Vec::new();
+            for c in 0..2 {
+                let x0 = if c == 0 { x0s[r % x0s.len()] } else { 200.0 };
+                let empty = !fill_all && c == 1 && r % 2 == 0;
+                row.push(Cell {
+                    text: if empty { String::new() } else { text.clone() },
+                    bbox: BBox {
+                        x0,
+                        top: 10.0 * r as f64,
+                        x1: x0 + 100.0,
+                        bottom: 10.0 * r as f64 + 8.0,
+                    },
+                });
+            }
+            data.push(row);
+        }
+        Table {
+            extraction_method: "text",
+            bbox: BBox {
+                x0: 0.0,
+                top: 0.0,
+                x1: 300.0,
+                bottom: 10.0 * n_rows as f64,
+            },
+            n_rows,
+            n_cols: 2,
+            data,
+        }
+    }
+
+    #[test]
+    fn aligned_full_grid_accepts_aligned_long_text_table() {
+        let t = long_text_table(4, &[50.0], true);
+        assert!(aligned_full_grid(&t, &TextSettings::default()));
+    }
+
+    #[test]
+    fn aligned_full_grid_rejects_ragged_columns() {
+        let t = long_text_table(4, &[50.0, 58.0, 66.0, 74.0], true);
+        assert!(!aligned_full_grid(&t, &TextSettings::default()));
+    }
+
+    #[test]
+    fn aligned_full_grid_rejects_sparse_fill() {
+        let t = long_text_table(4, &[50.0], false);
+        assert!(!aligned_full_grid(&t, &TextSettings::default()));
+    }
+
+    #[test]
+    fn aligned_full_grid_rejects_few_rows() {
+        let t = long_text_table(3, &[50.0], true);
+        assert!(!aligned_full_grid(&t, &TextSettings::default()));
+    }
 
     #[test]
     fn cluster_splits_by_tolerance() {

@@ -44,15 +44,25 @@ pub fn read_pages_rs(bytes: &[u8], password: Option<&str>) -> Result<Vec<PagePar
     Ok(page_infos
         .into_iter()
         .map(|p| {
-            let (glyphs, edges) = extract_parts(&p.contents, &p.resources, p.view, ContentCtx {
-                data: ctx.data,
-                xref: ctx.xref,
-            });
+            let (glyphs, edges, graphics, norm_rotate) =
+                extract_parts(&p.contents, &p.resources, p.view, ContentCtx {
+                    data: ctx.data,
+                    xref: ctx.xref,
+                }, p.rotate);
+            let (mut width, mut height) = (view_width(p.view), view_height(p.view));
+            if p.rotate == 90 || p.rotate == 270 {
+                std::mem::swap(&mut width, &mut height);
+            }
+            if norm_rotate == 90 || norm_rotate == 270 {
+                std::mem::swap(&mut width, &mut height);
+            }
             PagePart {
-                width: view_width(p.view),
-                height: view_height(p.view),
+                width,
+                height,
                 glyphs,
                 edges,
+                norm_rotate,
+                graphics,
             }
         })
         .collect())

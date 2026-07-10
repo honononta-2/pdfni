@@ -18,7 +18,9 @@ pub use detect_hybrid::HybridSettings;
 pub use detect_lattice::LatticeSettings;
 pub use detect_text::TextSettings;
 pub use error::{Error, Result};
-pub use extract::{DetectMode, EdgePart, ExtractOptions, GlyphPart, PagePart, extract_from_parts};
+pub use extract::{
+    DetectMode, EdgePart, ExtractOptions, GlyphPart, GraphicPart, PagePart, extract_from_parts,
+};
 #[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
 pub use extract::{
     extract, extract_from_bytes, extract_from_bytes_with_options, extract_with_options,

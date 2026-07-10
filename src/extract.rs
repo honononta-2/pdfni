@@ -24,6 +24,13 @@ pub struct PagePart {
     pub height: f64,
     pub glyphs: Vec<GlyphPart>,
     pub edges: Vec<EdgePart>,
+    /// リーダーが検出用に正規化したページ内容の回転角(0/90/180/270)
+    /// 非0のとき width/height と各座標は正規化後の値で 出力時に元へ戻す
+    #[serde(default)]
+    pub norm_rotate: i32,
+    /// 非罫線グラフィックの外接矩形(省略可)
+    #[serde(default)]
+    pub graphics: Vec<GraphicPart>,
 }
 
 /// 外部リーダーから受け取る1文字
@@ -40,6 +47,9 @@ pub struct GlyphPart {
     /// 回転していない横書きグリフか。false は表の材料から除外される
     #[serde(default = "upright_default")]
     pub upright: bool,
+    /// 軸平行な回転角(0/90/180/270)。軸外の回転は0のまま upright=false で除外される
+    #[serde(default)]
+    pub rot: i32,
 }
 
 fn upright_default() -> bool {
@@ -50,6 +60,17 @@ fn upright_default() -> bool {
 #[derive(Debug, Clone, Deserialize)]
 pub struct EdgePart {
     pub orientation: Orientation,
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
+}
+
+/// 外部リーダーから受け取る非罫線グラフィックの外接矩形
+///
+/// 曲線や斜め線を含むパス1回の描画につき1個。チャート領域の判定材料
+#[derive(Debug, Clone, Deserialize)]
+pub struct GraphicPart {
     pub left: f64,
     pub right: f64,
     pub top: f64,
@@ -358,6 +379,16 @@ fn aligned_col_count(a: &[&Seg], b: &[&Seg], tol: f64) -> usize {
     ids.iter().copied().max().unwrap_or(0) + 1
 }
 
+/// 数値主体の行か
+///
+/// 数字を含みアルファベットを含まない行に加え 科学記法のe/Eだけは字として許す
+/// 記号（% 桁区切り 括弧 通貨等）は従来通り不問
+fn numeric_typed_line(l: &[&Glyph]) -> bool {
+    l.iter().any(|g| g.ch.is_ascii_digit())
+        && l.iter()
+            .all(|g| !g.ch.is_alphabetic() || matches!(g.ch, 'e' | 'E'))
+}
+
 /// セル内の1テキスト行と型付き内容の特徴
 struct LineMark {
     col: usize,
@@ -402,13 +433,7 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph], scale: Option<f64>) -> Ve
         if !cur.is_empty() {
             lines.push(cur);
         }
-        let typed: Vec<bool> = lines
-            .iter()
-            .map(|l| {
-                l.iter().any(|g| g.ch.is_ascii_digit())
-                    && !l.iter().any(|g| g.ch.is_alphabetic())
-            })
-            .collect();
+        let typed: Vec<bool> = lines.iter().map(|l| numeric_typed_line(l)).collect();
         let typed_majority = typed.iter().filter(|&&t| t).count() * 2 >= lines.len();
         for (k, l) in lines.iter().enumerate() {
             marks.push(LineMark {
@@ -440,6 +465,8 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph], scale: Option<f64>) -> Ve
         bot[rid] = bot[rid].max(marks[k].bot);
         typed_any[rid] |= marks[k].typed_evidence;
     }
+    // 数値型の裏づけがある行クラスタだけを行境界とする
+    // 文字だけの行クラスタは折返しと区別できないため証拠にしない
     let splits = |i: usize| cols[i].len() >= 2 && typed_any[i];
 
     let mut order: Vec<usize> = (0..n).collect();
@@ -451,6 +478,90 @@ fn row_split_boundaries(row: &[Cell], chars: &[Glyph], scale: Option<f64>) -> Ve
         }
     }
     out
+}
+
+/// セル内の空白がx境界での分割を許すか
+///
+/// 境界をまたぐグリフが無く 境界を含む空白が字高スケール比で十分広いときだけ許す
+/// 結合セルの跨ぎテキストは境界がグリフに当たるため自然に保護される
+fn col_split_allowed(gs: &[&Glyph], x: f64, gap_min: f64) -> bool {
+    let mut left = f64::NEG_INFINITY;
+    let mut right = f64::INFINITY;
+    for g in gs {
+        if g.bbox.cx() < x {
+            left = left.max(g.bbox.x1);
+        } else {
+            right = right.min(g.bbox.x0);
+        }
+    }
+    left <= x + 0.5 && right >= x - 0.5 && right - left >= gap_min
+}
+
+/// 疎罫線で複数列にまたがるセルを格子の列軸で細分する
+fn refine_lattice_cols(t: &mut Table, chars: &[Glyph], scale: Option<f64>) {
+    if t.n_cols < 2 {
+        return;
+    }
+    // 列軸のx座標。非退化セルを持たない列は境界不明として扱う
+    let mut xs: Vec<Option<f64>> = vec![None; t.n_cols];
+    for row in &t.data {
+        for (j, cell) in row.iter().enumerate() {
+            if cell.bbox.width() > 0.0 && xs[j].is_none() {
+                xs[j] = Some(cell.bbox.x0);
+            }
+        }
+    }
+
+    for row in &mut t.data {
+        for j in 0..row.len() {
+            let cell = &row[j];
+            if cell.bbox.width() <= 0.0 || cell.bbox.height() <= 0.0 {
+                continue;
+            }
+            // このセルが覆う列境界
+            let bounds: Vec<(usize, f64)> = (j + 1..t.n_cols)
+                .filter_map(|b| xs[b].map(|x| (b, x)))
+                .filter(|&(_, x)| x > cell.bbox.x0 + 1.0 && x < cell.bbox.x1 - 1.0)
+                .collect();
+            if bounds.is_empty() {
+                continue;
+            }
+            let gs: Vec<&Glyph> = chars
+                .iter()
+                .filter(|g| !g.ch.is_whitespace() && cell.bbox.contains_center(&g.bbox))
+                .collect();
+            let gap_min = 0.5
+                * scale.unwrap_or_else(|| {
+                    let mut hs: Vec<f64> = gs.iter().map(|g| g.bbox.height()).collect();
+                    hs.sort_by(|a, b| a.total_cmp(b));
+                    hs.get(hs.len() / 2).copied().unwrap_or(0.0)
+                });
+            let cuts: Vec<(usize, f64)> = bounds
+                .into_iter()
+                .filter(|&(_, x)| col_split_allowed(&gs, x, gap_min))
+                .collect();
+            if cuts.is_empty() {
+                continue;
+            }
+            let (top, bottom, x_end) = (cell.bbox.top, cell.bbox.bottom, cell.bbox.x1);
+            let mut slot = j;
+            let mut x_start = cell.bbox.x0;
+            for (b, x) in cuts.into_iter().chain(std::iter::once((t.n_cols, x_end))) {
+                let bb = BBox {
+                    x0: x_start,
+                    top,
+                    x1: x,
+                    bottom,
+                };
+                row[slot] = Cell {
+                    text: cell_text(chars, &bb),
+                    bbox: bb,
+                };
+                slot = b;
+                x_start = x;
+            }
+        }
+    }
 }
 
 /// 疎罫線の罫線行内をテキスト行で細分する
@@ -715,23 +826,19 @@ pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Doc
         .enumerate()
         .map(|(pi, part)| {
             let scale = fs_threshold_scale(&part.glyphs);
-            let chars: Vec<Glyph> = part
-                .glyphs
-                .into_iter()
-                .filter(|g| g.upright)
-                .map(|g| Glyph {
-                    ch: g.ch,
-                    bbox: BBox {
-                        x0: g.left.min(g.right),
-                        top: g.top.min(g.bottom),
-                        x1: g.left.max(g.right),
-                        bottom: g.top.max(g.bottom),
-                    },
-                })
-                .collect();
+            let to_glyph = |g: &GlyphPart| Glyph {
+                ch: g.ch,
+                bbox: BBox {
+                    x0: g.left.min(g.right),
+                    top: g.top.min(g.bottom),
+                    x1: g.left.max(g.right),
+                    bottom: g.top.max(g.bottom),
+                },
+            };
+            let chars: Vec<Glyph> = part.glyphs.iter().filter(|g| g.upright).map(to_glyph).collect();
             let mut edges: Vec<Edge> = part
                 .edges
-                .into_iter()
+                .iter()
                 .map(|e| Edge {
                     x0: e.left.min(e.right),
                     top: e.top.min(e.bottom),
@@ -744,17 +851,193 @@ pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Doc
             if let Some(s) = scale {
                 edges.retain(|e| e.length() >= 0.5 * s);
             }
+            let mut tables = detect_tables(&chars, &edges, options, scale);
+
+            // ページ内で部分的に回転している表の検出
+            // 同じ回転角のグリフ群を回転フレームへ写して検出し 結果を戻して合流する
+            for rot in [90, 180, 270] {
+                let group: Vec<&GlyphPart> = part
+                    .glyphs
+                    .iter()
+                    .filter(|g| !g.upright && g.rot == rot)
+                    .collect();
+                if group.iter().filter(|g| !g.ch.is_whitespace()).count()
+                    < options.text.min_table_segs
+                {
+                    continue;
+                }
+                let (w, h) = (part.width, part.height);
+                let chars_r: Vec<Glyph> = group
+                    .iter()
+                    .map(|g| {
+                        let mut gl = to_glyph(g);
+                        gl.bbox = norm_box(&gl.bbox, rot, w, h);
+                        gl
+                    })
+                    .collect();
+                let edges_r: Vec<Edge> = edges
+                    .iter()
+                    .map(|e| {
+                        let bb = norm_box(
+                            &BBox {
+                                x0: e.x0,
+                                top: e.top,
+                                x1: e.x1,
+                                bottom: e.bottom,
+                            },
+                            rot,
+                            w,
+                            h,
+                        );
+                        Edge {
+                            x0: bb.x0,
+                            top: bb.top,
+                            x1: bb.x1,
+                            bottom: bb.bottom,
+                            orientation: if rot == 180 {
+                                e.orientation
+                            } else {
+                                match e.orientation {
+                                    Orientation::Horizontal => Orientation::Vertical,
+                                    Orientation::Vertical => Orientation::Horizontal,
+                                }
+                            },
+                        }
+                    })
+                    .collect();
+                let (fw, fh) = if rot == 180 { (w, h) } else { (h, w) };
+                for mut t in detect_tables(&chars_r, &edges_r, options, scale) {
+                    t.bbox = denorm_box(&t.bbox, rot, fw, fh);
+                    for cell in t.data.iter_mut().flatten() {
+                        if cell.bbox.width() > 0.0 || cell.bbox.height() > 0.0 {
+                            cell.bbox = denorm_box(&cell.bbox, rot, fw, fh);
+                        }
+                    }
+                    if !overlaps_any(&t.bbox, &tables) {
+                        tables.push(t);
+                    }
+                }
+            }
+            // チャート領域(曲線・斜め線に覆われた領域)の候補を棄却する
+            tables.retain(|t| graphics_coverage(&t.bbox, &part.graphics) < GRAPHICS_COVER_MAX);
+            tables.sort_by(|a, b| {
+                a.bbox
+                    .top
+                    .total_cmp(&b.bbox.top)
+                    .then_with(|| a.bbox.x0.total_cmp(&b.bbox.x0))
+            });
+
+            let (mut width, mut height) = (part.width, part.height);
+            if part.norm_rotate != 0 {
+                // リーダーの正規化回転を戻し元のページ座標系で出力する
+                for t in &mut tables {
+                    t.bbox = denorm_box(&t.bbox, part.norm_rotate, part.width, part.height);
+                    for cell in t.data.iter_mut().flatten() {
+                        if cell.bbox.width() > 0.0 || cell.bbox.height() > 0.0 {
+                            cell.bbox =
+                                denorm_box(&cell.bbox, part.norm_rotate, part.width, part.height);
+                        }
+                    }
+                }
+                if part.norm_rotate != 180 {
+                    std::mem::swap(&mut width, &mut height);
+                }
+            }
             Page {
                 page_number: pi + 1,
-                width: part.width,
-                height: part.height,
-                tables: detect_tables(&chars, &edges, options, scale),
+                width,
+                height,
+                tables,
             }
         })
         .collect();
     Document {
         source: "<parts>".to_string(),
         pages: out,
+    }
+}
+
+/// ページ座標を回転フレームへ写す(denorm_boxの逆方向)
+///
+/// w h は元のページ寸法
+fn norm_box(b: &BBox, rot: i32, w: f64, h: f64) -> BBox {
+    match rot {
+        90 => BBox {
+            x0: h - b.bottom,
+            top: b.x0,
+            x1: h - b.top,
+            bottom: b.x1,
+        },
+        180 => BBox {
+            x0: w - b.x1,
+            top: h - b.bottom,
+            x1: w - b.x0,
+            bottom: h - b.top,
+        },
+        270 => BBox {
+            x0: b.top,
+            top: w - b.x1,
+            x1: b.bottom,
+            bottom: w - b.x0,
+        },
+        _ => *b,
+    }
+}
+
+/// グラフィック被覆率がこの値以上の表候補はチャート領域として棄却する
+const GRAPHICS_COVER_MAX: f64 = 0.5;
+
+/// 表bboxのうちグラフィック矩形に覆われる割合
+///
+/// 20x20の格子サンプリングで近似する
+fn graphics_coverage(b: &BBox, graphics: &[GraphicPart]) -> f64 {
+    if graphics.is_empty() || b.width() <= 0.0 || b.height() <= 0.0 {
+        return 0.0;
+    }
+    let n = 20;
+    let mut hit = 0;
+    for i in 0..n {
+        for j in 0..n {
+            let x = b.x0 + (i as f64 + 0.5) / n as f64 * b.width();
+            let y = b.top + (j as f64 + 0.5) / n as f64 * b.height();
+            let inside = graphics.iter().any(|g| {
+                g.left.min(g.right) <= x
+                    && x <= g.left.max(g.right)
+                    && g.top.min(g.bottom) <= y
+                    && y <= g.top.max(g.bottom)
+            });
+            if inside {
+                hit += 1;
+            }
+        }
+    }
+    hit as f64 / (n * n) as f64
+}
+
+/// 正規化回転された座標を元のページ座標へ戻す
+///
+/// w h は正規化後のページ寸法
+fn denorm_box(b: &BBox, rot: i32, w: f64, h: f64) -> BBox {
+    match rot {
+        90 => BBox {
+            x0: b.top,
+            top: w - b.x1,
+            x1: b.bottom,
+            bottom: w - b.x0,
+        },
+        180 => BBox {
+            x0: w - b.x1,
+            top: h - b.bottom,
+            x1: w - b.x0,
+            bottom: h - b.top,
+        },
+        270 => BBox {
+            x0: h - b.bottom,
+            top: b.x0,
+            x1: h - b.top,
+            bottom: b.x1,
+        },
+        _ => *b,
     }
 }
 
@@ -779,6 +1062,11 @@ fn detect_tables(
         tables.retain(|t| {
             !lattice_cols_too_coarse(t, &all_segs, options.lattice.col_check_margin, scale)
         });
+    }
+    if options.lattice.refine_cols {
+        for t in &mut tables {
+            refine_lattice_cols(t, chars, scale);
+        }
     }
     if options.lattice.refine_rows {
         for t in &mut tables {
@@ -843,4 +1131,254 @@ fn detect_tables(
             .then_with(|| a.bbox.x0.total_cmp(&b.bbox.x0))
     });
     tables
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn glyph(ch: char, x0: f64, x1: f64, top: f64, bottom: f64) -> Glyph {
+        Glyph {
+            ch,
+            bbox: BBox {
+                x0,
+                top,
+                x1,
+                bottom,
+            },
+        }
+    }
+
+    fn cell(x0: f64, top: f64, x1: f64, bottom: f64, text: &str) -> Cell {
+        Cell {
+            text: text.to_string(),
+            bbox: BBox {
+                x0,
+                top,
+                x1,
+                bottom,
+            },
+        }
+    }
+
+    fn empty_cell() -> Cell {
+        cell(0.0, 0.0, 0.0, 0.0, "")
+    }
+
+    /// ヘッダー行だけ2列に割れ 本体行が全幅1セルの格子
+    fn header_only_grid() -> Table {
+        Table {
+            extraction_method: "lattice",
+            bbox: BBox {
+                x0: 0.0,
+                top: 0.0,
+                x1: 100.0,
+                bottom: 20.0,
+            },
+            n_rows: 2,
+            n_cols: 2,
+            data: vec![
+                vec![cell(0.0, 0.0, 50.0, 10.0, "h1"), cell(50.0, 0.0, 100.0, 10.0, "h2")],
+                vec![cell(0.0, 10.0, 100.0, 20.0, "a b"), empty_cell()],
+            ],
+        }
+    }
+
+    #[test]
+    fn graphics_coverage_counts_sampled_area() {
+        let b = BBox {
+            x0: 0.0,
+            top: 0.0,
+            x1: 100.0,
+            bottom: 100.0,
+        };
+        let full = vec![GraphicPart {
+            left: -1.0,
+            right: 101.0,
+            top: -1.0,
+            bottom: 101.0,
+        }];
+        assert_eq!(graphics_coverage(&b, &full), 1.0);
+        let strip = vec![GraphicPart {
+            left: 0.0,
+            right: 20.0,
+            top: 0.0,
+            bottom: 100.0,
+        }];
+        assert_eq!(graphics_coverage(&b, &strip), 0.2);
+        assert_eq!(graphics_coverage(&b, &[]), 0.0);
+    }
+
+    #[test]
+    fn norm_box_roundtrips_with_denorm() {
+        let b = BBox {
+            x0: 10.0,
+            top: 20.0,
+            x1: 30.0,
+            bottom: 40.0,
+        };
+        for rot in [90, 180, 270] {
+            let (w, h) = (100.0, 200.0);
+            let n = norm_box(&b, rot, w, h);
+            let (fw, fh) = if rot == 180 { (w, h) } else { (h, w) };
+            let o = denorm_box(&n, rot, fw, fh);
+            assert_eq!((o.x0, o.top, o.x1, o.bottom), (10.0, 20.0, 30.0, 40.0));
+        }
+    }
+
+    #[test]
+    fn denorm_box_90_restores_original() {
+        // 元100x200のページを90度正規化した200x100上の箱を戻す
+        let b = BBox {
+            x0: 160.0,
+            top: 10.0,
+            x1: 180.0,
+            bottom: 30.0,
+        };
+        let o = denorm_box(&b, 90, 200.0, 100.0);
+        assert_eq!((o.x0, o.top, o.x1, o.bottom), (10.0, 20.0, 30.0, 40.0));
+    }
+
+    #[test]
+    fn denorm_box_270_restores_original() {
+        let b = BBox {
+            x0: 20.0,
+            top: 70.0,
+            x1: 40.0,
+            bottom: 90.0,
+        };
+        let o = denorm_box(&b, 270, 200.0, 100.0);
+        assert_eq!((o.x0, o.top, o.x1, o.bottom), (10.0, 20.0, 30.0, 40.0));
+    }
+
+    #[test]
+    fn refine_cols_splits_full_width_cell_at_column_axis() {
+        let mut t = header_only_grid();
+        let chars = vec![
+            glyph('a', 5.0, 10.0, 12.0, 18.0),
+            glyph('b', 55.0, 60.0, 12.0, 18.0),
+        ];
+        refine_lattice_cols(&mut t, &chars, None);
+        assert_eq!(t.data[1][0].text, "a");
+        assert_eq!(t.data[1][1].text, "b");
+        assert_eq!(t.data[1][0].bbox.x1, 50.0);
+        assert_eq!(t.data[1][1].bbox.x0, 50.0);
+    }
+
+    #[test]
+    fn refine_cols_keeps_cell_when_glyph_straddles_axis() {
+        let mut t = header_only_grid();
+        let chars = vec![
+            glyph('a', 5.0, 10.0, 12.0, 18.0),
+            glyph('c', 45.0, 55.0, 12.0, 18.0),
+        ];
+        refine_lattice_cols(&mut t, &chars, None);
+        assert_eq!(t.data[1][0].bbox.x1, 100.0);
+        assert_eq!(t.data[1][1].bbox.width(), 0.0);
+    }
+
+    #[test]
+    fn refine_cols_keeps_cell_when_gap_is_too_narrow() {
+        let mut t = header_only_grid();
+        let chars = vec![
+            glyph('a', 5.0, 49.0, 12.0, 18.0),
+            glyph('b', 51.0, 95.0, 12.0, 18.0),
+        ];
+        refine_lattice_cols(&mut t, &chars, None);
+        assert_eq!(t.data[1][0].bbox.x1, 100.0);
+    }
+
+    /// 1罫線行に複数セルを横に並べ 各セルに2テキスト行を入れる
+    fn one_band_table(n_cells: usize) -> Table {
+        let w = 50.0;
+        let row: Vec<Cell> = (0..n_cells)
+            .map(|j| cell(w * j as f64, 0.0, w * (j + 1) as f64, 30.0, ""))
+            .collect();
+        Table {
+            extraction_method: "lattice",
+            bbox: BBox {
+                x0: 0.0,
+                top: 0.0,
+                x1: w * n_cells as f64,
+                bottom: 30.0,
+            },
+            n_rows: 1,
+            n_cols: n_cells,
+            data: vec![row],
+        }
+    }
+
+    fn two_lines(chars: &mut Vec<Glyph>, cell_idx: usize, line1: &str, line2: &str) {
+        for (k, s) in [line1, line2].iter().enumerate() {
+            let top = 2.0 + 10.0 * k as f64;
+            for (i, ch) in s.chars().enumerate() {
+                let x = 50.0 * cell_idx as f64 + 5.0 + 4.0 * i as f64;
+                chars.push(glyph(ch, x, x + 3.0, top, top + 6.0));
+            }
+        }
+    }
+
+    #[test]
+    fn refine_rows_splits_on_scientific_notation() {
+        let mut t = one_band_table(2);
+        let mut chars = Vec::new();
+        two_lines(&mut chars, 0, "ab", "cd");
+        two_lines(&mut chars, 1, "1E5", "2E6");
+        refine_lattice_rows(&mut t, &chars, None);
+        assert_eq!(t.n_rows, 2);
+        assert_eq!(t.data[0][1].text, "1E5");
+        assert_eq!(t.data[1][1].text, "2E6");
+    }
+
+    #[test]
+    fn refine_rows_keeps_text_only_lines() {
+        // 文字だけの行クラスタは折返しと区別できないため列数に関わらず割らない
+        for n_cells in [2, 3] {
+            let mut t = one_band_table(n_cells);
+            let mut chars = Vec::new();
+            for j in 0..n_cells {
+                two_lines(&mut chars, j, "ab", "cd");
+            }
+            refine_lattice_rows(&mut t, &chars, None);
+            assert_eq!(t.n_rows, 1);
+        }
+    }
+
+    #[test]
+    fn refine_cols_spans_only_failed_boundary() {
+        let mut t = Table {
+            extraction_method: "lattice",
+            bbox: BBox {
+                x0: 0.0,
+                top: 0.0,
+                x1: 150.0,
+                bottom: 20.0,
+            },
+            n_rows: 2,
+            n_cols: 3,
+            data: vec![
+                vec![
+                    cell(0.0, 0.0, 50.0, 10.0, "h1"),
+                    cell(50.0, 0.0, 100.0, 10.0, "h2"),
+                    cell(100.0, 0.0, 150.0, 10.0, "h3"),
+                ],
+                vec![
+                    cell(0.0, 10.0, 150.0, 20.0, "a bc"),
+                    empty_cell(),
+                    empty_cell(),
+                ],
+            ],
+        };
+        let chars = vec![
+            glyph('a', 5.0, 10.0, 12.0, 18.0),
+            glyph('b', 95.0, 99.0, 12.0, 18.0),
+            glyph('c', 101.0, 110.0, 12.0, 18.0),
+        ];
+        refine_lattice_cols(&mut t, &chars, None);
+        assert_eq!(t.data[1][0].text, "a");
+        assert_eq!(t.data[1][0].bbox.x1, 50.0);
+        assert_eq!(t.data[1][1].text, "bc");
+        assert_eq!(t.data[1][1].bbox.x1, 150.0);
+        assert_eq!(t.data[1][2].bbox.width(), 0.0);
+    }
 }

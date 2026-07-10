@@ -1,6 +1,6 @@
 //! 純Rustリーダーの parts を pdfium_probe 同一スキーマで JSON 出力する
 
-use reticella::{Orientation, read_pages_rs};
+use reticella::{GraphicPart, Orientation, read_pages_rs};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -13,6 +13,8 @@ struct Glyph {
     /// デバイス座標のフォントサイズ（0 = 不明）
     fs: f64,
     upright: bool,
+    /// 軸平行の回転角（0/90/180/270）
+    rot: i32,
 }
 
 #[derive(Serialize)]
@@ -25,12 +27,24 @@ struct Edge {
 }
 
 #[derive(Serialize)]
+struct Graphic {
+    x0: f64,
+    x1: f64,
+    top: f64,
+    bottom: f64,
+}
+
+#[derive(Serialize)]
 struct PageOut {
     width: f64,
     height: f64,
     rotate: i32,
+    /// リーダーが正規化したページ内容の支配回転（0/90/180/270）
+    norm_rotate: i32,
     glyphs: Vec<Glyph>,
     edges: Vec<Edge>,
+    /// 非罫線グラフィックの外接矩形
+    graphics: Vec<Graphic>,
 }
 
 #[derive(Serialize)]
@@ -72,6 +86,7 @@ fn main() {
             width: p.width,
             height: p.height,
             rotate: 0,
+            norm_rotate: p.norm_rotate,
             glyphs: p
                 .glyphs
                 .into_iter()
@@ -83,6 +98,17 @@ fn main() {
                     bottom: g.bottom,
                     fs: g.font_size.unwrap_or(0.0),
                     upright: g.upright,
+                    rot: g.rot,
+                })
+                .collect(),
+            graphics: p
+                .graphics
+                .iter()
+                .map(|g: &GraphicPart| Graphic {
+                    x0: g.left,
+                    x1: g.right,
+                    top: g.top,
+                    bottom: g.bottom,
                 })
                 .collect(),
             edges: p
