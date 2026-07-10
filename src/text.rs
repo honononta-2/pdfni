@@ -610,8 +610,9 @@ fn progress_gap(
 ) -> f64 {
     let prev = &page.chars[prev_idx];
     let next = &page.chars[next_idx];
-    let end_x = prev.transform[4] + prev.advance[0];
-    let end_y = prev.transform[5] + prev.advance[1];
+    let advance = glyph_advance(prev, vertical);
+    let end_x = prev.transform[4] + advance[0];
+    let end_y = prev.transform[5] + advance[1];
     let (end_dx, end_dy) = derotate_xy(end_x, end_y, rot);
     let (next_dx, next_dy) = derotate_xy(next.transform[4], next.transform[5], rot);
     if vertical {
@@ -1401,6 +1402,33 @@ mod tests {
         assert_eq!(lines[0].words[0].text, "A");
         assert_eq!(lines[0].words[1].text, "B");
         assert_eq!(lines[0].chars, vec![0, 1]);
+    }
+
+    #[test]
+    fn lines_tj_gap_splits_word() {
+        // TJ を含む advance でも bbox 後の語間を検出
+        let fs = 10.0;
+        let glyph_width = 5.0;
+        let gap = 2.0;
+        let mut first = ch("A", 0.0, 100.0, glyph_width, 0.0, fs, false);
+        first.advance[0] += gap;
+        let p = page(vec![
+            first,
+            ch(
+                "B",
+                glyph_width + gap,
+                100.0,
+                glyph_width,
+                0.0,
+                fs,
+                false,
+            ),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].words.len(), 2);
+        assert_eq!(lines[0].words[0].text, "A");
+        assert_eq!(lines[0].words[1].text, "B");
     }
 
     #[test]
