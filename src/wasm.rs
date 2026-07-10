@@ -80,8 +80,8 @@ pub fn extract_text_lines_from_pdf(
         .map_err(|e| JsError::new(&e.to_string()))?;
     let pages: Vec<Vec<crate::text::TextLine>> = doc
         .pages
-        .iter()
-        .map(crate::text::build_text_lines)
+        .into_iter()
+        .map(|pg| crate::text::build_text_lines(&pg))
         .collect();
     serde_json::to_string(&pages).map_err(|e| JsError::new(&e.to_string()))
 }

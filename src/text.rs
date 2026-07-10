@@ -1,5 +1,7 @@
 //! 座標付き文字の公開型
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// 文書全体の座標付き文字
@@ -354,6 +356,8 @@ pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
 pub fn build_text_lines(page: &TextPage) -> Vec<TextLine> {
     let mut group_order: Vec<(bool, i32)> = Vec::new();
     let mut group_indices: Vec<Vec<usize>> = Vec::new();
+    // 挿入順は group_order。位置引きだけ HashMap
+    let mut group_pos: HashMap<(bool, i32), usize> = HashMap::new();
 
     for (i, ch) in page.chars.iter().enumerate() {
         if ch.synthetic || ch.text.is_empty() {
@@ -365,9 +369,11 @@ pub fn build_text_lines(page: &TextPage) -> Vec<TextLine> {
             .map(|f| f.vertical)
             .unwrap_or(false);
         let key = (vertical, ch.rot);
-        if let Some(pos) = group_order.iter().position(|k| *k == key) {
+        if let Some(&pos) = group_pos.get(&key) {
             group_indices[pos].push(i);
         } else {
+            let pos = group_order.len();
+            group_pos.insert(key, pos);
             group_order.push(key);
             group_indices.push(vec![i]);
         }
@@ -379,8 +385,16 @@ pub fn build_text_lines(page: &TextPage) -> Vec<TextLine> {
         lines.extend(lines_for_group(page, &indices, vertical, rot));
     }
 
-    lines.sort_by_key(|line| line.chars.iter().copied().min().unwrap_or(u32::MAX));
+    lines.sort_by_cached_key(|line| line.chars.iter().copied().min().unwrap_or(u32::MAX));
     lines
+}
+
+/// 行クラスタ用のグリフ位置
+struct GlyphPos {
+    idx: usize,
+    baseline: f64,
+    progress: f64,
+    is_ws: bool,
 }
 
 /// 書字方向グループから行を構築する
@@ -392,13 +406,6 @@ fn lines_for_group(
 ) -> Vec<TextLine> {
     if indices.is_empty() {
         return Vec::new();
-    }
-
-    struct GlyphPos {
-        idx: usize,
-        baseline: f64,
-        progress: f64,
-        is_ws: bool,
     }
 
     let mut glyphs: Vec<GlyphPos> = indices
@@ -429,12 +436,21 @@ fn lines_for_group(
     let median_fs = if ns_sizes.is_empty() {
         0.0
     } else {
-        ns_sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let n = ns_sizes.len();
+        let cmp = |a: &f64, b: &f64| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
         if n % 2 == 1 {
-            ns_sizes[n / 2]
+            let mid = n / 2;
+            ns_sizes.select_nth_unstable_by(mid, cmp);
+            ns_sizes[mid]
         } else {
-            (ns_sizes[n / 2 - 1] + ns_sizes[n / 2]) / 2.0
+            let hi = n / 2;
+            ns_sizes.select_nth_unstable_by(hi, cmp);
+            let upper = ns_sizes[hi];
+            let lower = ns_sizes[..hi]
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+            (lower + upper) / 2.0
         }
     };
     let line_thresh = median_fs * LINE_CLUSTER_FACTOR;
@@ -446,20 +462,6 @@ fn lines_for_group(
             .then_with(|| a.idx.cmp(&b.idx))
     });
 
-    let mut clusters: Vec<Vec<GlyphPos>> = Vec::new();
-    for g in glyphs {
-        if let Some(last) = clusters.last_mut() {
-            let prev_bl = last.last().map(|x| x.baseline).unwrap_or(g.baseline);
-            if g.baseline - prev_bl > line_thresh {
-                clusters.push(vec![g]);
-            } else {
-                last.push(g);
-            }
-        } else {
-            clusters.push(vec![g]);
-        }
-    }
-
     let dir = if vertical {
         "ttb".to_string()
     } else {
@@ -467,44 +469,82 @@ fn lines_for_group(
     };
 
     let mut out = Vec::new();
-    for mut cluster in clusters {
-        if cluster.iter().all(|g| g.is_ws) {
-            continue;
+    let mut cluster: Vec<GlyphPos> = Vec::new();
+    for g in glyphs {
+        if let Some(prev) = cluster.last() {
+            if g.baseline - prev.baseline > line_thresh {
+                if let Some(line) = line_from_cluster(page, &mut cluster, vertical, rot, &dir) {
+                    out.push(line);
+                }
+                cluster.clear();
+            }
         }
-
-        cluster.sort_by(|a, b| {
-            a.progress
-                .partial_cmp(&b.progress)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.idx.cmp(&b.idx))
-        });
-
-        let order: Vec<usize> = cluster.iter().map(|g| g.idx).collect();
-        let char_indices: Vec<u32> = order.iter().map(|&i| i as u32).collect();
-        let words = words_for_line(page, &order, vertical, rot);
-        let bbox = union_non_ws_bbox(page, &char_indices);
-        let Some((left, right, top, bottom)) = bbox else {
-            continue;
-        };
-
-        out.push(TextLine {
-            left,
-            right,
-            top,
-            bottom,
-            dir: dir.clone(),
-            rot,
-            words,
-            chars: char_indices,
-        });
+        cluster.push(g);
+    }
+    if let Some(line) = line_from_cluster(page, &mut cluster, vertical, rot, &dir) {
+        out.push(line);
     }
     out
+}
+
+/// クラスタから行ビューを組み立てる
+fn line_from_cluster(
+    page: &TextPage,
+    cluster: &mut [GlyphPos],
+    vertical: bool,
+    rot: i32,
+    dir: &str,
+) -> Option<TextLine> {
+    if cluster.iter().all(|g| g.is_ws) {
+        return None;
+    }
+
+    cluster.sort_by(|a, b| {
+        a.progress
+            .partial_cmp(&b.progress)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.idx.cmp(&b.idx))
+    });
+
+    let mut char_indices = Vec::with_capacity(cluster.len());
+    let mut left = f64::INFINITY;
+    let mut right = f64::NEG_INFINITY;
+    let mut top = f64::INFINITY;
+    let mut bottom = f64::NEG_INFINITY;
+    let mut any_non_ws = false;
+    for g in cluster.iter() {
+        char_indices.push(g.idx as u32);
+        if g.is_ws {
+            continue;
+        }
+        let ch = &page.chars[g.idx];
+        any_non_ws = true;
+        left = left.min(ch.left);
+        right = right.max(ch.right);
+        top = top.min(ch.top);
+        bottom = bottom.max(ch.bottom);
+    }
+    if !any_non_ws {
+        return None;
+    }
+
+    let words = words_for_line(page, &char_indices, vertical, rot);
+    Some(TextLine {
+        left,
+        right,
+        top,
+        bottom,
+        dir: dir.to_string(),
+        rot,
+        words,
+        chars: char_indices,
+    })
 }
 
 /// 行内の単語を構築する
 fn words_for_line(
     page: &TextPage,
-    order: &[usize],
+    order: &[u32],
     vertical: bool,
     rot: i32,
 ) -> Vec<TextWord> {
@@ -512,7 +552,8 @@ fn words_for_line(
     let mut cur: Vec<u32> = Vec::new();
     let mut prev_non_ws: Option<usize> = None;
 
-    for &idx in order {
+    for &idx_u32 in order {
+        let idx = idx_u32 as usize;
         let ch = &page.chars[idx];
         if is_whitespace_str(&ch.text) {
             if !cur.is_empty() {
@@ -543,7 +584,7 @@ fn words_for_line(
             }
         }
 
-        cur.push(idx as u32);
+        cur.push(idx_u32);
         prev_non_ws = Some(idx);
     }
 
@@ -560,30 +601,17 @@ fn make_word(page: &TextPage, chars: &[u32]) -> Option<TextWord> {
     if chars.is_empty() {
         return None;
     }
-    let (left, right, top, bottom) = union_non_ws_bbox(page, chars)?;
-    let mut text = String::new();
-    for &i in chars {
-        text.push_str(&page.chars[i as usize].text);
-    }
-    Some(TextWord {
-        text,
-        left,
-        right,
-        top,
-        bottom,
-        chars: chars.to_vec(),
-    })
-}
-
-/// 非空白グリフ bbox の和集合
-fn union_non_ws_bbox(page: &TextPage, chars: &[u32]) -> Option<(f64, f64, f64, f64)> {
     let mut left = f64::INFINITY;
     let mut right = f64::NEG_INFINITY;
     let mut top = f64::INFINITY;
     let mut bottom = f64::NEG_INFINITY;
     let mut any = false;
+    let mut text = String::new();
+    let mut out_chars = Vec::with_capacity(chars.len());
     for &i in chars {
         let ch = &page.chars[i as usize];
+        out_chars.push(i);
+        text.push_str(&ch.text);
         if is_whitespace_str(&ch.text) {
             continue;
         }
@@ -593,11 +621,17 @@ fn union_non_ws_bbox(page: &TextPage, chars: &[u32]) -> Option<(f64, f64, f64, f
         top = top.min(ch.top);
         bottom = bottom.max(ch.bottom);
     }
-    if any {
-        Some((left, right, top, bottom))
-    } else {
-        None
+    if !any {
+        return None;
     }
+    Some(TextWord {
+        text,
+        left,
+        right,
+        top,
+        bottom,
+        chars: out_chars,
+    })
 }
 
 /// 隣接グリフの進行軸ギャップ

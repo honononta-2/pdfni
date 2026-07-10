@@ -48,6 +48,12 @@ fn main() {
         }
     };
 
+    // lines は JSON と件数表示で使い回す
+    let lines_pages = match mode {
+        Mode::Lines => Some(doc.pages.iter().map(build_text_lines).collect::<Vec<_>>()),
+        _ => None,
+    };
+
     let json = match mode {
         Mode::Items => {
             let pages: Vec<_> = doc.pages.iter().map(build_text_items).collect();
@@ -59,16 +65,13 @@ fn main() {
                 }
             }
         }
-        Mode::Lines => {
-            let pages: Vec<_> = doc.pages.iter().map(build_text_lines).collect();
-            match serde_json::to_string_pretty(&pages) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("serialize failed: {e}");
-                    std::process::exit(1);
-                }
+        Mode::Lines => match serde_json::to_string_pretty(lines_pages.as_ref().unwrap()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("serialize failed: {e}");
+                std::process::exit(1);
             }
-        }
+        },
         Mode::Chars => match serde_json::to_string_pretty(&doc) {
             Ok(s) => s,
             Err(e) => {
@@ -102,14 +105,14 @@ fn main() {
             }
         }
         Mode::Lines => {
-            for (i, pg) in doc.pages.iter().enumerate() {
-                let n = build_text_lines(pg).len();
+            let pages = lines_pages.as_ref().unwrap();
+            for (i, (pg, lines)) in doc.pages.iter().zip(pages.iter()).enumerate() {
                 eprintln!(
                     "  page {i} {:.0}x{:.0} fonts={} lines={}",
                     pg.width,
                     pg.height,
                     pg.fonts.len(),
-                    n
+                    lines.len()
                 );
             }
         }
