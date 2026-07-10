@@ -246,8 +246,18 @@ fn load_simple(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Loa
         .unwrap_or(0);
     let embedded = has_embedded_font(&descriptor, data, xref);
 
-    let (default_encoding, differences, base_encoding_name) =
+    let (mut default_encoding, differences, base_encoding_name) =
         resolve_simple_encoding(dict, &subtype, flags, &base_font, embedded, data, xref);
+
+    // 埋め込み Type1 の内蔵エンコーディングを既定表に反映
+    // （BaseEncoding / 名前付き指定があるときはそちらが優先。Differences は後段で上書き）
+    if base_encoding_name.is_none() {
+        if let Some(builtin) = type1_builtin_encoding(&descriptor, data, xref) {
+            for (code, name) in builtin {
+                default_encoding[code as usize] = name;
+            }
+        }
+    }
 
     let (mut widths, mut default_width) =
         extract_simple_widths(dict, &descriptor, first_char, data, xref);
@@ -1044,6 +1054,86 @@ fn correct_descent(d: Option<f64>) -> f64 {
     }
 }
 
+/// 部分列の検索
+fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// 埋め込み Type1 (FontFile) の平文部から内蔵エンコーディングを読む
+///
+/// /Encoding 256 array ... dup <code> /<glyph> put ... readonly def の並びを拾う
+/// 名前指定（StandardEncoding）や FontFile 不在は None
+fn type1_builtin_encoding(
+    descriptor: &Dict,
+    data: &[u8],
+    xref: Option<&XRef>,
+) -> Option<HashMap<u32, String>> {
+    let ff = descriptor.get("FontFile")?;
+    let stream = match resolve_obj(ff, data, xref) {
+        Object::Stream(s) => s,
+        _ => return None,
+    };
+    let bytes = decode_stream_bytes(data, &stream, xref)?;
+    // eexec 暗号化部より前の平文だけを見る
+    let clear_end = find_sub(&bytes, b"eexec").unwrap_or(bytes.len());
+    let clear = &bytes[..clear_end];
+    let enc_pos = find_sub(clear, b"/Encoding")?;
+    let body = &clear[enc_pos + b"/Encoding".len()..];
+    if find_sub(&body[..body.len().min(64)], b"StandardEncoding").is_some() {
+        return None;
+    }
+    // エンコーディング配列の終端まで
+    let end = find_sub(body, b" def").unwrap_or(body.len());
+    let body = &body[..end];
+
+    let mut map = HashMap::new();
+    let mut i = 0;
+    while i < body.len() {
+        let Some(rel) = find_sub(&body[i..], b"dup ") else {
+            break;
+        };
+        let mut p = i + rel + 4;
+        i = p;
+        while p < body.len() && body[p] == b' ' {
+            p += 1;
+        }
+        let num_start = p;
+        while p < body.len() && body[p].is_ascii_digit() {
+            p += 1;
+        }
+        let Some(code) = std::str::from_utf8(&body[num_start..p])
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .filter(|c| *c <= 255)
+        else {
+            continue;
+        };
+        while p < body.len() && body[p].is_ascii_whitespace() {
+            p += 1;
+        }
+        if body.get(p) != Some(&b'/') {
+            continue;
+        }
+        p += 1;
+        let name_start = p;
+        while p < body.len()
+            && !body[p].is_ascii_whitespace()
+            && !matches!(body[p], b'/' | b'(' | b')' | b'[' | b']' | b'<' | b'>' | b'{' | b'}' | b'%')
+        {
+            p += 1;
+        }
+        let name = String::from_utf8_lossy(&body[name_start..p]).into_owned();
+        while p < body.len() && body[p].is_ascii_whitespace() {
+            p += 1;
+        }
+        if body[p..].starts_with(b"put") && !name.is_empty() {
+            map.insert(code, name);
+            i = p;
+        }
+    }
+    if map.is_empty() { None } else { Some(map) }
+}
+
 /// FontFile2 から head.unitsPerEm と hhea ascent/descent を読む
 fn try_truetype_metrics(
     descriptor: &Dict,
@@ -1536,6 +1626,36 @@ endcmap
         let font = load_font_dict(&font_dict, "TT", &ttf, None);
         assert!(approx(font.ascent(), 0.75), "got {}", font.ascent());
         assert!(approx(font.descent(), -0.25), "got {}", font.descent());
+    }
+
+    /// 埋め込み Type1 の内蔵エンコーディング（CM 系の合字・記号）を読む
+    #[test]
+    fn type1_builtin_encoding_ligatures() {
+        let pfa: &[u8] = b"%!PS-AdobeFont-1.0: TestFont\n\
+/FontName /TestFont def\n\
+/Encoding 256 array\n\
+0 1 255 {1 index exch /.notdef put} for\n\
+dup 11 /ff put\n\
+dup 12 /fi put\n\
+dup 39 /quoteright put\n\
+readonly def\n\
+currentfile eexec\n\
+00000000";
+        let mut sd = Dict::new();
+        sd.set("Length", Object::Int(pfa.len() as i64));
+        let stream = Stream::new(sd, 0, pfa.len());
+        let mut fd = Dict::new();
+        fd.set("FontFile", Object::Stream(stream));
+        let mut d = Dict::new();
+        d.set("Subtype", Object::Name("Type1".into()));
+        d.set("BaseFont", Object::Name("TestFont".into()));
+        d.set("FontDescriptor", Object::Dict(fd));
+
+        let font = load_font_dict(&d, "T1", pfa, None);
+        let g = font.chars_to_glyphs(&[11, 12, 39]);
+        assert_eq!(g[0].0, "\u{fb00}", "ff ligature, got {:?}", g[0].0);
+        assert_eq!(g[1].0, "\u{fb01}", "fi ligature, got {:?}", g[1].0);
+        assert_eq!(g[2].0, "\u{2019}", "quoteright, got {:?}", g[2].0);
     }
 
     #[test]
