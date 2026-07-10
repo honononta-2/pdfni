@@ -69,3 +69,20 @@ pub fn extract_text_items_from_pdf(
     serde_json::to_string(&pages).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// PDF バイト列から行・単語ビューを抽出しページごとの lines の JSON を返す
+#[cfg(feature = "reader")]
+#[wasm_bindgen]
+pub fn extract_text_lines_from_pdf(
+    bytes: &[u8],
+    password: Option<String>,
+) -> Result<String, JsError> {
+    let doc = crate::reader::extract_text_from_bytes(bytes, password.as_deref())
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let pages: Vec<Vec<crate::text::TextLine>> = doc
+        .pages
+        .iter()
+        .map(crate::text::build_text_lines)
+        .collect();
+    serde_json::to_string(&pages).map_err(|e| JsError::new(&e.to_string()))
+}
+

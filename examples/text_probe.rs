@@ -1,26 +1,34 @@
 //! 座標付き文字を JSON で出力する
 
-use reticella::{build_text_items, extract_text_from_bytes};
+use reticella::{build_text_items, build_text_lines, extract_text_from_bytes};
 
 fn main() {
     let mut args = std::env::args().skip(1);
     let input = args.next().unwrap_or_else(|| {
-        eprintln!("usage: text_probe <input.pdf> [items] [output.json] [password]");
+        eprintln!("usage: text_probe <input.pdf> [lines|items] [output.json] [password]");
         std::process::exit(2);
     });
 
-    let mut items_mode = false;
+    let mut mode = Mode::Chars;
     let mut out_path = None;
     let mut password = None;
 
     if let Some(a) = args.next() {
-        if a == "items" {
-            items_mode = true;
-            out_path = args.next();
-            password = args.next();
-        } else {
-            out_path = Some(a);
-            password = args.next();
+        match a.as_str() {
+            "items" => {
+                mode = Mode::Items;
+                out_path = args.next();
+                password = args.next();
+            }
+            "lines" => {
+                mode = Mode::Lines;
+                out_path = args.next();
+                password = args.next();
+            }
+            _ => {
+                out_path = Some(a);
+                password = args.next();
+            }
         }
     }
 
@@ -40,23 +48,34 @@ fn main() {
         }
     };
 
-    let json = if items_mode {
-        let pages: Vec<_> = doc.pages.iter().map(build_text_items).collect();
-        match serde_json::to_string_pretty(&pages) {
+    let json = match mode {
+        Mode::Items => {
+            let pages: Vec<_> = doc.pages.iter().map(build_text_items).collect();
+            match serde_json::to_string_pretty(&pages) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("serialize failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Mode::Lines => {
+            let pages: Vec<_> = doc.pages.iter().map(build_text_lines).collect();
+            match serde_json::to_string_pretty(&pages) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("serialize failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Mode::Chars => match serde_json::to_string_pretty(&doc) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("serialize failed: {e}");
                 std::process::exit(1);
             }
-        }
-    } else {
-        match serde_json::to_string_pretty(&doc) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("serialize failed: {e}");
-                std::process::exit(1);
-            }
-        }
+        },
     };
 
     if let Some(path) = out_path {
@@ -69,26 +88,47 @@ fn main() {
         println!("{json}");
     }
 
-    if items_mode {
-        for (i, pg) in doc.pages.iter().enumerate() {
-            let n = build_text_items(pg).len();
-            eprintln!(
-                "  page {i} {:.0}x{:.0} fonts={} items={}",
-                pg.width,
-                pg.height,
-                pg.fonts.len(),
-                n
-            );
+    match mode {
+        Mode::Items => {
+            for (i, pg) in doc.pages.iter().enumerate() {
+                let n = build_text_items(pg).len();
+                eprintln!(
+                    "  page {i} {:.0}x{:.0} fonts={} items={}",
+                    pg.width,
+                    pg.height,
+                    pg.fonts.len(),
+                    n
+                );
+            }
         }
-    } else {
-        for (i, pg) in doc.pages.iter().enumerate() {
-            eprintln!(
-                "  page {i} {:.0}x{:.0} fonts={} chars={}",
-                pg.width,
-                pg.height,
-                pg.fonts.len(),
-                pg.chars.len()
-            );
+        Mode::Lines => {
+            for (i, pg) in doc.pages.iter().enumerate() {
+                let n = build_text_lines(pg).len();
+                eprintln!(
+                    "  page {i} {:.0}x{:.0} fonts={} lines={}",
+                    pg.width,
+                    pg.height,
+                    pg.fonts.len(),
+                    n
+                );
+            }
+        }
+        Mode::Chars => {
+            for (i, pg) in doc.pages.iter().enumerate() {
+                eprintln!(
+                    "  page {i} {:.0}x{:.0} fonts={} chars={}",
+                    pg.width,
+                    pg.height,
+                    pg.fonts.len(),
+                    pg.chars.len()
+                );
+            }
         }
     }
+}
+
+enum Mode {
+    Chars,
+    Items,
+    Lines,
 }

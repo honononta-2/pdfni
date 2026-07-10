@@ -58,6 +58,30 @@ pub struct TextItem {
     pub has_eol: bool,
 }
 
+/// 行ビュー
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextLine {
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
+    pub dir: String,
+    pub rot: i32,
+    pub words: Vec<TextWord>,
+    pub chars: Vec<u32>,
+}
+
+/// 単語ビュー
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextWord {
+    pub text: String,
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
+    pub chars: Vec<u32>,
+}
+
 // pdf.js evaluator の閾値（fontSize 比）
 const TRACKING_SPACE_FACTOR: f64 = 0.102;
 const NOT_A_SPACE_FACTOR: f64 = 0.03;
@@ -65,6 +89,8 @@ const NEGATIVE_SPACE_FACTOR: f64 = -0.2;
 const SPACE_IN_FLOW_MIN_FACTOR: f64 = 0.102;
 const SPACE_IN_FLOW_MAX_FACTOR: f64 = 0.6;
 const VERTICAL_SHIFT_RATIO: f64 = 0.25;
+/// 行クラスタのベースライン差（font_size 比）
+const LINE_CLUSTER_FACTOR: f64 = 0.6;
 
 /// TextPage から pdf.js 相当の TextItem 列を構築する
 pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
@@ -322,6 +348,287 @@ pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
 
     flush_chunk(&mut items, &mut chunk);
     items
+}
+
+/// TextPage から行・単語ビューを構築する
+pub fn build_text_lines(page: &TextPage) -> Vec<TextLine> {
+    let mut group_order: Vec<(bool, i32)> = Vec::new();
+    let mut group_indices: Vec<Vec<usize>> = Vec::new();
+
+    for (i, ch) in page.chars.iter().enumerate() {
+        if ch.synthetic || ch.text.is_empty() {
+            continue;
+        }
+        let vertical = page
+            .fonts
+            .get(ch.font as usize)
+            .map(|f| f.vertical)
+            .unwrap_or(false);
+        let key = (vertical, ch.rot);
+        if let Some(pos) = group_order.iter().position(|k| *k == key) {
+            group_indices[pos].push(i);
+        } else {
+            group_order.push(key);
+            group_indices.push(vec![i]);
+        }
+    }
+
+    let mut lines: Vec<TextLine> = Vec::new();
+    for (key, indices) in group_order.into_iter().zip(group_indices) {
+        let (vertical, rot) = key;
+        lines.extend(lines_for_group(page, &indices, vertical, rot));
+    }
+
+    lines.sort_by_key(|line| line.chars.iter().copied().min().unwrap_or(u32::MAX));
+    lines
+}
+
+/// 書字方向グループから行を構築する
+fn lines_for_group(
+    page: &TextPage,
+    indices: &[usize],
+    vertical: bool,
+    rot: i32,
+) -> Vec<TextLine> {
+    if indices.is_empty() {
+        return Vec::new();
+    }
+
+    struct GlyphPos {
+        idx: usize,
+        baseline: f64,
+        progress: f64,
+        is_ws: bool,
+    }
+
+    let mut glyphs: Vec<GlyphPos> = indices
+        .iter()
+        .map(|&idx| {
+            let ch = &page.chars[idx];
+            let (px, py) = derotate_xy(ch.transform[4], ch.transform[5], rot);
+            let (baseline, progress) = if vertical {
+                (px, py)
+            } else {
+                (py, px)
+            };
+            GlyphPos {
+                idx,
+                baseline,
+                progress,
+                is_ws: is_whitespace_str(&ch.text),
+            }
+        })
+        .collect();
+
+    let mut ns_sizes: Vec<f64> = indices
+        .iter()
+        .filter(|&&idx| !is_whitespace_str(&page.chars[idx].text))
+        .map(|&idx| page.chars[idx].font_size)
+        .filter(|fs| fs.is_finite())
+        .collect();
+    let median_fs = if ns_sizes.is_empty() {
+        0.0
+    } else {
+        ns_sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = ns_sizes.len();
+        if n % 2 == 1 {
+            ns_sizes[n / 2]
+        } else {
+            (ns_sizes[n / 2 - 1] + ns_sizes[n / 2]) / 2.0
+        }
+    };
+    let line_thresh = median_fs * LINE_CLUSTER_FACTOR;
+
+    glyphs.sort_by(|a, b| {
+        a.baseline
+            .partial_cmp(&b.baseline)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.idx.cmp(&b.idx))
+    });
+
+    let mut clusters: Vec<Vec<GlyphPos>> = Vec::new();
+    for g in glyphs {
+        if let Some(last) = clusters.last_mut() {
+            let prev_bl = last.last().map(|x| x.baseline).unwrap_or(g.baseline);
+            if g.baseline - prev_bl > line_thresh {
+                clusters.push(vec![g]);
+            } else {
+                last.push(g);
+            }
+        } else {
+            clusters.push(vec![g]);
+        }
+    }
+
+    let dir = if vertical {
+        "ttb".to_string()
+    } else {
+        "ltr".to_string()
+    };
+
+    let mut out = Vec::new();
+    for mut cluster in clusters {
+        if cluster.iter().all(|g| g.is_ws) {
+            continue;
+        }
+
+        cluster.sort_by(|a, b| {
+            a.progress
+                .partial_cmp(&b.progress)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.idx.cmp(&b.idx))
+        });
+
+        let order: Vec<usize> = cluster.iter().map(|g| g.idx).collect();
+        let char_indices: Vec<u32> = order.iter().map(|&i| i as u32).collect();
+        let words = words_for_line(page, &order, vertical, rot);
+        let bbox = union_non_ws_bbox(page, &char_indices);
+        let Some((left, right, top, bottom)) = bbox else {
+            continue;
+        };
+
+        out.push(TextLine {
+            left,
+            right,
+            top,
+            bottom,
+            dir: dir.clone(),
+            rot,
+            words,
+            chars: char_indices,
+        });
+    }
+    out
+}
+
+/// 行内の単語を構築する
+fn words_for_line(
+    page: &TextPage,
+    order: &[usize],
+    vertical: bool,
+    rot: i32,
+) -> Vec<TextWord> {
+    let mut words: Vec<TextWord> = Vec::new();
+    let mut cur: Vec<u32> = Vec::new();
+    let mut prev_non_ws: Option<usize> = None;
+
+    for &idx in order {
+        let ch = &page.chars[idx];
+        if is_whitespace_str(&ch.text) {
+            if !cur.is_empty() {
+                if let Some(w) = make_word(page, &cur) {
+                    words.push(w);
+                }
+                cur.clear();
+            }
+            prev_non_ws = None;
+            continue;
+        }
+
+        if let Some(prev_idx) = prev_non_ws {
+            let gap = progress_gap(page, prev_idx, idx, vertical, rot);
+            let fs = [page.chars[prev_idx].font_size, page.chars[idx].font_size]
+                .into_iter()
+                .filter(|fs| fs.is_finite())
+                .reduce(f64::max);
+            if fs.is_some_and(|fs| {
+                gap > TRACKING_SPACE_FACTOR * fs || gap < NEGATIVE_SPACE_FACTOR * fs
+            }) {
+                if !cur.is_empty() {
+                    if let Some(w) = make_word(page, &cur) {
+                        words.push(w);
+                    }
+                    cur.clear();
+                }
+            }
+        }
+
+        cur.push(idx as u32);
+        prev_non_ws = Some(idx);
+    }
+
+    if !cur.is_empty() {
+        if let Some(w) = make_word(page, &cur) {
+            words.push(w);
+        }
+    }
+    words
+}
+
+/// 単語ビューの組み立て
+fn make_word(page: &TextPage, chars: &[u32]) -> Option<TextWord> {
+    if chars.is_empty() {
+        return None;
+    }
+    let (left, right, top, bottom) = union_non_ws_bbox(page, chars)?;
+    let mut text = String::new();
+    for &i in chars {
+        text.push_str(&page.chars[i as usize].text);
+    }
+    Some(TextWord {
+        text,
+        left,
+        right,
+        top,
+        bottom,
+        chars: chars.to_vec(),
+    })
+}
+
+/// 非空白グリフ bbox の和集合
+fn union_non_ws_bbox(page: &TextPage, chars: &[u32]) -> Option<(f64, f64, f64, f64)> {
+    let mut left = f64::INFINITY;
+    let mut right = f64::NEG_INFINITY;
+    let mut top = f64::INFINITY;
+    let mut bottom = f64::NEG_INFINITY;
+    let mut any = false;
+    for &i in chars {
+        let ch = &page.chars[i as usize];
+        if is_whitespace_str(&ch.text) {
+            continue;
+        }
+        any = true;
+        left = left.min(ch.left);
+        right = right.max(ch.right);
+        top = top.min(ch.top);
+        bottom = bottom.max(ch.bottom);
+    }
+    if any {
+        Some((left, right, top, bottom))
+    } else {
+        None
+    }
+}
+
+/// 隣接グリフの進行軸ギャップ
+fn progress_gap(
+    page: &TextPage,
+    prev_idx: usize,
+    next_idx: usize,
+    vertical: bool,
+    rot: i32,
+) -> f64 {
+    let prev = &page.chars[prev_idx];
+    let next = &page.chars[next_idx];
+    let end_x = prev.transform[4] + prev.advance[0];
+    let end_y = prev.transform[5] + prev.advance[1];
+    let (end_dx, end_dy) = derotate_xy(end_x, end_y, rot);
+    let (next_dx, next_dy) = derotate_xy(next.transform[4], next.transform[5], rot);
+    if vertical {
+        next_dy - end_dy
+    } else {
+        next_dx - end_dx
+    }
+}
+
+/// 座標を -rot で正立へ揃える
+fn derotate_xy(x: f64, y: f64, rot: i32) -> (f64, f64) {
+    match rot {
+        90 => (-y, x),
+        180 => (-x, -y),
+        270 => (y, -x),
+        _ => (x, y),
+    }
 }
 
 struct Thresholds {
@@ -994,5 +1301,333 @@ mod tests {
         assert!((items[0].width - 10.0).abs() < 1e-9);
         assert!((items[0].height - fs).abs() < 1e-9);
         assert!(!items[0].has_eol);
+    }
+
+    // --- build_text_lines ---
+
+    fn ch_rot(
+        text: &str,
+        x: f64,
+        y: f64,
+        advance: f64,
+        font_size: f64,
+        rot: i32,
+    ) -> TextChar {
+        let (transform, glyph_advance, left, right, top, bottom) = match rot {
+            90 => (
+                [0.0, -font_size, -font_size, 0.0, x, y],
+                [0.0, -advance],
+                x - font_size,
+                x,
+                y - advance,
+                y,
+            ),
+            180 => (
+                [-font_size, 0.0, 0.0, font_size, x, y],
+                [-advance, 0.0],
+                x - advance,
+                x,
+                y - font_size,
+                y,
+            ),
+            270 => (
+                [0.0, font_size, font_size, 0.0, x, y],
+                [0.0, advance],
+                x,
+                x + font_size,
+                y,
+                y + advance,
+            ),
+            _ => (
+                [font_size, 0.0, 0.0, -font_size, x, y],
+                [advance, 0.0],
+                x,
+                x + advance,
+                y,
+                y + font_size,
+            ),
+        };
+        TextChar {
+            text: text.into(),
+            left,
+            right,
+            top,
+            bottom,
+            transform,
+            advance: glyph_advance,
+            font: 0,
+            font_size,
+            rot,
+            upright: rot == 0,
+            synthetic: false,
+        }
+    }
+
+    #[test]
+    fn lines_horizontal_two_lines_and_words() {
+        // 2行: "Hi" と "Yo"、同一行内は連続
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch("H", 0.0, 100.0, adv, 0.0, fs, false),
+            ch("i", adv, 100.0, adv, 0.0, fs, false),
+            ch("Y", 0.0, 120.0, adv, 0.0, fs, false),
+            ch("o", adv, 120.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].dir, "ltr");
+        assert_eq!(lines[0].rot, 0);
+        assert_eq!(lines[0].words.len(), 1);
+        assert_eq!(lines[0].words[0].text, "Hi");
+        assert_eq!(lines[0].chars, vec![0, 1]);
+        assert_eq!(lines[1].words[0].text, "Yo");
+        assert_eq!(lines[1].chars, vec![2, 3]);
+    }
+
+    #[test]
+    fn lines_word_gap_splits() {
+        // gap=2.0 → 0.2fs > 0.102 → 語境界
+        let fs = 10.0;
+        let adv = 5.0;
+        let gap = 2.0;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch("B", adv + gap, 100.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].words.len(), 2);
+        assert_eq!(lines[0].words[0].text, "A");
+        assert_eq!(lines[0].words[1].text, "B");
+        assert_eq!(lines[0].chars, vec![0, 1]);
+    }
+
+    #[test]
+    fn lines_real_whitespace_splits_word() {
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch(" ", adv, 100.0, 3.0, 0.0, fs, false),
+            ch("B", adv + 3.0, 100.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].chars, vec![0, 1, 2]);
+        assert_eq!(lines[0].words.len(), 2);
+        assert_eq!(lines[0].words[0].text, "A");
+        assert_eq!(lines[0].words[1].text, "B");
+        // 空白は単語に含めない
+        assert_eq!(lines[0].words[0].chars, vec![0]);
+        assert_eq!(lines[0].words[1].chars, vec![2]);
+    }
+
+    #[test]
+    fn lines_vertical_ttb() {
+        let fs = 10.0;
+        let p = page_v(vec![
+            ch_at("あ", 50.0, 100.0, 0.0, 10.0, fs, 0, true),
+            ch_at("い", 50.0, 110.0, 0.0, 10.0, fs, 0, true),
+            // 別列（ベースライン e が離れる）
+            ch_at("う", 80.0, 100.0, 0.0, 10.0, fs, 0, true),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].dir, "ttb");
+        assert_eq!(lines[0].words[0].text, "あい");
+        assert_eq!(lines[1].words[0].text, "う");
+    }
+
+    #[test]
+    fn lines_rotated_group() {
+        // rot 90 の横書き3文字は表示 -y へ進む
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch_rot("A", 100.0, 60.0, adv, fs, 90),
+            ch_rot("B", 100.0, 60.0 - adv, adv, fs, 90),
+            ch_rot("C", 100.0, 60.0 - adv * 2.0, adv, fs, 90),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].dir, "ltr");
+        assert_eq!(lines[0].rot, 90);
+        assert_eq!(lines[0].words.len(), 1);
+        assert_eq!(lines[0].words[0].text, "ABC");
+        assert_eq!(lines[0].words[0].chars, vec![0, 1, 2]);
+        assert_eq!(lines[0].chars, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn lines_mixed_horizontal_vertical() {
+        let fs = 10.0;
+        let adv = 5.0;
+        let mut p = TextPage {
+            width: 600.0,
+            height: 800.0,
+            fonts: vec![font(false), font(true)],
+            chars: vec![
+                ch("H", 0.0, 100.0, adv, 0.0, fs, false),
+                ch("i", adv, 100.0, adv, 0.0, fs, false),
+                ch_at("あ", 200.0, 50.0, 0.0, 10.0, fs, 1, true),
+                ch_at("い", 200.0, 60.0, 0.0, 10.0, fs, 1, true),
+            ],
+        };
+        p.chars[0].font = 0;
+        p.chars[1].font = 0;
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 2);
+        // ストリーム初出順
+        assert_eq!(lines[0].dir, "ltr");
+        assert_eq!(lines[0].words[0].text, "Hi");
+        assert_eq!(lines[1].dir, "ttb");
+        assert_eq!(lines[1].words[0].text, "あい");
+    }
+
+    #[test]
+    fn lines_whitespace_only_line_excluded() {
+        let fs = 10.0;
+        let adv = 5.0;
+        // y=100 に文字、y=130 に空白のみ（中央値 fs=10 → 閾値 6、差 30 で別行）
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch(" ", 0.0, 130.0, adv, 0.0, fs, false),
+            ch("\t", adv, 130.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].words[0].text, "A");
+    }
+
+    #[test]
+    fn lines_skips_synthetic() {
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch(" ", adv, 100.0, 3.0, 0.0, fs, true),
+            ch("B", adv, 100.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        // 合成空白は無視し、同位置の A/B は同一単語
+        assert_eq!(lines[0].words.len(), 1);
+        assert_eq!(lines[0].words[0].text, "AB");
+        assert_eq!(lines[0].chars, vec![0, 2]);
+    }
+
+    #[test]
+    fn lines_negative_gap_splits_word() {
+        // gap=-3 → -0.3fs < -0.2 → 逆行で語境界
+        let fs = 10.0;
+        let adv = 5.0;
+        let gap = -3.0;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch("B", adv + gap, 100.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        // 進行軸順は A(x=0) → B(x=2)。逆行ギャップで語分割
+        assert_eq!(lines[0].words.len(), 2);
+        assert_eq!(lines[0].words[0].text, "A");
+        assert_eq!(lines[0].words[1].text, "B");
+    }
+
+    #[test]
+    fn lines_follow_stream_order_not_coordinate_order() {
+        // 座標で下の行が先ならストリーム順を保つ
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch("L", 0.0, 120.0, adv, 0.0, fs, false),
+            ch("o", adv, 120.0, adv, 0.0, fs, false),
+            ch("w", adv * 2.0, 120.0, adv, 0.0, fs, false),
+            ch("U", 0.0, 100.0, adv, 0.0, fs, false),
+            ch("p", adv, 100.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].words[0].text, "Low");
+        assert_eq!(lines[0].chars, vec![0, 1, 2]);
+        assert_eq!(lines[1].words[0].text, "Up");
+        assert_eq!(lines[1].chars, vec![3, 4]);
+    }
+
+    #[test]
+    fn lines_rotated_180_and_270_follow_progress_axis() {
+        // rot 180 と rot 270 は各表示進行方向へ並ぶ
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch_rot("A", 100.0, 50.0, adv, fs, 180),
+            ch_rot("B", 100.0 - adv, 50.0, adv, fs, 180),
+            ch_rot("C", 100.0 - adv * 2.0, 50.0, adv, fs, 180),
+            ch_rot("D", 200.0, 80.0, adv, fs, 270),
+            ch_rot("E", 200.0, 80.0 + adv, adv, fs, 270),
+            ch_rot("F", 200.0, 80.0 + adv * 2.0, adv, fs, 270),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].rot, 180);
+        assert_eq!(lines[0].words.len(), 1);
+        assert_eq!(lines[0].words[0].text, "ABC");
+        assert_eq!(lines[0].words[0].chars, vec![0, 1, 2]);
+        assert_eq!(lines[0].chars, vec![0, 1, 2]);
+        assert_eq!(lines[1].rot, 270);
+        assert_eq!(lines[1].words.len(), 1);
+        assert_eq!(lines[1].words[0].text, "DEF");
+        assert_eq!(lines[1].words[0].chars, vec![3, 4, 5]);
+        assert_eq!(lines[1].chars, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn lines_baseline_difference_at_threshold_stays_together() {
+        // ベースライン差が 0.6fs ちょうどなら同一行
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch("B", adv, 100.0 + 0.6 * fs, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].words[0].text, "AB");
+        assert_eq!(lines[0].chars, vec![0, 1]);
+    }
+
+    #[test]
+    fn lines_progress_gap_at_threshold_stays_in_word() {
+        // 進行軸ギャップが 0.102fs ちょうどなら同一単語
+        let fs = 10.0;
+        let adv = 5.0;
+        let gap = TRACKING_SPACE_FACTOR * fs;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch("B", adv + gap, 100.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].words.len(), 1);
+        assert_eq!(lines[0].words[0].text, "AB");
+    }
+
+    #[test]
+    fn lines_ignore_non_finite_font_size_for_clustering() {
+        // NaN の font_size が混ざっても有限値で行を分ける
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch("N", adv, 100.0, adv, 0.0, f64::NAN, false),
+            ch("B", 0.0, 120.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].words[0].text, "AN");
+        assert_eq!(lines[0].chars, vec![0, 1]);
+        assert_eq!(lines[1].words[0].text, "B");
+        assert_eq!(lines[1].chars, vec![2]);
     }
 }

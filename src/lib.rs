@@ -26,4 +26,7 @@ pub use model::{BBox, Cell, Document, Orientation, Page, Table};
 #[cfg(feature = "reader")]
 pub use reader::{extract_from_bytes, extract_text_from_bytes, read_pages};
 #[cfg(feature = "reader")]
-pub use text::{TextChar, TextDoc, TextFont, TextItem, TextPage, build_text_items};
+pub use text::{
+    TextChar, TextDoc, TextFont, TextItem, TextLine, TextPage, TextWord, build_text_items,
+    build_text_lines,
+};
