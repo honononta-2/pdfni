@@ -270,7 +270,9 @@ impl<'a> Lexer<'a> {
         }
 
         if divide_by != 0.0 {
-            Token::Real(sign * base_value / divide_by)
+            // 極端に長い小数で Inf/NaN になった場合は 0 に落とす
+            let v = sign * base_value / divide_by;
+            Token::Real(if v.is_finite() { v } else { 0.0 })
         } else {
             Token::Int((sign * base_value) as i64)
         }

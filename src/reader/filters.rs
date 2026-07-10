@@ -513,8 +513,19 @@ fn apply_predictor(data: &[u8], params: &Dict, predictor: i64) -> Result<Vec<u8>
         .max(1) as usize;
     let columns = params.get("Columns").and_then(as_i64).unwrap_or(1).max(1) as usize;
 
-    let pix_bytes = (colors * bits + 7) >> 3;
-    let row_bytes = (columns * colors * bits + 7) >> 3;
+    // 宣言値が過大なとき積のオーバーフローを弾く
+    let overflow = || Error::Reader("predictor parameters overflow".into());
+    let pix_bytes = colors
+        .checked_mul(bits)
+        .and_then(|v| v.checked_add(7))
+        .map(|v| v >> 3)
+        .ok_or_else(overflow)?;
+    let row_bytes = columns
+        .checked_mul(colors)
+        .and_then(|v| v.checked_mul(bits))
+        .and_then(|v| v.checked_add(7))
+        .map(|v| v >> 3)
+        .ok_or_else(overflow)?;
 
     if predictor == 2 {
         if bits != 8 {
