@@ -10,6 +10,8 @@ mod model;
 mod par;
 #[cfg(feature = "reader")]
 mod reader;
+#[cfg(feature = "reader")]
+mod text;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
@@ -22,4 +24,6 @@ pub use extract::{
 };
 pub use model::{BBox, Cell, Document, Orientation, Page, Table};
 #[cfg(feature = "reader")]
-pub use reader::{extract_from_bytes, read_pages};
+pub use reader::{extract_from_bytes, extract_text_from_bytes, read_pages};
+#[cfg(feature = "reader")]
+pub use text::{TextChar, TextDoc, TextFont, TextItem, TextPage, build_text_items};

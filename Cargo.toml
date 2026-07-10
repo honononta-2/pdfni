@@ -21,6 +21,10 @@ required-features = ["reader"]
 name = "reader_probe"
 required-features = ["reader"]
 
+[[example]]
+name = "text_probe"
+required-features = ["reader"]
+
 [features]
 default = ["reader"]
 # 純Rustリーダーによる読み取り経路（既定で全言語 CMap を同梱）

@@ -40,3 +40,32 @@ pub fn extract_tables_from_pdf(
     serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// PDF バイト列から座標付き文字を抽出し TextDoc の JSON を返す
+#[cfg(feature = "reader")]
+#[wasm_bindgen]
+pub fn extract_text_from_pdf(
+    bytes: &[u8],
+    password: Option<String>,
+) -> Result<String, JsError> {
+    let doc = crate::reader::extract_text_from_bytes(bytes, password.as_deref())
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// PDF バイト列から TextItem 互換ビューを抽出しページごとの items の JSON を返す
+#[cfg(feature = "reader")]
+#[wasm_bindgen]
+pub fn extract_text_items_from_pdf(
+    bytes: &[u8],
+    password: Option<String>,
+) -> Result<String, JsError> {
+    let doc = crate::reader::extract_text_from_bytes(bytes, password.as_deref())
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let pages: Vec<Vec<crate::text::TextItem>> = doc
+        .pages
+        .iter()
+        .map(crate::text::build_text_items)
+        .collect();
+    serde_json::to_string(&pages).map_err(|e| JsError::new(&e.to_string()))
+}
+

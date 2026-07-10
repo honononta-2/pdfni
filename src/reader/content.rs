@@ -2,11 +2,12 @@
 //!
 //! 準拠: pdf.js evaluator.js、specs/04
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::extract::{EdgePart, GlyphPart, GraphicPart};
 use crate::model::Orientation;
+use crate::text::{TextChar, TextFont};
 
 use super::filters::decode_stream;
 use super::font::{lookup_font, LoadedFont};
@@ -22,6 +23,56 @@ const EPS: f64 = 0.8;
 pub(crate) struct ContentCtx<'a> {
     pub data: &'a [u8],
     pub xref: Option<&'a XRef>,
+}
+
+/// テキストAPI用の収集バッファ
+struct TextSink {
+    fonts: Vec<TextFont>,
+    font_ids: HashMap<usize, u32>,
+    chars: Vec<PendingTextChar>,
+}
+
+/// 回転適用前の座標付き文字
+struct PendingTextChar {
+    text: String,
+    left: f64,
+    right: f64,
+    top: f64,
+    bottom: f64,
+    transform: [f64; 6],
+    advance: [f64; 2],
+    font: u32,
+    font_size: f64,
+    /// 量子化回転 0..3 または 255=軸外
+    rot_q: u8,
+    upright: bool,
+    synthetic: bool,
+}
+
+impl TextSink {
+    fn new() -> Self {
+        Self {
+            fonts: Vec::new(),
+            font_ids: HashMap::new(),
+            chars: Vec::new(),
+        }
+    }
+
+    fn font_index(&mut self, font: &Arc<LoadedFont>) -> u32 {
+        let key = Arc::as_ptr(font) as usize;
+        if let Some(&i) = self.font_ids.get(&key) {
+            return i;
+        }
+        let i = self.fonts.len() as u32;
+        self.fonts.push(TextFont {
+            name: font.display_name().to_string(),
+            ascent: font.ascent(),
+            descent: font.descent(),
+            vertical: font.vertical(),
+        });
+        self.font_ids.insert(key, i);
+        i
+    }
 }
 
 /// コンテンツストリームから glyphs と edges を抽出する
@@ -49,6 +100,7 @@ pub(crate) fn extract_parts(
         &mut graphics,
         &mut visiting,
         [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        None,
     );
 
     let (mut w, mut h) = (view[2] - view[0], view[3] - view[1]);
@@ -86,6 +138,110 @@ pub(crate) fn extract_parts(
     let spaces = synth_word_spaces(&glyphs);
     glyphs.extend(spaces);
     (glyphs, edges, graphics, rot as i32 * 90)
+}
+
+/// コンテンツストリームから座標付き文字を抽出する
+///
+/// ページ /Rotate のみ適用し支配回転の正規化はしない
+pub(crate) fn extract_text(
+    contents: &[u8],
+    resources: &Dict,
+    view: [f64; 4],
+    ctx: ContentCtx<'_>,
+    page_rotate: i32,
+) -> (f64, f64, Vec<TextFont>, Vec<TextChar>) {
+    let mut tagged = Vec::new();
+    let mut edges = Vec::new();
+    let mut graphics = Vec::new();
+    let mut visiting = HashSet::new();
+    let mut sink = TextSink::new();
+    interpret(
+        contents,
+        resources,
+        view,
+        &ctx,
+        &mut tagged,
+        &mut edges,
+        &mut graphics,
+        &mut visiting,
+        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        Some(&mut sink),
+    );
+
+    let (mut w, mut h) = (view[2] - view[0], view[3] - view[1]);
+    synth_word_spaces_text(&mut sink.chars);
+
+    let page_rot = (page_rotate.rem_euclid(360) / 90) as u8;
+    if page_rot != 0 {
+        rotate_text_chars(&mut sink.chars, w, h, page_rot);
+        for c in &mut sink.chars {
+            if c.rot_q < 4 {
+                c.rot_q = (c.rot_q + 4 - page_rot) % 4;
+            }
+            c.upright = c.rot_q == 0;
+        }
+        if page_rot != 2 {
+            std::mem::swap(&mut w, &mut h);
+        }
+    }
+
+    let chars = sink
+        .chars
+        .into_iter()
+        .map(|c| TextChar {
+            text: c.text,
+            left: c.left,
+            right: c.right,
+            top: c.top,
+            bottom: c.bottom,
+            transform: c.transform,
+            advance: c.advance,
+            font: c.font,
+            font_size: c.font_size,
+            rot: if c.rot_q < 4 {
+                c.rot_q as i32 * 90
+            } else {
+                0
+            },
+            upright: c.upright,
+            synthetic: c.synthetic,
+        })
+        .collect();
+    (w, h, sink.fonts, chars)
+}
+
+/// テキスト文字の座標をページ回転で移す
+fn rotate_text_chars(chars: &mut [PendingTextChar], w: f64, h: f64, rot: u8) {
+    let rmat = page_rot_mat(w, h, rot);
+    for c in chars.iter_mut() {
+        let (l, t, r, b) = rotate_box_td(c.left, c.top, c.right, c.bottom, w, h, rot);
+        c.left = l;
+        c.top = t;
+        c.right = r;
+        c.bottom = b;
+        c.transform = mat_mul(rmat, c.transform);
+        c.advance = rotate_vec_td(c.advance[0], c.advance[1], rot);
+    }
+}
+
+/// ページ回転の表示座標アフィン
+fn page_rot_mat(w: f64, h: f64, rot: u8) -> [f64; 6] {
+    match rot {
+        1 => [0.0, 1.0, -1.0, 0.0, h, 0.0],
+        2 => [-1.0, 0.0, 0.0, -1.0, w, h],
+        3 => [0.0, -1.0, 1.0, 0.0, 0.0, w],
+        _ => identity(),
+    }
+}
+
+/// 表示座標ベクトルのページ回転
+fn rotate_vec_td(dx: f64, dy: f64, rot: u8) -> [f64; 2] {
+    match rot {
+        1 => [-dy, dx],
+        2 => [-dx, -dy],
+        3 => [dy, -dx],
+        _ => [dx, dy],
+    }
 }
 
 /// グリフと線分とグラフィックの座標を正規化回転で移す
@@ -244,6 +400,126 @@ fn synth_word_spaces(glyphs: &[GlyphPart]) -> Vec<GlyphPart> {
         }
     }
     spaces
+}
+
+/// 語間ギャップに合成空白をストリーム位置へ挿入する
+fn synth_word_spaces_text(chars: &mut Vec<PendingTextChar>) {
+    if chars.len() < 2 {
+        return;
+    }
+    let mut hs: Vec<f64> = chars
+        .iter()
+        .filter(|c| !c.synthetic && !text_is_whitespace(&c.text))
+        .map(|c| c.bottom - c.top)
+        .collect();
+    if hs.len() < 2 {
+        return;
+    }
+    hs.sort_by(|a, b| a.total_cmp(b));
+    let med_h = hs[hs.len() / 2];
+    let line_tol = (med_h * 0.6).max(0.5);
+
+    let indices: Vec<usize> = (0..chars.len()).collect();
+    let mut by_bottom = indices.clone();
+    by_bottom.sort_by(|&a, &b| chars[a].bottom.total_cmp(&chars[b].bottom));
+
+    let mut lines: Vec<Vec<usize>> = Vec::new();
+    let mut cur: Vec<usize> = Vec::new();
+    let mut last_b = f64::NEG_INFINITY;
+    for i in by_bottom {
+        let b = chars[i].bottom;
+        if !cur.is_empty() && b - last_b > line_tol {
+            lines.push(std::mem::take(&mut cur));
+        }
+        last_b = b;
+        cur.push(i);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+
+    // (挿入位置=直前グリフの直後 index+1, 空白)
+    let mut inserts: Vec<(usize, PendingTextChar)> = Vec::new();
+    for mut line in lines {
+        line.sort_by(|&a, &b| chars[a].left.total_cmp(&chars[b].left));
+        let mut prev_solid: Option<usize> = None;
+        let mut space_between = false;
+        for i in line {
+            if text_is_whitespace(&chars[i].text) {
+                space_between = true;
+                continue;
+            }
+            if let Some(a) = prev_solid {
+                let gap = chars[i].left - chars[a].right;
+                let h = chars[a].bottom - chars[a].top;
+                if !space_between && gap > 0.12 * h && gap < 1.0 * h {
+                    let prev = &chars[a];
+                    let axis_len = (prev.transform[0] * prev.transform[0]
+                        + prev.transform[1] * prev.transform[1])
+                        .sqrt();
+                    let transform = if axis_len > 1e-9 {
+                        let ux = prev.transform[0] / axis_len;
+                        let uy = prev.transform[1] / axis_len;
+                        let end_projection = [
+                            prev.left * ux + prev.top * uy,
+                            prev.left * ux + prev.bottom * uy,
+                            prev.right * ux + prev.top * uy,
+                            prev.right * ux + prev.bottom * uy,
+                        ]
+                        .into_iter()
+                        .fold(f64::NEG_INFINITY, f64::max);
+                        let origin_projection = prev.transform[4] * ux + prev.transform[5] * uy;
+                        translate_mat(
+                            prev.transform,
+                            (end_projection - origin_projection).max(0.0) / axis_len,
+                            0.0,
+                        )
+                    } else {
+                        prev.transform
+                    };
+                    let alen = (prev.advance[0] * prev.advance[0]
+                        + prev.advance[1] * prev.advance[1])
+                        .sqrt();
+                    let advance = if alen > 1e-9 {
+                        [
+                            prev.advance[0] / alen * gap,
+                            prev.advance[1] / alen * gap,
+                        ]
+                    } else {
+                        [gap, 0.0]
+                    };
+                    inserts.push((
+                        a + 1,
+                        PendingTextChar {
+                            text: " ".into(),
+                            left: prev.right,
+                            right: chars[i].left,
+                            top: prev.top,
+                            bottom: prev.bottom,
+                            transform,
+                            advance,
+                            font: prev.font,
+                            font_size: prev.font_size,
+                            rot_q: prev.rot_q,
+                            upright: prev.upright,
+                            synthetic: true,
+                        },
+                    ));
+                }
+            }
+            prev_solid = Some(i);
+            space_between = false;
+        }
+    }
+
+    inserts.sort_by(|a, b| b.0.cmp(&a.0));
+    for (pos, sp) in inserts {
+        chars.insert(pos, sp);
+    }
+}
+
+fn text_is_whitespace(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_whitespace())
 }
 
 /// コンテンツストリームから軸平行な辺を抽出する
@@ -730,6 +1006,7 @@ fn interpret(
     graphics: &mut Vec<GraphicPart>,
     visiting: &mut HashSet<(u32, u16)>,
     ctm0: [f64; 6],
+    mut text_sink: Option<&mut TextSink>,
 ) {
     let mut lexer = Lexer::new(contents);
     let mut stack: Vec<Object> = Vec::new();
@@ -786,6 +1063,7 @@ fn interpret(
                             edges,
                             graphics,
                             visiting,
+                            text_sink.as_deref_mut(),
                         );
                         stack.clear();
                     }
@@ -809,6 +1087,7 @@ fn dispatch_op(
     edges: &mut Vec<EdgePart>,
     graphics: &mut Vec<GraphicPart>,
     visiting: &mut HashSet<(u32, u16)>,
+    text_sink: Option<&mut TextSink>,
 ) {
     match op {
         // グラフィックス状態（テキスト状態も保存・復元する。アンダーフローは無視）
@@ -879,7 +1158,18 @@ fn dispatch_op(
         // Form XObject
         "Do" => {
             if let Some(name) = take_name(stack) {
-                do_form_xobject(&name, *ctm, resources, view, ctx, glyphs, edges, graphics, visiting);
+                do_form_xobject(
+                    &name,
+                    *ctm,
+                    resources,
+                    view,
+                    ctx,
+                    glyphs,
+                    edges,
+                    graphics,
+                    visiting,
+                    text_sink,
+                );
             }
         }
 
@@ -948,19 +1238,19 @@ fn dispatch_op(
         "T*" => text.next_line(),
         "Tj" => {
             if let Some(Object::Str(s)) = stack.pop() {
-                show_text_bytes(text, &s, 0.0, *ctm, view, glyphs);
+                show_text_bytes(text, &s, 0.0, *ctm, view, glyphs, text_sink);
             }
         }
         "TJ" => {
             if let Some(Object::Array(arr)) = stack.pop() {
-                show_text_array(text, &arr, *ctm, view, glyphs);
+                show_text_array(text, &arr, *ctm, view, glyphs, text_sink);
             }
         }
         "'" => {
             // 改行してから Tj
             if let Some(Object::Str(s)) = stack.pop() {
                 text.next_line();
-                show_text_bytes(text, &s, 0.0, *ctm, view, glyphs);
+                show_text_bytes(text, &s, 0.0, *ctm, view, glyphs, text_sink);
             }
         }
         "\"" => {
@@ -970,7 +1260,7 @@ fn dispatch_op(
                     text.word_spacing = n[0];
                     text.char_spacing = n[1];
                     text.next_line();
-                    show_text_bytes(text, &s, 0.0, *ctm, view, glyphs);
+                    show_text_bytes(text, &s, 0.0, *ctm, view, glyphs, text_sink);
                 }
             }
         }
@@ -987,7 +1277,9 @@ fn show_text_array(
     ctm: [f64; 6],
     view: [f64; 4],
     glyphs: &mut Vec<(GlyphPart, u8)>,
+    text_sink: Option<&mut TextSink>,
 ) {
+    let mut text_sink = text_sink;
     let mut buf: Vec<u8> = Vec::new();
     for item in arr {
         match item {
@@ -996,14 +1288,14 @@ fn show_text_array(
                 let n = *n as f64;
                 if n != 0.0 {
                     let extra = -n / 1000.0 * text.font_size;
-                    show_text_bytes(text, &buf, extra, ctm, view, glyphs);
+                    show_text_bytes(text, &buf, extra, ctm, view, glyphs, text_sink.as_deref_mut());
                     buf.clear();
                 }
             }
             Object::Real(n) => {
                 if *n != 0.0 {
                     let extra = -n / 1000.0 * text.font_size;
-                    show_text_bytes(text, &buf, extra, ctm, view, glyphs);
+                    show_text_bytes(text, &buf, extra, ctm, view, glyphs, text_sink.as_deref_mut());
                     buf.clear();
                 }
             }
@@ -1011,13 +1303,14 @@ fn show_text_array(
         }
     }
     if !buf.is_empty() {
-        show_text_bytes(text, &buf, 0.0, ctm, view, glyphs);
+        show_text_bytes(text, &buf, 0.0, ctm, view, glyphs, text_sink);
     }
 }
 
 /// バイト列をグリフに展開して出力し textMatrix を進める
 ///
 /// `extra_spacing` は最終グリフの字送りに加算（テキスト空間、hScale 前）
+/// 横書きでは pdf.js の extraSpacing（`-n/1000×fs`）と同符号
 fn show_text_bytes(
     text: &mut TextState,
     bytes: &[u8],
@@ -1025,7 +1318,9 @@ fn show_text_bytes(
     ctm: [f64; 6],
     view: [f64; 4],
     glyphs: &mut Vec<(GlyphPart, u8)>,
+    text_sink: Option<&mut TextSink>,
 ) {
+    let mut text_sink = text_sink;
     let Some(font) = text.font.clone() else {
         // フォント未設定時は extra だけの平行移動（TJ 数値のみ）
         if extra_spacing != 0.0 {
@@ -1034,6 +1329,20 @@ fn show_text_bytes(
         }
         return;
     };
+
+    if font.vertical() {
+        show_text_bytes_vertical(
+            text,
+            &font,
+            bytes,
+            extra_spacing,
+            ctm,
+            view,
+            glyphs,
+            text_sink,
+        );
+        return;
+    }
 
     if bytes.is_empty() {
         if extra_spacing != 0.0 {
@@ -1048,8 +1357,9 @@ fn show_text_bytes(
     let (view_left, view_top) = (view[0], view[3]);
     let ascent = font.ascent();
     let descent = font.descent();
+    let font_idx = text_sink.as_mut().map(|s| s.font_index(&font));
 
-    for (i, (unicode, width, is_space)) in glyph_list.into_iter().enumerate() {
+    for (i, (unicode, width, is_space, _, _)) in glyph_list.into_iter().enumerate() {
         let extra = if i + 1 == count { extra_spacing } else { 0.0 };
 
         let trm = text.text_rendering_matrix(ctm);
@@ -1119,7 +1429,198 @@ fn show_text_bytes(
             ));
         }
 
+        if let (Some(sink), Some(fi)) = (text_sink.as_mut(), font_idx) {
+            let text_str: String = unicode
+                .chars()
+                .filter(|&ch| ch != '\n' && ch != '\r' && ch != '\t')
+                .collect();
+            if !text_str.is_empty() {
+                let (x0, x1, y0, y1) =
+                    glyph_box(ox, oy, ux, uy, 0.0, device_w, a_off, d_off);
+                // 前進ベクトル（TJ 含む、表示座標）
+                let end_tm_full = translate_mat(text.text_matrix, advance, 0.0);
+                let end_trm_full = {
+                    let tsm = [
+                        text.font_size * text.text_h_scale,
+                        0.0,
+                        0.0,
+                        text.font_size,
+                        0.0,
+                        text.text_rise,
+                    ];
+                    mat_mul(ctm, mat_mul(end_tm_full, tsm))
+                };
+                let (fx, fy) = (end_trm_full[4], end_trm_full[5]);
+                sink.chars.push(PendingTextChar {
+                    text: text_str,
+                    left: x0 - view_left,
+                    right: x1 - view_left,
+                    top: view_top - y1,
+                    bottom: view_top - y0,
+                    transform: [
+                        trm[0],
+                        -trm[1],
+                        trm[2],
+                        -trm[3],
+                        trm[4] - view_left,
+                        view_top - trm[5],
+                    ],
+                    advance: [fx - ox, -(fy - oy)],
+                    font: fi,
+                    font_size: font_size_dev,
+                    rot_q: rot,
+                    upright,
+                    synthetic: false,
+                });
+            }
+        }
+
         text.text_matrix = translate_mat(text.text_matrix, advance, 0.0);
+    }
+}
+
+/// 縦書きフォントの字送りと bbox（pdf.js evaluator / canvas 相当）
+fn show_text_bytes_vertical(
+    text: &mut TextState,
+    font: &Arc<LoadedFont>,
+    bytes: &[u8],
+    extra_spacing: f64,
+    ctm: [f64; 6],
+    view: [f64; 4],
+    glyphs: &mut Vec<(GlyphPart, u8)>,
+    mut text_sink: Option<&mut TextSink>,
+) {
+    // TJ の extra は横書き向け `-n/1000×fs`。縦書きでは符号を反転して pdf.js に合わせる
+    let vert_extra = |e: f64| -e;
+
+    if bytes.is_empty() {
+        if extra_spacing != 0.0 {
+            let cs = -text.char_spacing + vert_extra(extra_spacing);
+            text.text_matrix = translate_mat(text.text_matrix, 0.0, -cs);
+        }
+        return;
+    }
+
+    let glyph_list = font.chars_to_glyphs(bytes);
+    let count = glyph_list.len();
+    let (view_left, view_top) = (view[0], view[3]);
+    let ascent = font.ascent();
+    let descent = font.descent();
+    let font_idx = text_sink.as_mut().map(|s| s.font_index(font));
+
+    for (i, (unicode, width, _, vmetric, original_space)) in
+        glyph_list.into_iter().enumerate()
+    {
+        let extra = if i + 1 == count {
+            vert_extra(extra_spacing)
+        } else {
+            0.0
+        };
+        // [w1y, v1x, v1y]。欠落時は横幅の負値と半角オフセット
+        let [w1y, v1x, v1y] = vmetric.unwrap_or([-width, width * 0.5, 880.0]);
+
+        let trm = text.text_rendering_matrix(ctm);
+        // テキスト状態の原点（v1 ずらし前）。transform / advance の基準
+        let (wx, wy) = (trm[4], trm[5]);
+        // 描画原点: canvas の vx=-v1x, vy=v1y
+        let ox = wx + trm[0] * (-v1x / 1000.0) + trm[2] * (v1y / 1000.0);
+        let oy = wy + trm[1] * (-v1x / 1000.0) + trm[3] * (v1y / 1000.0);
+
+        let font_size_dev = (trm[2] * trm[2] + trm[3] * trm[3]).sqrt();
+        let dlen = (trm[0] * trm[0] + trm[1] * trm[1]).sqrt();
+        let (ux, uy) = if dlen > 0.0 {
+            (trm[0] / dlen, trm[1] / dlen)
+        } else {
+            (1.0, 0.0)
+        };
+
+        // 縦前進（hScale なし）。Tc は pdf.js どおり符号反転
+        let scaled_dim = w1y / 1000.0 * text.font_size;
+        let mut cs = -text.char_spacing + extra;
+        if original_space {
+            cs += text.word_spacing;
+        }
+        let advance_y = scaled_dim - cs;
+
+        // TRM 上の幅端点を横軸へ射影する。軸の鏡映は ux/uy にだけ持たせる
+        let width_end_x = ox + trm[0] * (width / 1000.0);
+        let width_end_y = oy + trm[1] * (width / 1000.0);
+        let device_w = (width_end_x - ox) * ux + (width_end_y - oy) * uy;
+        let upright = uy.abs() <= 0.05 && ux > 0.05;
+
+        let nch = unicode.chars().count().max(1);
+        let per_w = device_w / nch as f64;
+        let a_off = ascent * font_size_dev;
+        let d_off = descent * font_size_dev;
+
+        let rot = quantize_rot(ux, uy);
+        for (k, ch) in unicode.chars().enumerate() {
+            if ch == '\n' || ch == '\r' || ch == '\t' {
+                continue;
+            }
+            let (x0, x1, y0, y1) =
+                glyph_box(ox, oy, ux, uy, per_w * k as f64, per_w * (k as f64 + 1.0), a_off, d_off);
+            glyphs.push((
+                GlyphPart {
+                    ch,
+                    left: x0 - view_left,
+                    right: x1 - view_left,
+                    top: view_top - y1,
+                    bottom: view_top - y0,
+                    font_size: Some(font_size_dev),
+                    upright,
+                    rot: 0,
+                },
+                rot,
+            ));
+        }
+
+        if let (Some(sink), Some(fi)) = (text_sink.as_mut(), font_idx) {
+            let text_str: String = unicode
+                .chars()
+                .filter(|&ch| ch != '\n' && ch != '\r' && ch != '\t')
+                .collect();
+            if !text_str.is_empty() {
+                let (x0, x1, y0, y1) =
+                    glyph_box(ox, oy, ux, uy, 0.0, device_w, a_off, d_off);
+                let end_tm_full = translate_mat(text.text_matrix, 0.0, advance_y);
+                let end_trm_full = {
+                    let tsm = [
+                        text.font_size * text.text_h_scale,
+                        0.0,
+                        0.0,
+                        text.font_size,
+                        0.0,
+                        text.text_rise,
+                    ];
+                    mat_mul(ctm, mat_mul(end_tm_full, tsm))
+                };
+                let (fx, fy) = (end_trm_full[4], end_trm_full[5]);
+                sink.chars.push(PendingTextChar {
+                    text: text_str,
+                    left: x0 - view_left,
+                    right: x1 - view_left,
+                    top: view_top - y1,
+                    bottom: view_top - y0,
+                    transform: [
+                        trm[0],
+                        -trm[1],
+                        trm[2],
+                        -trm[3],
+                        wx - view_left,
+                        view_top - wy,
+                    ],
+                    advance: [fx - wx, -(fy - wy)],
+                    font: fi,
+                    font_size: font_size_dev,
+                    rot_q: rot,
+                    upright,
+                    synthetic: false,
+                });
+            }
+        }
+
+        text.text_matrix = translate_mat(text.text_matrix, 0.0, advance_y);
     }
 }
 
@@ -1172,6 +1673,7 @@ fn do_form_xobject(
     edges: &mut Vec<EdgePart>,
     graphics: &mut Vec<GraphicPart>,
     visiting: &mut HashSet<(u32, u16)>,
+    text_sink: Option<&mut TextSink>,
 ) {
     let Some(xo_obj) = resources.get("XObject") else {
         return;
@@ -1262,6 +1764,7 @@ fn do_form_xobject(
         graphics,
         visiting,
         mat_mul(ctm, form_mat),
+        text_sink,
     );
 
     if let Some(r) = ref_id {
@@ -1888,5 +2391,396 @@ Q
         // bottom = 220 - (40 - 1.2) = 181.2
         assert!(approx(g[0].top, 171.2), "top={}", g[0].top);
         assert!(approx(g[0].bottom, 181.2), "bottom={}", g[0].bottom);
+    }
+
+    // -----------------------------------------------------------------------
+    // テキストAPI（extract_text）
+    // -----------------------------------------------------------------------
+
+    fn text_of(contents: &[u8], view: [f64; 4]) -> (f64, f64, Vec<TextFont>, Vec<TextChar>) {
+        extract_text(
+            contents,
+            &Dict::new(),
+            view,
+            ContentCtx {
+                data: &[],
+                xref: None,
+            },
+            0,
+        )
+    }
+
+    fn rotated_synth_space(rot: i32) -> (f64, f64, Vec<TextChar>) {
+        let contents = b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (AB) Tj 1 0 0 1 13 50 Tm (CD) Tj ET";
+        let (w, h, _, chars) = extract_text(
+            contents,
+            &Dict::new(),
+            [0.0, 0.0, 100.0, 200.0],
+            ContentCtx {
+                data: &[],
+                xref: None,
+            },
+            rot,
+        );
+        let texts: Vec<&str> = chars.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["A", "B", " ", "C", "D"], "got {texts:?}");
+        assert!(chars[2].synthetic);
+        (w, h, chars)
+    }
+
+    /// 座標・前進・フォント表・transform の基本
+    #[test]
+    fn extract_text_bbox_advance_font_transform() {
+        let contents = b"BT /F1 10 Tf 1 0 0 1 30 40 Tm (B) Tj ET";
+        let (w, h, fonts, chars) = text_of(contents, default_view());
+        assert!(approx(w, 200.0));
+        assert!(approx(h, 200.0));
+        assert_eq!(fonts.len(), 1);
+        assert!(approx(fonts[0].ascent, 0.88));
+        assert!(approx(fonts[0].descent, -0.12));
+        assert!(!fonts[0].vertical);
+        assert_eq!(chars.len(), 1);
+        let c = &chars[0];
+        assert_eq!(c.text, "B");
+        assert!(!c.synthetic);
+        assert_eq!(c.font, 0);
+        assert!(approx(c.left, 30.0));
+        assert!(approx(c.right, 30.0 + stub_advance(10.0)));
+        assert!(approx(c.font_size, 10.0));
+        assert!(approx(c.advance[0], stub_advance(10.0)), "adv={:?}", c.advance);
+        assert!(approx(c.advance[1], 0.0));
+        // TRM 表示: e=30, f=200-40=160、縦軸長=10
+        assert!(approx(c.transform[4], 30.0), "e={}", c.transform[4]);
+        assert!(approx(c.transform[5], 160.0), "f={}", c.transform[5]);
+        // a = fontSize * hScale = 10, d = fontSize = 10（y 反転後 d は -10）
+        assert!(approx(c.transform[0], 10.0), "a={}", c.transform[0]);
+        assert!(approx(c.transform[3], -10.0), "d={}", c.transform[3]);
+        assert!(c.upright);
+        assert_eq!(c.rot, 0);
+    }
+
+    /// 合成空白がストリーム上の直前グリフ直後に入る
+    #[test]
+    fn extract_text_synth_space_stream_order() {
+        // "AB"(0..10) と "CD"(13..23): ギャップ3 → 合成空白を B の直後へ
+        let contents = b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (AB) Tj 1 0 0 1 13 50 Tm (CD) Tj ET";
+        let (_, _, _, chars) = text_of(contents, default_view());
+        let texts: Vec<&str> = chars.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["A", "B", " ", "C", "D"], "got {texts:?}");
+        assert!(chars[2].synthetic);
+        assert!(!chars[0].synthetic);
+        assert!(approx(chars[2].left, 10.0));
+        assert!(approx(chars[2].right, 13.0));
+        assert_eq!(chars[2].transform, [10.0, 0.0, 0.0, -10.0, 10.0, 150.0]);
+    }
+
+    /// ページ /Rotate 90 でも合成空白の位置と TRM が表示座標に一致する
+    #[test]
+    fn extract_text_synth_space_page_rotate_90() {
+        let (w, h, chars) = rotated_synth_space(90);
+        let space = &chars[2];
+        assert!(approx(w, 200.0));
+        assert!(approx(h, 100.0));
+        assert!(approx(space.left, 48.8));
+        assert!(approx(space.right, 58.8));
+        assert!(approx(space.top, 10.0));
+        assert!(approx(space.bottom, 13.0));
+        assert_eq!(space.transform, [0.0, 10.0, 10.0, 0.0, 50.0, 10.0]);
+        assert_eq!(space.advance, [0.0, 3.0]);
+        assert_eq!(space.rot, 270);
+        assert!(!space.upright);
+    }
+
+    /// ページ /Rotate 180 でも合成空白の位置と TRM が表示座標に一致する
+    #[test]
+    fn extract_text_synth_space_page_rotate_180() {
+        let (w, h, chars) = rotated_synth_space(180);
+        let space = &chars[2];
+        assert!(approx(w, 100.0));
+        assert!(approx(h, 200.0));
+        assert!(approx(space.left, 87.0));
+        assert!(approx(space.right, 90.0));
+        assert!(approx(space.top, 48.8));
+        assert!(approx(space.bottom, 58.8));
+        assert_eq!(space.transform, [-10.0, 0.0, 0.0, 10.0, 90.0, 50.0]);
+        assert_eq!(space.advance, [-3.0, 0.0]);
+        assert_eq!(space.rot, 180);
+        assert!(!space.upright);
+    }
+
+    /// ページ /Rotate 270 でも合成空白の位置と TRM が表示座標に一致する
+    #[test]
+    fn extract_text_synth_space_page_rotate_270() {
+        let (w, h, chars) = rotated_synth_space(270);
+        let space = &chars[2];
+        assert!(approx(w, 200.0));
+        assert!(approx(h, 100.0));
+        assert!(approx(space.left, 141.2));
+        assert!(approx(space.right, 151.2));
+        assert!(approx(space.top, 87.0));
+        assert!(approx(space.bottom, 90.0));
+        assert_eq!(space.transform, [0.0, -10.0, -10.0, 0.0, 150.0, 90.0]);
+        assert_eq!(space.advance, [0.0, -3.0]);
+        assert_eq!(space.rot, 90);
+        assert!(!space.upright);
+    }
+
+    /// TJ 数値が前進ベクトルに反映される
+    #[test]
+    fn extract_text_tj_in_advance() {
+        // [(A) 200 (B)] fontSize=10 → A の advance に extra=-2 が乗る
+        let contents = b"BT /F1 10 Tf 1 0 0 1 0 100 Tm [(A) 200 (B)] TJ ET";
+        let (_, _, _, chars) = text_of(contents, default_view());
+        assert_eq!(chars.len(), 2);
+        // A: bbox_advance=5, extra=-2 → advance=3
+        assert!(approx(chars[0].advance[0], 3.0), "adv0={:?}", chars[0].advance);
+        assert!(approx(chars[1].left, 3.0));
+        assert!(approx(chars[1].advance[0], 5.0));
+    }
+
+    /// ページ /Rotate 90 で width/height と座標が入れ替わる
+    #[test]
+    fn extract_text_page_rotate_90() {
+        // 非正方形 view: 100×200
+        let view = [0.0, 0.0, 100.0, 200.0];
+        let contents = b"BT /F1 10 Tf 1 0 0 1 10 20 Tm (A) Tj ET";
+        let (w, h, _, chars) = extract_text(
+            contents,
+            &Dict::new(),
+            view,
+            ContentCtx {
+                data: &[],
+                xref: None,
+            },
+            90,
+        );
+        // view 100x200 → 90度で 200x100
+        assert!(approx(w, 200.0), "w={w}");
+        assert!(approx(h, 100.0), "h={h}");
+        assert_eq!(chars.len(), 1);
+        let c = &chars[0];
+        assert!(c.left.is_finite() && c.right.is_finite());
+        assert!(c.transform[4].is_finite() && c.transform[5].is_finite());
+        // 表示座標上の bbox がページ内に収まる
+        assert!(c.left >= -1.0 && c.right <= w + 1.0);
+        assert!(c.top >= -1.0 && c.bottom <= h + 1.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // 縦書き（Identity-V）
+    // -----------------------------------------------------------------------
+
+    /// 指定した縦メトリクスを持つ Identity-V の Type0 resources
+    fn vertical_resources_with_metrics(dw2: Option<Vec<Object>>, w2: Option<Vec<Object>>) -> Dict {
+        let mut cid = Dict::new();
+        cid.set("Subtype", Object::Name("CIDFontType2".into()));
+        cid.set("DW", Object::Int(1000));
+        if let Some(dw2) = dw2 {
+            cid.set("DW2", Object::Array(dw2));
+        }
+        if let Some(w2) = w2 {
+            cid.set("W2", Object::Array(w2));
+        }
+        let mut type0 = Dict::new();
+        type0.set("Subtype", Object::Name("Type0".into()));
+        type0.set("Encoding", Object::Name("Identity-V".into()));
+        type0.set(
+            "DescendantFonts",
+            Object::Array(vec![Object::Dict(cid)]),
+        );
+        let mut fonts = Dict::new();
+        fonts.set("F1", Object::Dict(type0));
+        let mut res = Dict::new();
+        res.set("Font", Object::Dict(fonts));
+        res
+    }
+
+    /// Identity-V の Type0 を /F1 に載せた resources
+    fn vertical_resources(with_w2: bool) -> Dict {
+        let w2 = with_w2.then(|| {
+            vec![
+                Object::Int(0x41),
+                Object::Array(vec![
+                    Object::Int(-500),
+                    Object::Int(500),
+                    Object::Int(880),
+                ]),
+            ]
+        });
+        vertical_resources_with_metrics(
+            Some(vec![Object::Int(880), Object::Int(-1000)]),
+            w2,
+        )
+    }
+
+    fn text_of_res(
+        contents: &[u8],
+        resources: &Dict,
+        view: [f64; 4],
+    ) -> (f64, f64, Vec<TextFont>, Vec<TextChar>) {
+        extract_text(
+            contents,
+            resources,
+            view,
+            ContentCtx {
+                data: &[],
+                xref: None,
+            },
+            0,
+        )
+    }
+
+    /// 縦書き: 前進が縦方向、bbox が縦に並ぶ、TextFont.vertical
+    #[test]
+    fn extract_text_vertical_advance_and_stack() {
+        // Identity-V: <00410042> = CID 0x41, 0x42
+        // DW2 既定 w1y=-1000、fs=10 → 各字の PDF y 前進 = -10
+        let contents = b"BT /F1 10 Tf 1 0 0 1 50 150 Tm <00410042> Tj ET";
+        let res = vertical_resources(false);
+        let (_, _, fonts, chars) = text_of_res(contents, &res, default_view());
+        assert_eq!(fonts.len(), 1);
+        assert!(fonts[0].vertical);
+        assert_eq!(chars.len(), 2);
+
+        // advance は表示座標で下向き（+y）
+        assert!(approx(chars[0].advance[0], 0.0), "adv0={:?}", chars[0].advance);
+        assert!(
+            approx(chars[0].advance[1], 10.0),
+            "adv0 y={:?}",
+            chars[0].advance
+        );
+        assert!(approx(chars[1].advance[0], 0.0));
+        assert!(approx(chars[1].advance[1], 10.0));
+
+        // 横位置は概ね同じ列、縦位置は下へ並ぶ
+        assert!(
+            (chars[0].left - chars[1].left).abs() < 1.0,
+            "lefts {} {}",
+            chars[0].left,
+            chars[1].left
+        );
+        assert!(
+            chars[1].top > chars[0].top + 5.0,
+            "tops {} {}",
+            chars[0].top,
+            chars[1].top
+        );
+    }
+
+    /// /W2 個別値が /DW2 既定より優先され前進量が変わる
+    #[test]
+    fn extract_text_vertical_w2_vs_dw2() {
+        let contents = b"BT /F1 10 Tf 1 0 0 1 50 150 Tm <00410042> Tj ET";
+        let res = vertical_resources(true);
+        let (_, _, _, chars) = text_of_res(contents, &res, default_view());
+        assert_eq!(chars.len(), 2);
+        // CID 0x41: w1y=-500 → advance y = 5
+        assert!(
+            approx(chars[0].advance[1], 5.0),
+            "w2 adv={:?}",
+            chars[0].advance
+        );
+        // CID 0x42: 既定 w1y=-1000 → advance y = 10
+        assert!(
+            approx(chars[1].advance[1], 10.0),
+            "dw2 adv={:?}",
+            chars[1].advance
+        );
+        // 2 字目の top 差は 5（W2）分だけ
+        let dy = chars[1].top - chars[0].top;
+        assert!(approx(dy, 5.0), "dy={dy}");
+    }
+
+    /// CTM の拡大を縦書き bbox の幅と高さへ同じ倍率で反映する
+    #[test]
+    fn extract_text_vertical_bbox_respects_ctm_scale() {
+        let contents = b"2 0 0 2 0 0 cm BT /F1 10 Tf 1 0 0 1 50 150 Tm <0041> Tj ET";
+        let res = vertical_resources(false);
+        let (_, _, _, chars) = text_of_res(contents, &res, [0.0, 0.0, 400.0, 400.0]);
+        assert_eq!(chars.len(), 1);
+        let width = chars[0].right - chars[0].left;
+        let height = chars[0].bottom - chars[0].top;
+        assert!(approx(width, 20.0), "width={width}");
+        assert!(approx(height, 20.0), "height={height}");
+    }
+
+    /// 負の Tz でも横軸の鏡映を二重に反転しない
+    #[test]
+    fn extract_text_vertical_bbox_negative_hscale() {
+        let contents = b"BT /F1 10 Tf -100 Tz 1 0 0 1 50 100 Tm <0041> Tj ET";
+        let res = vertical_resources(false);
+        let (_, _, _, chars) = text_of_res(contents, &res, default_view());
+        assert_eq!(chars.len(), 1);
+        assert!(approx(chars[0].left, 45.0), "left={}", chars[0].left);
+        assert!(approx(chars[0].right, 55.0), "right={}", chars[0].right);
+    }
+
+    /// 縦書きの Tc・2バイト空白への Tw・TJ 数値を前進量へ反映する
+    #[test]
+    fn extract_text_vertical_tc_tw_and_tj_advance() {
+        let contents =
+            b"BT /F1 10 Tf 1 Tc 2 Tw 1 0 0 1 50 150 Tm [<00410020> 200 <0042>] TJ ET";
+        let res = vertical_resources(false);
+        let (_, _, _, chars) = text_of_res(contents, &res, default_view());
+        let texts: Vec<&str> = chars.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["A", " ", "B"]);
+        // A: -10 - (-Tc) = -9
+        assert!(approx(chars[0].advance[1], 9.0), "A={:?}", chars[0].advance);
+        // 空白: -10 - (-Tc + Tw + TJ 2) = -13
+        assert!(approx(chars[1].advance[1], 13.0), "space={:?}", chars[1].advance);
+        assert!(approx(chars[2].advance[1], 9.0), "B={:?}", chars[2].advance);
+        assert!(approx(chars[1].transform[5] - chars[0].transform[5], 9.0));
+        assert!(approx(chars[2].transform[5] - chars[1].transform[5], 13.0));
+    }
+
+    /// v1x/v1y の個別値で bbox の絶対位置をずらす
+    #[test]
+    fn extract_text_vertical_custom_origin_bbox_position() {
+        let res = vertical_resources_with_metrics(
+            Some(vec![Object::Int(880), Object::Int(-1000)]),
+            Some(vec![
+                Object::Int(0x41),
+                Object::Array(vec![
+                    Object::Int(-1000),
+                    Object::Int(200),
+                    Object::Int(300),
+                ]),
+            ]),
+        );
+        let contents = b"BT /F1 10 Tf 1 0 0 1 50 100 Tm <0041> Tj ET";
+        let (_, _, _, chars) = text_of_res(contents, &res, default_view());
+        assert_eq!(chars.len(), 1);
+        assert!(approx(chars[0].left, 48.0), "left={}", chars[0].left);
+        assert!(approx(chars[0].right, 58.0), "right={}", chars[0].right);
+        assert!(approx(chars[0].top, 88.2), "top={}", chars[0].top);
+        assert!(approx(chars[0].bottom, 98.2), "bottom={}", chars[0].bottom);
+    }
+
+    /// 縦書き parts: グリフ bbox が縦に並ぶ
+    #[test]
+    fn glyphs_vertical_stack() {
+        let contents = b"BT /F1 10 Tf 1 0 0 1 50 150 Tm <00410042> Tj ET";
+        let res = vertical_resources(false);
+        let (glyphs, _, _, _) = extract_parts(
+            contents,
+            &res,
+            default_view(),
+            ContentCtx {
+                data: &[],
+                xref: None,
+            },
+            0,
+        );
+        assert_eq!(glyphs.len(), 2);
+        assert!(
+            (glyphs[0].left - glyphs[1].left).abs() < 1.0,
+            "lefts"
+        );
+        assert!(
+            glyphs[1].top > glyphs[0].top + 5.0,
+            "tops {} {}",
+            glyphs[0].top,
+            glyphs[1].top
+        );
     }
 }

@@ -4,12 +4,14 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
 
 use super::crypto::{decrypt_object_tree, CipherFactory};
 use super::file::{find_pdf_header_offset, find_startxref};
 use super::filters::decode_stream;
+use super::font::LoadedFont;
 use super::lexer::{Lexer, Token};
 use super::object::{Dict, Object, Ref, Stream};
 use super::parser::{NullResolver, Parser, Resolver};
@@ -33,6 +35,8 @@ pub(crate) struct XRef {
     /// 最初に得た trailer（/Root /Size /Encrypt /Info の参照元）
     trailer: Dict,
     cache: RefCell<HashMap<u32, Object>>,
+    /// 文書内で共有する読み込み済みフォント
+    pub(super) font_cache: Arc<Mutex<HashMap<u32, Arc<LoadedFont>>>>,
     /// 取得中の参照（循環検出）
     pending: RefCell<HashSet<(u32, u16)>>,
     /// Resolver 経由で起きたエラー（循環など）を fetch 呼び出し元へ伝える
@@ -91,6 +95,7 @@ impl XRef {
             entries: HashMap::new(),
             trailer: Dict::new(),
             cache: RefCell::new(HashMap::new()),
+            font_cache: Arc::new(Mutex::new(HashMap::new())),
             pending: RefCell::new(HashSet::new()),
             resolve_error: RefCell::new(None),
             cipher: None,
@@ -1196,6 +1201,7 @@ fn parse_trailer_at(body: &[u8], trailer_pos: usize) -> Option<Dict> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::font::lookup_font;
     use flate2::Compression;
     use flate2::write::ZlibEncoder;
     use std::io::Write;
@@ -1221,6 +1227,61 @@ mod tests {
         body.extend_from_slice(format!("{xref_off}\n").as_bytes());
         body.extend_from_slice(b"%%EOF\n");
         body
+    }
+
+    /// 同じオブジェクト番号に異なるフォントを持つ最小 PDF
+    fn build_pdf_with_font(base_font: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"%PDF-1.4\n");
+
+        let o1 = body.len();
+        body.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        let o2 = body.len();
+        body.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+
+        let o3 = body.len();
+        body.extend_from_slice(
+            format!("3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /{base_font} >>\nendobj\n")
+                .as_bytes(),
+        );
+
+        let xref_off = body.len();
+        body.extend_from_slice(b"xref\n0 4\n");
+        body.extend_from_slice(format!("{:010} 65535 f \n", 0).as_bytes());
+        body.extend_from_slice(format!("{o1:010} 00000 n \n").as_bytes());
+        body.extend_from_slice(format!("{o2:010} 00000 n \n").as_bytes());
+        body.extend_from_slice(format!("{o3:010} 00000 n \n").as_bytes());
+        body.extend_from_slice(b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n");
+        body.extend_from_slice(format!("{xref_off}\n%%EOF\n").as_bytes());
+        body
+    }
+
+    #[test]
+    fn font_cache_is_shared_only_within_document() {
+        fn resources() -> Dict {
+            let mut fonts = Dict::new();
+            fonts.set("F1", Object::Ref(Ref::new(3, 0)));
+            let mut resources = Dict::new();
+            resources.set("Font", Object::Dict(fonts));
+            resources
+        }
+
+        let data_a = build_pdf_with_font("Helvetica");
+        let data_b = build_pdf_with_font("Courier");
+        let xref_a = XRef::parse(&data_a).expect("parse first document");
+        let xref_a_clone = xref_a.clone();
+        let xref_b = XRef::parse(&data_b).expect("parse second document");
+        assert!(Arc::ptr_eq(&xref_a.font_cache, &xref_a_clone.font_cache));
+        assert!(!Arc::ptr_eq(&xref_a.font_cache, &xref_b.font_cache));
+
+        let font_a = lookup_font(&resources(), "F1", &data_a, Some(&xref_a));
+        let font_a_cached = lookup_font(&resources(), "F1", &data_a, Some(&xref_a_clone));
+        let font_b = lookup_font(&resources(), "F1", &data_b, Some(&xref_b));
+        assert!(Arc::ptr_eq(&font_a, &font_a_cached));
+        assert!(!Arc::ptr_eq(&font_a, &font_b));
+        assert_eq!(font_a.display_name(), "Helvetica");
+        assert_eq!(font_b.display_name(), "Courier");
     }
 
     #[test]

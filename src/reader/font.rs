@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 use super::cmap::{utf16be_bytes_to_string, CMap, MapValue};
 use super::data::{
@@ -27,15 +27,23 @@ const PROVISIONAL_WIDTH: f64 = 500.0;
 const FLAG_SYMBOLIC: i64 = 4;
 const FLAG_NONSYMBOLIC: i64 = 32;
 
+/// 縦メトリクス [w1y, v1x, v1y]（グリフ空間 /1000 単位）
+pub(crate) type VMetric = [f64; 3];
+
 /// 読み込み済みフォント
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedFont {
     /// リソース上の名前
-    #[allow(dead_code)]
     name: String,
+    /// BaseFont 名（空ならリソース名を公開名に使う）
+    base_font: String,
     /// charcode または CID → グリフ空間幅（/1000 単位）
     widths: HashMap<u32, f64>,
     default_width: f64,
+    /// CID → 縦メトリクス
+    vmetrics: HashMap<u32, VMetric>,
+    /// 縦書き時の既定 vmetric。横書きは None
+    default_vmetric: Option<VMetric>,
     /// charcode → Unicode 文字列
     to_unicode: HashMap<u32, String>,
     /// 複合用符号化 CMap（None なら1バイト）
@@ -51,10 +59,14 @@ pub(crate) struct LoadedFont {
 impl LoadedFont {
     /// 辞書が無いときのフォールバック（幅500・Latin-1・既定 ascent/descent）
     pub fn stub(name: impl Into<String>) -> Self {
+        let name = name.into();
         Self {
-            name: name.into(),
+            name,
+            base_font: String::new(),
             widths: HashMap::new(),
             default_width: PROVISIONAL_WIDTH,
+            vmetrics: HashMap::new(),
+            default_vmetric: None,
             to_unicode: HashMap::new(),
             encoding_cmap: None,
             ucs2_cmap: None,
@@ -64,10 +76,23 @@ impl LoadedFont {
         }
     }
 
+    /// 公開用フォント名（BaseFont 優先、なければリソース名）
+    pub fn display_name(&self) -> &str {
+        if self.base_font.is_empty() {
+            &self.name
+        } else {
+            &self.base_font
+        }
+    }
+
     /// 文字列バイト列をグリフ列に分解する
     ///
-    /// 戻り値: (unicode文字列, グリフ空間の字送り幅(/1000), 元コードが1バイト空白か)
-    pub fn chars_to_glyphs(&self, bytes: &[u8]) -> Vec<(Cow<'_, str>, f64, bool)> {
+    /// 戻り値: (unicode文字列, グリフ空間の字送り幅(/1000), 元コードが1バイト空白か,
+    /// 縦メトリクス, 元 charcode が 0x20 か)
+    pub fn chars_to_glyphs(
+        &self,
+        bytes: &[u8],
+    ) -> Vec<(Cow<'_, str>, f64, bool, Option<VMetric>, bool)> {
         let mut out = Vec::with_capacity(bytes.len());
         if let Some(cmap) = &self.encoding_cmap {
             let mut i = 0;
@@ -83,7 +108,8 @@ impl LoadedFont {
                     .copied()
                     .unwrap_or(self.default_width);
                 let unicode = self.resolve_unicode(charcode, cid, true);
-                out.push((unicode, width, is_space));
+                let vmetric = self.vmetric_for(cid);
+                out.push((unicode, width, is_space, vmetric, charcode == 0x20));
             }
         } else {
             for &b in bytes {
@@ -94,10 +120,17 @@ impl LoadedFont {
                     .copied()
                     .unwrap_or(self.default_width);
                 let unicode = self.resolve_unicode(charcode, charcode, false);
-                out.push((unicode, width, b == 0x20));
+                let vmetric = self.vmetric_for(charcode);
+                out.push((unicode, width, b == 0x20, vmetric, charcode == 0x20));
             }
         }
         out
+    }
+
+    /// CID の縦メトリクス（縦書きフォントのみ）
+    pub fn vmetric_for(&self, cid: u32) -> Option<VMetric> {
+        let default = self.default_vmetric?;
+        Some(self.vmetrics.get(&cid).copied().unwrap_or(default))
     }
 
     fn resolve_unicode(&self, charcode: u32, cid: u32, composite: bool) -> Cow<'_, str> {
@@ -127,8 +160,6 @@ impl LoadedFont {
     }
 
     /// 符号化 CMap が縦書きか
-    // 縦書きの前進方向切替（第4段階）で使う
-    #[allow(dead_code)]
     pub fn vertical(&self) -> bool {
         self.encoding_cmap
             .as_ref()
@@ -156,12 +187,6 @@ fn charcode_to_cid(cmap: &CMap, charcode: u32) -> u32 {
     }
 }
 
-/// オブジェクト番号 → フォントのプロセス内キャッシュ
-fn font_cache() -> &'static Mutex<HashMap<u32, Arc<LoadedFont>>> {
-    static CACHE: OnceLock<Mutex<HashMap<u32, Arc<LoadedFont>>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 /// resources の /Font から名前で引き、解釈済みフォントを返す
 pub(crate) fn lookup_font(
     resources: &Dict,
@@ -180,16 +205,16 @@ pub(crate) fn lookup_font(
         return Arc::new(LoadedFont::stub(name));
     };
 
-    // 参照番号でキャッシュ
-    if let Object::Ref(r) = entry {
-        if let Ok(guard) = font_cache().lock() {
+    // 間接参照は文書内でキャッシュする
+    if let (Object::Ref(r), Some(xref)) = (entry, xref) {
+        if let Ok(guard) = xref.font_cache.lock() {
             if let Some(cached) = guard.get(&r.num) {
-                return cached.clone();
+                return Arc::clone(cached);
             }
         }
-        let loaded = Arc::new(load_font_object(entry, name, data, xref));
-        if let Ok(mut guard) = font_cache().lock() {
-            guard.insert(r.num, loaded.clone());
+        let loaded = Arc::new(load_font_object(entry, name, data, Some(xref)));
+        if let Ok(mut guard) = xref.font_cache.lock() {
+            guard.insert(r.num, Arc::clone(&loaded));
         }
         return loaded;
     }
@@ -297,8 +322,11 @@ fn load_simple(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Loa
 
     LoadedFont {
         name: name.into(),
+        base_font,
         widths,
         default_width,
+        vmetrics: HashMap::new(),
+        default_vmetric: None,
         to_unicode,
         encoding_cmap: None,
         ucs2_cmap: None,
@@ -349,8 +377,11 @@ fn load_type3(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Load
 
     LoadedFont {
         name: name.into(),
+        base_font,
         widths,
         default_width,
+        vmetrics: HashMap::new(),
+        default_vmetric: None,
         to_unicode,
         encoding_cmap: None,
         ucs2_cmap: None,
@@ -382,13 +413,22 @@ fn load_type0(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Load
         None
     };
 
+    let (vmetrics, default_vmetric) = if encoding_cmap.vertical() {
+        extract_cid_vmetrics(&cid_dict, default_width, data, xref)
+    } else {
+        (HashMap::new(), None)
+    };
+
     let (ascent, descent) =
         resolve_ascent_descent(&descriptor, Some(&base_font), data, xref);
 
     LoadedFont {
         name: name.into(),
+        base_font,
         widths,
         default_width,
+        vmetrics,
+        default_vmetric,
         to_unicode,
         encoding_cmap: Some(encoding_cmap),
         ucs2_cmap,
@@ -535,6 +575,93 @@ fn extract_cid_widths(
     }
 
     (widths, default_width)
+}
+
+/// CID フォントの /DW2・/W2（pdf.js と同形式）
+///
+/// 内部 vmetric は [w1y, v1x, v1y]。既定は [-1000, DW/2, 880]
+fn extract_cid_vmetrics(
+    cid_dict: &Dict,
+    default_width: f64,
+    data: &[u8],
+    xref: Option<&XRef>,
+) -> (HashMap<u32, VMetric>, Option<VMetric>) {
+    let (vy, w1y) = match cid_dict.get("DW2") {
+        Some(o) => match resolve_obj(o, data, xref) {
+            Object::Array(arr) if arr.len() == 2 => {
+                let a = as_number(&resolve_obj(&arr[0], data, xref));
+                let b = as_number(&resolve_obj(&arr[1], data, xref));
+                match (a, b) {
+                    (Some(a), Some(b)) => (a, b),
+                    _ => (880.0, -1000.0),
+                }
+            }
+            _ => (880.0, -1000.0),
+        },
+        None => (880.0, -1000.0),
+    };
+    let default_vmetric: VMetric = [w1y, default_width * 0.5, vy];
+
+    let mut vmetrics = HashMap::new();
+    let Some(w2obj) = cid_dict.get("W2") else {
+        return (vmetrics, Some(default_vmetric));
+    };
+    let Object::Array(arr) = resolve_obj(w2obj, data, xref) else {
+        return (vmetrics, Some(default_vmetric));
+    };
+
+    let mut i = 0;
+    while i < arr.len() {
+        let start_obj = resolve_obj(&arr[i], data, xref);
+        let Some(start) = as_int(&start_obj) else {
+            break;
+        };
+        i += 1;
+        if i >= arr.len() {
+            break;
+        }
+        let next = resolve_obj(&arr[i], data, xref);
+        if let Object::Array(vals) = next {
+            // c [w1y v1x v1y w1y v1x v1y ...]
+            let mut c = start.max(0) as u32;
+            let mut j = 0;
+            while j + 2 < vals.len() {
+                let w1 = as_number(&resolve_obj(&vals[j], data, xref));
+                let vx = as_number(&resolve_obj(&vals[j + 1], data, xref));
+                let vy = as_number(&resolve_obj(&vals[j + 2], data, xref));
+                if let (Some(w1), Some(vx), Some(vy)) = (w1, vx, vy) {
+                    vmetrics.insert(c, [w1, vx, vy]);
+                }
+                c = c.saturating_add(1);
+                j += 3;
+            }
+            i += 1;
+        } else if let Some(end) = as_int(&next) {
+            // c1 c2 w1y v1x v1y
+            i += 1;
+            if i + 2 >= arr.len() {
+                break;
+            }
+            let w1 = as_number(&resolve_obj(&arr[i], data, xref));
+            let vx = as_number(&resolve_obj(&arr[i + 1], data, xref));
+            let vy = as_number(&resolve_obj(&arr[i + 2], data, xref));
+            i += 3;
+            let Some(w1) = w1 else { continue };
+            let Some(vx) = vx else { continue };
+            let Some(vy) = vy else { continue };
+            let s = start.max(0) as u32;
+            let e = end.max(0) as u32;
+            if s <= e {
+                for c in s..=e {
+                    vmetrics.insert(c, [w1, vx, vy]);
+                }
+            }
+        } else {
+            break;
+        }
+    }
+
+    (vmetrics, Some(default_vmetric))
 }
 
 /// /Encoding を CMap に解決する。戻り値の bool は定義済み（builtin）か
@@ -1952,5 +2079,144 @@ endcmap
         assert_eq!(g.len(), 1);
         assert_eq!(g[0].0, "\u{3000}");
         assert!(approx(g[0].1, 600.0), "width={}", g[0].1);
+        assert!(g[0].3.is_none());
+    }
+
+    fn type0_identity_v(with_w2: bool) -> Dict {
+        let mut cid = Dict::new();
+        cid.set("Subtype", Object::Name("CIDFontType2".into()));
+        cid.set("DW", Object::Int(1000));
+        // DW2 既定 [880, -1000] を明示
+        cid.set(
+            "DW2",
+            Object::Array(vec![Object::Int(880), Object::Int(-1000)]),
+        );
+        if with_w2 {
+            // CID 0x41: w1y=-800, v1x=400, v1y=700
+            cid.set(
+                "W2",
+                Object::Array(vec![
+                    Object::Int(0x41),
+                    Object::Array(vec![
+                        Object::Int(-800),
+                        Object::Int(400),
+                        Object::Int(700),
+                    ]),
+                ]),
+            );
+        }
+        let mut type0 = Dict::new();
+        type0.set("Subtype", Object::Name("Type0".into()));
+        type0.set("Encoding", Object::Name("Identity-V".into()));
+        type0.set(
+            "DescendantFonts",
+            Object::Array(vec![Object::Dict(cid)]),
+        );
+        type0
+    }
+
+    #[test]
+    fn identity_v_default_vmetric_from_dw2() {
+        let font = load_font_dict(&type0_identity_v(false), "V", &[], None);
+        assert!(font.vertical());
+        // 0x0042 → CID 0x42、W2 無し → 既定 [-1000, 500, 880]
+        let g = font.chars_to_glyphs(&[0x00, 0x42]);
+        assert_eq!(g.len(), 1);
+        let vm = g[0].3.expect("vmetric");
+        assert!(approx(vm[0], -1000.0), "w1y={}", vm[0]);
+        assert!(approx(vm[1], 500.0), "v1x={}", vm[1]);
+        assert!(approx(vm[2], 880.0), "v1y={}", vm[2]);
+    }
+
+    #[test]
+    fn identity_v_w2_overrides_default() {
+        let font = load_font_dict(&type0_identity_v(true), "V", &[], None);
+        assert!(font.vertical());
+        let g = font.chars_to_glyphs(&[0x00, 0x41]);
+        let vm = g[0].3.expect("vmetric");
+        assert!(approx(vm[0], -800.0));
+        assert!(approx(vm[1], 400.0));
+        assert!(approx(vm[2], 700.0));
+        // 他 CID は既定
+        let g2 = font.chars_to_glyphs(&[0x00, 0x42]);
+        let vm2 = g2[0].3.expect("vmetric");
+        assert!(approx(vm2[0], -1000.0));
+        assert!(approx(vm2[1], 500.0));
+        assert!(approx(vm2[2], 880.0));
+    }
+
+    /// /DW2 は正確な2数値だけを採用し、それ以外は配列全体を既定値へ戻す
+    #[test]
+    fn identity_v_dw2_validation_and_fallback() {
+        let cases = [
+            None,
+            Some(vec![Object::Int(700), Object::Null]),
+            Some(vec![
+                Object::Int(700),
+                Object::Int(-900),
+                Object::Int(0),
+            ]),
+        ];
+        for dw2 in cases {
+            let mut cid = Dict::new();
+            if let Some(dw2) = dw2 {
+                cid.set("DW2", Object::Array(dw2));
+            }
+            let (_, default) = extract_cid_vmetrics(&cid, 1000.0, &[], None);
+            assert_eq!(default, Some([-1000.0, 500.0, 880.0]));
+        }
+
+        let mut cid = Dict::new();
+        cid.set(
+            "DW2",
+            Object::Array(vec![Object::Int(700), Object::Int(-900)]),
+        );
+        let (_, default) = extract_cid_vmetrics(&cid, 1000.0, &[], None);
+        assert_eq!(default, Some([-900.0, 500.0, 700.0]));
+    }
+
+    /// /W2 の範囲形式を範囲内の全 CID へ展開する
+    #[test]
+    fn identity_v_w2_range_form() {
+        let mut cid = Dict::new();
+        cid.set(
+            "W2",
+            Object::Array(vec![
+                Object::Int(0x41),
+                Object::Int(0x43),
+                Object::Int(-700),
+                Object::Int(300),
+                Object::Int(600),
+            ]),
+        );
+        let (metrics, default) = extract_cid_vmetrics(&cid, 1000.0, &[], None);
+        for code in 0x41..=0x43 {
+            assert_eq!(metrics.get(&code), Some(&[-700.0, 300.0, 600.0]));
+        }
+        assert!(!metrics.contains_key(&0x40));
+        assert!(!metrics.contains_key(&0x44));
+        assert_eq!(default, Some([-1000.0, 500.0, 880.0]));
+    }
+
+    #[test]
+    fn identity_h_has_no_vmetric() {
+        let mut cid = Dict::new();
+        cid.set("Subtype", Object::Name("CIDFontType2".into()));
+        cid.set("DW", Object::Int(1000));
+        cid.set(
+            "DW2",
+            Object::Array(vec![Object::Int(880), Object::Int(-1000)]),
+        );
+        let mut type0 = Dict::new();
+        type0.set("Subtype", Object::Name("Type0".into()));
+        type0.set("Encoding", Object::Name("Identity-H".into()));
+        type0.set(
+            "DescendantFonts",
+            Object::Array(vec![Object::Dict(cid)]),
+        );
+        let font = load_font_dict(&type0, "H", &[], None);
+        assert!(!font.vertical());
+        let g = font.chars_to_glyphs(&[0x00, 0x41]);
+        assert!(g[0].3.is_none());
     }
 }

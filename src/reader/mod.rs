@@ -17,8 +17,9 @@ mod xref;
 use crate::error::Result;
 use crate::extract::{ExtractOptions, PagePart, extract_from_parts};
 use crate::model::Document;
+use crate::text::{TextDoc, TextPage};
 
-use content::{ContentCtx, extract_parts};
+use content::{ContentCtx, extract_parts, extract_text};
 use pages::{collect_pages, view_height, view_width};
 use xref::XRef;
 
@@ -30,6 +31,18 @@ pub fn extract_from_bytes(
 ) -> Result<Document> {
     let pages = read_pages(bytes, password)?;
     Ok(extract_from_parts(pages, options))
+}
+
+/// 純Rustリーダーによるバイト列からの座標付き文字抽出
+pub fn extract_text_from_bytes(bytes: &[u8], password: Option<&str>) -> Result<TextDoc> {
+    let xref = XRef::parse_with_password(bytes, password)?;
+    let page_infos = collect_pages(bytes, &xref)?;
+    let pages = crate::par::map_ordered(
+        page_infos,
+        || xref.clone(),
+        |xref, _, p| build_text_page(p, bytes, xref),
+    );
+    Ok(TextDoc { pages })
 }
 
 /// PDFバイト列からページ単位の parts を構築する
@@ -66,5 +79,25 @@ fn build_page_part(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> PagePart {
         edges,
         norm_rotate,
         graphics,
+    }
+}
+
+/// ページ1枚分の座標付き文字を構築する
+fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> TextPage {
+    let (width, height, fonts, chars) = extract_text(
+        &p.contents,
+        &p.resources,
+        p.view,
+        ContentCtx {
+            data: bytes,
+            xref: Some(xref),
+        },
+        p.rotate,
+    );
+    TextPage {
+        width,
+        height,
+        fonts,
+        chars,
     }
 }
