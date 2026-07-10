@@ -114,7 +114,11 @@ impl CipherFactory {
                 key_length_bits = 128;
             }
         }
-        if key_length_bits < 40 || key_length_bits % 8 != 0 {
+        // MD5 経路（R2〜R4）の鍵は仕様上 40〜128 bit。上限超過は hash スライスで panic するため弾く
+        if key_length_bits < 40
+            || key_length_bits % 8 != 0
+            || (algorithm <= 4 && key_length_bits > 128)
+        {
             return Err(Error::Reader(format!(
                 "invalid key length: {key_length_bits}"
             )));

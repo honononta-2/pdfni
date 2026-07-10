@@ -564,6 +564,8 @@ fn extract_cid_widths(
             i += 1;
             let s = start.max(0) as u32;
             let e = end.max(0) as u32;
+            // 正当な入力を弾かない上限: CID は 16bit で 65535 超は参照されない
+            let e = e.min(65535);
             if s <= e {
                 for c in s..=e {
                     widths.insert(c, w);
@@ -651,6 +653,8 @@ fn extract_cid_vmetrics(
             let Some(vy) = vy else { continue };
             let s = start.max(0) as u32;
             let e = end.max(0) as u32;
+            // 正当な入力を弾かない上限: CID は 16bit で 65535 超は参照されない
+            let e = e.min(65535);
             if s <= e {
                 for c in s..=e {
                     vmetrics.insert(c, [w1, vx, vy]);

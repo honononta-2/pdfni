@@ -27,6 +27,9 @@ impl Resolver for NullResolver {
 /// "stream" のバイト長（完全一致判定）
 const STREAM_SUFFIX_LEN: usize = 6;
 
+/// dict/array のネスト上限。正当な入力を弾かない上限
+const MAX_PARSE_DEPTH: usize = 200;
+
 /// 2トークン先読みの Parser
 #[allow(dead_code)]
 pub(crate) struct Parser<'a> {
@@ -34,6 +37,7 @@ pub(crate) struct Parser<'a> {
     lexer: Lexer<'a>,
     buf1: Token,
     buf2: Token,
+    depth: usize,
 }
 
 #[allow(dead_code)]
@@ -44,6 +48,7 @@ impl<'a> Parser<'a> {
             lexer: Lexer::new_at(data, start),
             buf1: Token::Eof,
             buf2: Token::Eof,
+            depth: 0,
         };
         parser.refill();
         parser
@@ -97,6 +102,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_dict(&mut self, resolver: &dyn Resolver) -> Result<Object> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Ok(Object::Null);
+        }
+
         let mut dict = Dict::new();
         while !matches!(self.buf1, Token::DictEnd | Token::Eof) {
             let key = match &self.buf1 {
@@ -111,32 +122,55 @@ impl<'a> Parser<'a> {
             if matches!(self.buf1, Token::Eof) {
                 break;
             }
-            let value = self.get_obj(resolver)?;
+            let value = match self.get_obj(resolver) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.depth -= 1;
+                    return Err(e);
+                }
+            };
             dict.set(key, value);
         }
 
         if matches!(self.buf1, Token::Eof) {
             // EOF 到達時は読めた分を返す
+            self.depth -= 1;
             return Ok(Object::Dict(dict));
         }
 
         // buf1 は DictEnd。直後が stream ならストリーム化
         if matches!(&self.buf2, Token::Cmd(s) if s == "stream") {
-            return self.make_stream(dict, resolver);
+            let result = self.make_stream(dict, resolver);
+            self.depth -= 1;
+            return result;
         }
         self.shift(); // >>
+        self.depth -= 1;
         Ok(Object::Dict(dict))
     }
 
     fn parse_array(&mut self, resolver: &dyn Resolver) -> Result<Object> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Ok(Object::Null);
+        }
+
         let mut arr = Vec::new();
         while !matches!(self.buf1, Token::ArrayEnd | Token::Eof) {
-            arr.push(self.get_obj(resolver)?);
+            match self.get_obj(resolver) {
+                Ok(v) => arr.push(v),
+                Err(e) => {
+                    self.depth -= 1;
+                    return Err(e);
+                }
+            }
         }
         if !matches!(self.buf1, Token::Eof) {
             self.shift(); // ]
         }
         // EOF 到達時は読めた分を返す
+        self.depth -= 1;
         Ok(Object::Array(arr))
     }
 

@@ -338,6 +338,13 @@ impl CMap {
             }
         }
 
+        // usecmap 親の継承（失敗時は現状のまま）
+        if let Some(parent_name) = cmap.use_cmap.clone() {
+            if let Ok(parent) = Self::load_predefined(&parent_name) {
+                cmap.extend_from_parent(&parent);
+            }
+        }
+
         // 中身が実質 Identity なら差し替え（任意最適化）
         if (cmap.name == "Identity-H" || cmap.name == "Identity-V") && cmap.map.is_empty() {
             let vertical = cmap.name == "Identity-V";
@@ -887,6 +894,41 @@ endcmap
         // 親から codespace / マップを継承
         assert!(cmap.has_codespace());
         assert!(cmap.lookup(0x8140).is_some());
+    }
+
+    #[test]
+    fn embedded_usecmap_inherits_parent() {
+        // 親 90ms-RKSJ-H を usecmap し、子は codespace 無しで 0x8140 だけ上書き
+        let data = br#"
+begincmap
+/90ms-RKSJ-H usecmap
+1 begincidchar
+<8140> 42
+endcidchar
+endcmap
+"#;
+        let cmap = CMap::parse_embedded(data);
+        assert_eq!(cmap.use_cmap(), Some("90ms-RKSJ-H"));
+        // codespace は親から継承
+        assert!(cmap.has_codespace());
+        assert!(!cmap.codespace_ranges_for(1).is_empty());
+        assert!(!cmap.codespace_ranges_for(2).is_empty());
+        // 子自身のマッピングが優先
+        assert_eq!(cmap.lookup(0x8140), Some(MapValue::Cid(42)));
+        // 親にあって子に無いマッピングは継承される
+        let parent = CMap::load_predefined("90ms-RKSJ-H").expect("parent");
+        let parent_cid = match parent.lookup(0x8140).expect("parent 0x8140") {
+            MapValue::Cid(c) => c,
+            other => panic!("expected Cid, got {other:?}"),
+        };
+        assert_ne!(parent_cid, 42, "parent must differ so override is observable");
+        // 親の別キー（ASCII）が引き継がれている
+        assert_eq!(cmap.lookup(0x41), parent.lookup(0x41));
+        assert!(cmap.lookup(0x41).is_some());
+        // 2 バイト codespace の読み取りも親と同じ
+        let (code, len) = cmap.read_char_code(&[0x81, 0x40], 0);
+        assert_eq!(code, 0x8140);
+        assert_eq!(len, 2);
     }
 
     #[test]

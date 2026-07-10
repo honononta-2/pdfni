@@ -193,6 +193,9 @@ fn as_i64(obj: &Object) -> Option<i64> {
 
 // --- FlateDecode ---
 
+/// 正当な入力を弾かない上限: 解凍出力の絶対上限（512 MiB）
+const MAX_DECODED_BYTES: u64 = 512 * 1024 * 1024;
+
 /// zlib → raw deflate の順で試し、失敗時は途中まで読めた分を返す
 fn decode_flate(data: &[u8]) -> Vec<u8> {
     if let Ok(out) = read_to_end_ok(ZlibDecoder::new(data)) {
@@ -208,9 +211,11 @@ fn decode_flate(data: &[u8]) -> Vec<u8> {
     read_partial(DeflateDecoder::new(data))
 }
 
-fn read_to_end_ok<R: Read>(mut r: R) -> std::result::Result<Vec<u8>, ()> {
+fn read_to_end_ok<R: Read>(r: R) -> std::result::Result<Vec<u8>, ()> {
     let mut out = Vec::new();
-    r.read_to_end(&mut out).map_err(|_| ())?;
+    r.take(MAX_DECODED_BYTES)
+        .read_to_end(&mut out)
+        .map_err(|_| ())?;
     Ok(out)
 }
 
@@ -218,8 +223,13 @@ fn read_to_end_ok<R: Read>(mut r: R) -> std::result::Result<Vec<u8>, ()> {
 fn read_partial<R: Read>(mut r: R) -> Vec<u8> {
     let mut out = Vec::new();
     let mut buf = [0u8; 4096];
+    let limit = MAX_DECODED_BYTES as usize;
     loop {
-        match r.read(&mut buf) {
+        if out.len() >= limit {
+            break;
+        }
+        let want = (limit - out.len()).min(buf.len());
+        match r.read(&mut buf[..want]) {
             Ok(0) => break,
             Ok(n) => out.extend_from_slice(&buf[..n]),
             Err(_) => break,

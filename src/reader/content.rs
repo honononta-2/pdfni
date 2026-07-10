@@ -19,6 +19,9 @@ use super::xref::XRef;
 /// 軸平行判定の許容差（pt）
 const EPS: f64 = 0.8;
 
+/// Form XObject のネスト上限。正当な入力を弾かない上限
+const MAX_FORM_DEPTH: usize = 20;
+
 /// Form 解決用の文脈（xref が無い単体テストでは None）
 pub(crate) struct ContentCtx<'a> {
     pub data: &'a [u8],
@@ -125,7 +128,10 @@ pub(crate) fn extract_parts(
     if rot != 0 {
         rotate_parts(&mut tagged, &mut edges, &mut graphics, w, h, rot);
         for (g, r) in &mut tagged {
-            g.upright = *r == rot;
+            if *r < 4 {
+                *r = (*r + 4 - rot) % 4;
+            }
+            g.upright = *r == 0;
         }
     }
     let mut glyphs: Vec<GlyphPart> = tagged
@@ -1675,6 +1681,11 @@ fn do_form_xobject(
     visiting: &mut HashSet<(u32, u16)>,
     text_sink: Option<&mut TextSink>,
 ) {
+    // ネスト段数が上限以上なら再帰しない
+    if visiting.len() >= MAX_FORM_DEPTH {
+        return;
+    }
+
     let Some(xo_obj) = resources.get("XObject") else {
         return;
     };

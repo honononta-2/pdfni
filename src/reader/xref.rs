@@ -647,8 +647,10 @@ impl XRef {
 
         // 先頭の `<num> <相対offset>` ペア N 個
         let mut lexer = Lexer::new_at(&decoded, 0);
-        let mut nums = Vec::with_capacity(n);
-        let mut offsets = Vec::with_capacity(n);
+        // 正当な入力を弾かない上限: 復号後長を超えるエントリ数はあり得ない
+        let cap = n.min(decoded.len());
+        let mut nums = Vec::with_capacity(cap);
+        let mut offsets = Vec::with_capacity(cap);
         for _ in 0..n {
             let Token::Int(num) = lexer.next_token() else {
                 return Err(Error::Reader(
@@ -919,6 +921,10 @@ impl XRef {
         let decoded = decode_stream(body, stream, &NullResolver, None)?;
         let mut cursor = 0usize;
         let entry_width = type_w + offset_w + gen_w;
+        // /W [0 0 0] はエントリ境界が取れず /Index 個数だけ空ループするため不正とする
+        if entry_width == 0 {
+            return Err(Error::Reader("Invalid XRef entry fields length".into()));
+        }
 
         for (first, n) in index_pairs {
             for i in 0..n {
