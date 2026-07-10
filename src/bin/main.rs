@@ -35,7 +35,9 @@ fn main() -> Result<()> {
         mode,
         ..ExtractOptions::default()
     };
-    let doc = reticella::extract_with_options(&input, password.as_deref(), &options)?;
+    let bytes = std::fs::read(&input)?;
+    let mut doc = reticella::extract_from_bytes_rs(&bytes, password.as_deref(), &options)?;
+    doc.source = input.clone();
     let json = serde_json::to_string_pretty(&doc)?;
 
     match output {

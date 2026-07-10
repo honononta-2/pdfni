@@ -6,17 +6,6 @@ use crate::detect_text::{self, Seg, TextSettings};
 use crate::model::{BBox, Cell, Document, Edge, Glyph, Orientation, Page, Table};
 use serde::Deserialize;
 
-#[cfg(feature = "pdfium")]
-use crate::error::Result;
-#[cfg(feature = "pdfium")]
-use crate::reader;
-#[cfg(feature = "pdfium")]
-use pdfium_render::prelude::*;
-#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-use std::path::Path;
-#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
-
 /// 外部リーダーから受け取る1ページ分の文字と線分
 #[derive(Debug, Clone, Deserialize)]
 pub struct PagePart {
@@ -98,43 +87,6 @@ pub struct ExtractOptions {
     pub lattice: LatticeSettings,
     pub hybrid: HybridSettings,
     pub text: TextSettings,
-}
-
-#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-static PDFIUM: OnceLock<Pdfium> = OnceLock::new();
-
-/// pdfium 使用を直列化するロック
-#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-static PDFIUM_LOCK: Mutex<()> = Mutex::new(());
-
-#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-fn lock_pdfium() -> MutexGuard<'static, ()> {
-    PDFIUM_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-pub fn set_pdfium_dll_dir(dir: impl AsRef<Path>) -> Result<()> {
-    let _guard = lock_pdfium();
-    if PDFIUM.get().is_some() {
-        return Err(crate::error::Error::PdfiumBind(
-            "pdfium is already initialized; set_pdfium_dll_dir must be called before any extract()"
-                .into(),
-        ));
-    }
-    let pdfium = reader::bind_pdfium(Some(dir.as_ref()))?;
-    let _ = PDFIUM.set(pdfium);
-    Ok(())
-}
-
-/// PDFIUM_LOCK を保持した状態で呼ぶ
-#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-fn pdfium() -> Result<&'static Pdfium> {
-    if let Some(p) = PDFIUM.get() {
-        return Ok(p);
-    }
-    let bound = reader::bind_pdfium(None)?;
-    let _ = PDFIUM.set(bound);
-    Ok(PDFIUM.get().expect("just initialized"))
 }
 
 fn is_cjk(c: char) -> bool {
@@ -736,96 +688,6 @@ fn prune_empty(t: &mut Table) {
     if let Some(b) = bb {
         t.bbox = b;
     }
-}
-
-/// PDFからの全ページ表抽出
-#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-pub fn extract(path: impl AsRef<Path>, password: Option<&str>) -> Result<Document> {
-    extract_with_options(path, password, &ExtractOptions::default())
-}
-
-#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-pub fn extract_with_options(
-    path: impl AsRef<Path>,
-    password: Option<&str>,
-    options: &ExtractOptions,
-) -> Result<Document> {
-    let _guard = lock_pdfium();
-    let pdfium = pdfium()?;
-    let path = path.as_ref();
-    let doc = pdfium.load_pdf_from_file(path, password)?;
-    let source = path.to_string_lossy().into_owned();
-    Ok(Document {
-        source,
-        pages: extract_pages(&doc, options)?,
-    })
-}
-
-/// バイト列からの全ページ表抽出
-#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-pub fn extract_from_bytes(bytes: &[u8], password: Option<&str>) -> Result<Document> {
-    extract_from_bytes_with_options(bytes, password, &ExtractOptions::default())
-}
-
-#[cfg(all(feature = "pdfium", not(target_arch = "wasm32")))]
-pub fn extract_from_bytes_with_options(
-    bytes: &[u8],
-    password: Option<&str>,
-    options: &ExtractOptions,
-) -> Result<Document> {
-    let _guard = lock_pdfium();
-    let pdfium = pdfium()?;
-    let doc = pdfium.load_pdf_from_byte_vec(bytes.to_vec(), password)?;
-    Ok(Document {
-        source: "<bytes>".to_string(),
-        pages: extract_pages(&doc, options)?,
-    })
-}
-
-/// pdfium で開いた文書からの全ページ表抽出
-#[cfg(feature = "pdfium")]
-fn extract_pages(doc: &PdfDocument<'_>, options: &ExtractOptions) -> Result<Vec<Page>> {
-    let mut pages = Vec::new();
-    for (pi, page) in doc.pages().iter().enumerate() {
-        let h = page.height().value as f64;
-        let w = page.width().value as f64;
-        let origin = reader::page_origin(&page, h);
-        let edges = reader::extract_edges(&page, origin);
-        let chars = reader::extract_chars(&page, origin)?;
-        let tables = detect_tables(&chars, &edges, options, None);
-        pages.push(Page {
-            page_number: pi + 1,
-            width: w,
-            height: h,
-            tables,
-        });
-    }
-    Ok(pages)
-}
-
-/// wasm 上の pdfium でバイト列から全ページ表抽出
-#[cfg(all(feature = "pdfium", target_arch = "wasm32"))]
-pub fn extract_from_bytes_wasm(
-    bytes: &[u8],
-    password: Option<&str>,
-    options: &ExtractOptions,
-) -> Result<Document> {
-    use std::cell::OnceCell;
-    // wasm 用の pdfium シングルトン
-    thread_local! {
-        static PDFIUM_WASM: OnceCell<Pdfium> = const { OnceCell::new() };
-    }
-    PDFIUM_WASM.with(|cell| {
-        if cell.get().is_none() {
-            let _ = cell.set(reader::bind_pdfium()?);
-        }
-        let pdfium = cell.get().expect("just initialized");
-        let doc = pdfium.load_pdf_from_byte_vec(bytes.to_vec(), password)?;
-        Ok(Document {
-            source: "<pdf>".to_string(),
-            pages: extract_pages(&doc, options)?,
-        })
-    })
 }
 
 /// fs 供給ページの閾値スケール係数（フォントサイズ→行/分割スケール）

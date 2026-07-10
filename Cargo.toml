@@ -11,7 +11,7 @@ crate-type = ["lib", "cdylib"]
 [[bin]]
 name = "reticella"
 path = "src/bin/main.rs"
-required-features = ["pdfium"]
+required-features = ["reader-rs"]
 
 [[example]]
 name = "reader_rs_smoke"
@@ -22,9 +22,7 @@ name = "reader_rs_probe"
 required-features = ["reader-rs"]
 
 [features]
-default = ["pdfium"]
-# pdfium による読み取り経路（機械語・wasm 両ビルドで使う）
-pdfium = ["dep:pdfium-render"]
+default = ["reader-rs"]
 # 純Rustリーダーによる読み取り経路（既定で全言語 CMap を同梱）
 reader-rs = [
     "dep:flate2",
@@ -60,15 +58,6 @@ cbc = { version = "0.1", optional = true }
 md-5 = { version = "0.10", optional = true }
 sha2 = { version = "0.10", optional = true }
 
-# pdfium-render は機械語ビルドとwasmで別系統のバインドを使うためターゲット別に指定する。
-# 画像(ビットマップ)描画は使わないため image 系の既定featureを外す。
-# 機械語ビルドは dlopen 版、thread_safe 有効。
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pdfium-render = { version = "0.9.2", default-features = false, features = ["pdfium_latest", "thread_safe"], optional = true }
-
 # wasm から JS へ公開する入口用
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
-# wasm は JS 初期化した pdfium モジュールへ束ねる版。thread_safe は単一スレッドのため外す。
-# console_log は初期化失敗の理由をブラウザコンソールへ出すため。
-pdfium-render = { version = "0.9.2", default-features = false, features = ["pdfium_latest", "console_log"], optional = true }

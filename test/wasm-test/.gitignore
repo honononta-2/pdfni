@@ -1,7 +1,2 @@
 # generated wasm bindings
 /pkg/
-/pkg-pdfium/
-/pkg-pdfium-nomod/
-
-# third-party assets (pdf.js, pdfium)
-/vendor/

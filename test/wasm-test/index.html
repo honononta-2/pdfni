@@ -14,15 +14,12 @@
     .note { color: #666; font-size: 13px; }
     .err { color: #b00; white-space: pre-wrap; }
   </style>
-  <!-- pdfium engine (Emscripten) and the no-modules rust wasm. Define globals PDFiumModule / wasm_bindgen -->
-  <script src="./vendor/pdfium/pdfium.js"></script>
-  <script src="./pkg-pdfium-nomod/reticella.js"></script>
 </head>
 <body>
   <h1>reticella browser test</h1>
 
   <section>
-    <h2>pdf.js route</h2>
+    <h2>reader-rs route (pure Rust wasm)</h2>
     <div class="row">
       <input type="file" id="pdf1" accept="application/pdf">
       <button id="run1">Extract</button>
@@ -31,21 +28,8 @@
     <pre id="out1"></pre>
   </section>
 
-  <section>
-    <h2>pdfium-wasm route</h2>
-    <div class="row">
-      <input type="file" id="pdf2" accept="application/pdf">
-      <button id="run2">Extract</button>
-      <span id="status2" class="note"></span>
-    </div>
-    <pre id="out2"></pre>
-  </section>
-
   <script type="module">
-    import * as pdfjs from './vendor/pdfjs/pdf.mjs';
-    pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.mjs';
-    const CMAP = './vendor/cmaps/';
-    const STDFONT = './vendor/standard_fonts/';
+    import init, { extract_tables_from_pdf_rs } from './pkg/reticella.js';
 
     function fmt(doc) {
       const summary = doc.pages.map(p =>
@@ -55,50 +39,19 @@
     }
     const bytes = (f) => f.arrayBuffer().then(b => new Uint8Array(b));
 
-    // pdf.js route
-    const { extractTables: extractPdfjs } = await import('./js/reticella-pdfjs.mjs');
+    await init();
     document.getElementById('run1').onclick = async () => {
       const f = document.getElementById('pdf1').files[0];
       const s = document.getElementById('status1'), out = document.getElementById('out1');
       if (!f) { s.textContent = 'Choose a PDF first'; return; }
       s.textContent = 'Working...'; out.textContent = ''; out.className = '';
       try {
-        const doc = await extractPdfjs(pdfjs, await bytes(f), { cMapUrl: CMAP, standardFontDataUrl: STDFONT });
-        out.textContent = fmt(doc); s.textContent = 'Done';
-      } catch (e) { out.className = 'err'; out.textContent = String(e && e.stack || e); s.textContent = 'Failed'; }
-    };
-
-    // pdfium-wasm route (no-modules, same wiring as the pdfium-render example)
-    let pdfiumReady;
-    async function initPdfium() {
-      if (pdfiumReady) return pdfiumReady;
-      pdfiumReady = (async () => {
-        if (typeof PDFiumModule !== 'function') throw new Error('vendor/pdfium/pdfium.js is not loaded');
-        if (typeof wasm_bindgen !== 'function') throw new Error('pkg-pdfium-nomod is not loaded');
-        const pdfiumModule = await PDFiumModule();
-        const rustModule = await wasm_bindgen({ module_or_path: './pkg-pdfium-nomod/reticella_bg.wasm' });
-        // initialize_pdfium_render needs an object as the local module; passing the wasm_bindgen
-        // function fails the is_object() check, so pass the resolved init output
-        if (!wasm_bindgen.initialize_pdfium_render(pdfiumModule, rustModule, true)) {
-          throw new Error('initialize_pdfium_render failed (see browser console)');
-        }
-      })();
-      return pdfiumReady;
-    }
-    document.getElementById('run2').onclick = async () => {
-      const f = document.getElementById('pdf2').files[0];
-      const s = document.getElementById('status2'), out = document.getElementById('out2');
-      if (!f) { s.textContent = 'Choose a PDF first'; return; }
-      s.textContent = 'Working...'; out.textContent = ''; out.className = '';
-      try {
-        await initPdfium();
-        const doc = JSON.parse(wasm_bindgen.extract_tables_from_pdf(await bytes(f), undefined));
+        const doc = JSON.parse(extract_tables_from_pdf_rs(await bytes(f), undefined, undefined));
         out.textContent = fmt(doc); s.textContent = 'Done';
       } catch (e) { out.className = 'err'; out.textContent = String(e && e.stack || e); s.textContent = 'Failed'; }
     };
 
     document.getElementById('status1').textContent = 'Ready';
-    document.getElementById('status2').textContent = 'Ready';
   </script>
 </body>
 </html>
