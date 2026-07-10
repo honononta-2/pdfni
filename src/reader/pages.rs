@@ -23,7 +23,8 @@ pub(crate) struct PageInfo {
     /// ページ回転 /Rotate（0/90/180/270へ正規化済み）
     pub rotate: i32,
     pub resources: Dict,
-    pub contents: Vec<u8>,
+    /// 解決済み Contents（未復号）。欠落時は Null
+    pub contents: Object,
 }
 
 /// data と xref を紐づけた Resolver
@@ -74,7 +75,7 @@ pub(crate) fn collect_pages(data: &[u8], xref: &XRef) -> Result<Vec<PageInfo>> {
             }
             Object::Dict(dict) => {
                 if is_page_leaf(&dict, xref, data) {
-                    pages.push(build_page_info(data, xref, &dict)?);
+                    pages.push(build_page_info(data, xref, &dict));
                     continue;
                 }
 
@@ -82,7 +83,7 @@ pub(crate) fn collect_pages(data: &[u8], xref: &XRef) -> Result<Vec<PageInfo>> {
                     Some(k) => k,
                     None => {
                         // Kids 無しは is_page_leaf で葉になるはずだが安全側
-                        pages.push(build_page_info(data, xref, &dict)?);
+                        pages.push(build_page_info(data, xref, &dict));
                         continue;
                     }
                 };
@@ -96,7 +97,7 @@ pub(crate) fn collect_pages(data: &[u8], xref: &XRef) -> Result<Vec<PageInfo>> {
                     }
                     _ => {
                         // Kids が配列でない仕様違反: 自身を葉として扱う
-                        pages.push(build_page_info(data, xref, &dict)?);
+                        pages.push(build_page_info(data, xref, &dict));
                     }
                 }
             }
@@ -130,19 +131,23 @@ fn type_is_page(dict: &Dict, xref: &XRef, data: &[u8]) -> bool {
     }
 }
 
-fn build_page_info(data: &[u8], xref: &XRef, page_dict: &Dict) -> Result<PageInfo> {
+fn build_page_info(data: &[u8], xref: &XRef, page_dict: &Dict) -> PageInfo {
     let media = resolve_media_box(data, xref, page_dict);
     let crop = resolve_crop_box(data, xref, page_dict, media);
     let view = compute_view(crop, media);
     let rotate = resolve_rotate(data, xref, page_dict);
     let resources = resolve_resources(data, xref, page_dict);
-    let contents = load_contents(data, xref, page_dict)?;
-    Ok(PageInfo {
+    // 解決のみ。復号はページ並列処理側で行う
+    let contents = match page_dict.get("Contents") {
+        Some(raw) => xref.resolve(raw, data),
+        None => Object::Null,
+    };
+    PageInfo {
         view,
         rotate,
         resources,
         contents,
-    })
+    }
 }
 
 /// 継承つき /Rotate の解決。90度の倍数以外は0として扱う
@@ -257,29 +262,34 @@ fn follow_parent(
     }
 }
 
-fn load_contents(data: &[u8], xref: &XRef, page_dict: &Dict) -> Result<Vec<u8>> {
-    let Some(raw) = page_dict.get("Contents") else {
-        return Ok(Vec::new());
-    };
-    let contents = xref.resolve(raw, data);
+/// 解決済み Contents を復号する
+pub(crate) fn decode_contents(data: &[u8], xref: &XRef, contents: &Object) -> Result<Vec<u8>> {
     let resolver = FetchResolver { xref, data };
 
     match contents {
-        Object::Stream(s) => decode_stream(data, &s, &resolver, xref.cipher()),
+        Object::Stream(s) => decode_stream(data, s, &resolver, xref.cipher()),
         Object::Array(arr) => {
-            let mut out = Vec::new();
-            let mut first = true;
-            for item in &arr {
+            let mut chunks = Vec::new();
+            for item in arr {
                 let obj = xref.resolve(item, data);
                 let Object::Stream(s) = obj else {
                     continue;
                 };
-                let decoded = decode_stream(data, &s, &resolver, xref.cipher())?;
-                if !first {
+                chunks.push(decode_stream(data, &s, &resolver, xref.cipher())?);
+            }
+            let mut total = 0usize;
+            for (i, c) in chunks.iter().enumerate() {
+                if i > 0 {
+                    total += 1;
+                }
+                total += c.len();
+            }
+            let mut out = Vec::with_capacity(total);
+            for (i, c) in chunks.iter().enumerate() {
+                if i > 0 {
                     out.push(b' ');
                 }
-                first = false;
-                out.extend_from_slice(&decoded);
+                out.extend_from_slice(c);
             }
             Ok(out)
         }
@@ -588,7 +598,8 @@ mod tests {
         let xref = XRef::parse(&data).expect("parse");
         let pages = collect_pages(&data, &xref).expect("collect");
         assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0].contents, b"BT ET");
+        let contents = decode_contents(&data, &xref, &pages[0].contents).expect("decode");
+        assert_eq!(contents, b"BT ET");
     }
 
     /// Kids に Page 辞書がインラインで入っている救済

@@ -86,7 +86,7 @@ impl<'a> Parser<'a> {
             Token::Real(r) => Ok(Object::Real(r)),
             Token::Str(s) => Ok(Object::Str(s)),
             Token::Name(n) => Ok(Object::Name(n)),
-            Token::Cmd(s) => match s.as_str() {
+            Token::Cmd(s) => match s.as_ref() {
                 "true" => Ok(Object::Bool(true)),
                 "false" => Ok(Object::Bool(false)),
                 "null" => Ok(Object::Null),

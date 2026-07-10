@@ -20,7 +20,7 @@ use crate::model::Document;
 use crate::text::{TextDoc, TextPage};
 
 use content::{ContentCtx, extract_parts, extract_text};
-use pages::{collect_pages, view_height, view_width};
+use pages::{collect_pages, decode_contents, view_height, view_width};
 use xref::XRef;
 
 /// 純Rustリーダーによるバイト列からの表抽出
@@ -41,7 +41,9 @@ pub fn extract_text_from_bytes(bytes: &[u8], password: Option<&str>) -> Result<T
         page_infos,
         || xref.clone(),
         |xref, _, p| build_text_page(p, bytes, xref),
-    );
+    )
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
     Ok(TextDoc { pages })
 }
 
@@ -51,17 +53,20 @@ pub fn read_pages(bytes: &[u8], password: Option<&str>) -> Result<Vec<PagePart>>
     let xref = XRef::parse_with_password(bytes, password)?;
     let page_infos = collect_pages(bytes, &xref)?;
     // xref の内部キャッシュはスレッド共有できないためスレッドごとに複製する
-    Ok(crate::par::map_ordered(
+    crate::par::map_ordered(
         page_infos,
         || xref.clone(),
         |xref, _, p| build_page_part(p, bytes, xref),
-    ))
+    )
+    .into_iter()
+    .collect()
 }
 
 /// ページ1枚分の parts を構築する
-fn build_page_part(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> PagePart {
+fn build_page_part(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<PagePart> {
+    let contents = decode_contents(bytes, xref, &p.contents)?;
     let (glyphs, edges, graphics, norm_rotate) =
-        extract_parts(&p.contents, &p.resources, p.view, ContentCtx {
+        extract_parts(&contents, &p.resources, p.view, ContentCtx {
             data: bytes,
             xref: Some(xref),
         }, p.rotate);
@@ -72,20 +77,21 @@ fn build_page_part(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> PagePart {
     if norm_rotate == 90 || norm_rotate == 270 {
         std::mem::swap(&mut width, &mut height);
     }
-    PagePart {
+    Ok(PagePart {
         width,
         height,
         glyphs,
         edges,
         norm_rotate,
         graphics,
-    }
+    })
 }
 
 /// ページ1枚分の座標付き文字を構築する
-fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> TextPage {
+fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<TextPage> {
+    let contents = decode_contents(bytes, xref, &p.contents)?;
     let (width, height, fonts, chars) = extract_text(
-        &p.contents,
+        &contents,
         &p.resources,
         p.view,
         ContentCtx {
@@ -94,10 +100,10 @@ fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> TextPage {
         },
         p.rotate,
     );
-    TextPage {
+    Ok(TextPage {
         width,
         height,
         fonts,
         chars,
-    }
+    })
 }

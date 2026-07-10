@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
 
+use super::cmap::CMap;
 use super::crypto::{decrypt_object_tree, CipherFactory};
 use super::file::{find_pdf_header_offset, find_startxref};
 use super::filters::decode_stream;
@@ -34,9 +35,14 @@ pub(crate) struct XRef {
     entries: HashMap<u32, XrefEntry>,
     /// 最初に得た trailer（/Root /Size /Encrypt /Info の参照元）
     trailer: Dict,
-    cache: RefCell<HashMap<u32, Object>>,
+    /// ページ間 clone でオブジェクト本体を共有する
+    cache: RefCell<HashMap<u32, Arc<Object>>>,
     /// 文書内で共有する読み込み済みフォント
     pub(super) font_cache: Arc<Mutex<HashMap<u32, Arc<LoadedFont>>>>,
+    /// 文書内で共有する定義済み CMap（名前 → 構築結果）
+    pub(super) cmap_cache: Arc<Mutex<HashMap<String, Arc<CMap>>>>,
+    /// 文書内で共有する Form XObject 復号済み本文（参照番号 → 本文）
+    pub(super) form_body_cache: Arc<Mutex<HashMap<u32, Arc<Vec<u8>>>>>,
     /// 取得中の参照（循環検出）
     pending: RefCell<HashSet<(u32, u16)>>,
     /// Resolver 経由で起きたエラー（循環など）を fetch 呼び出し元へ伝える
@@ -96,6 +102,8 @@ impl XRef {
             trailer: Dict::new(),
             cache: RefCell::new(HashMap::new()),
             font_cache: Arc::new(Mutex::new(HashMap::new())),
+            cmap_cache: Arc::new(Mutex::new(HashMap::new())),
+            form_body_cache: Arc::new(Mutex::new(HashMap::new())),
             pending: RefCell::new(HashSet::new()),
             resolve_error: RefCell::new(None),
             cipher: None,
@@ -473,8 +481,8 @@ impl XRef {
         let num = r.num;
         let generation = r.generation;
 
-        if let Some(obj) = self.cache.borrow().get(&num) {
-            return Ok(obj.clone());
+        if let Some(arc) = self.cache.borrow().get(&num) {
+            return Ok((**arc).clone());
         }
 
         let entry = match self.entries.get(&num) {
@@ -510,7 +518,7 @@ impl XRef {
 
         let obj = result?;
         if !matches!(obj, Object::Stream(_)) {
-            self.cache.borrow_mut().insert(num, obj.clone());
+            self.cache.borrow_mut().insert(num, Arc::new(obj.clone()));
         }
         Ok(obj)
     }
@@ -714,7 +722,7 @@ impl XRef {
                 let mut p = Parser::new(&decoded, start);
                 if let Ok(sib) = p.get_obj(&NullResolver) {
                     if !matches!(sib, Object::Stream(_)) {
-                        self.cache.borrow_mut().insert(onum, sib);
+                        self.cache.borrow_mut().insert(onum, Arc::new(sib));
                     }
                 }
             }
@@ -976,7 +984,7 @@ impl Resolver for XRef {
     /// 通常の Length 解決は `XRefResolver`（fetch 内部）経由。
     /// 外部から `dyn Resolver` として使う場合はキャッシュヒットのみ。
     fn resolve(&self, r: Ref) -> Option<Object> {
-        self.cache.borrow().get(&r.num).cloned()
+        self.cache.borrow().get(&r.num).map(|arc| (**arc).clone())
     }
 }
 

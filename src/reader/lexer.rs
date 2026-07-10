@@ -2,6 +2,8 @@
 //!
 //! 準拠: pdf.js `parser.js` の Lexer（specialChars 表と救済挙動を含む）
 
+use std::borrow::Cow;
+
 /// 空白=1、区切り=2、通常=0（256要素、pdf.js specialChars 相当）
 static SPECIAL_CHARS: [u8; 256] = {
     let mut t = [0u8; 256];
@@ -42,7 +44,8 @@ pub(crate) enum Token {
     BraceStart,
     BraceEnd,
     /// `obj` `R` `stream` 等、および単独の `>`
-    Cmd(String),
+    /// 既知演算子は `Cow::Borrowed`（確保なし）、未知のみ `Cow::Owned`
+    Cmd(Cow<'static, str>),
     Eof,
 }
 
@@ -178,7 +181,7 @@ impl<'a> Lexer<'a> {
                     self.next_char();
                     Token::DictEnd
                 } else {
-                    Token::Cmd(">".into())
+                    Token::Cmd(Cow::Borrowed(">"))
                 }
             }
             0x7b => {
@@ -192,7 +195,7 @@ impl<'a> Lexer<'a> {
             0x29 => {
                 // 不正な単独 ')'。pdf.js は FormatError だが、ループ固着を避けるため消費する
                 self.next_char();
-                Token::Cmd(")".into())
+                Token::Cmd(Cow::Borrowed(")"))
             }
             _ => self.get_command(ch),
         }
@@ -421,14 +424,17 @@ impl<'a> Lexer<'a> {
     }
 
     fn get_command(&mut self, first: i32) -> Token {
-        let mut str_buf = vec![first as u8];
+        // スタック上の固定長バッファ（上限128は従来の vec 打ち切りと同じ）
+        let mut buf = [0u8; 128];
+        let mut len = 1usize;
+        buf[0] = first as u8;
 
         // 非表示 ASCII 開始で次が通常文字なら1文字コマンド
         if first < 0x20 || first > 0x7f {
             let next = self.peek_char();
             if (0x20..=0x7f).contains(&next) {
                 self.next_char();
-                return Token::Cmd(bytes_to_latin1(&str_buf));
+                return Token::Cmd(intern_cmd(&buf[..len]));
             }
         }
 
@@ -437,16 +443,16 @@ impl<'a> Lexer<'a> {
             if ch < 0 || (ch < 256 && SPECIAL_CHARS[ch as usize] != 0) {
                 break;
             }
-            if str_buf.len() >= 128 {
+            if len >= 128 {
                 break;
             }
-            str_buf.push(ch as u8);
+            buf[len] = ch as u8;
+            len += 1;
         }
 
-        let s = bytes_to_latin1(&str_buf);
         // pdf.js は true/false/null をここでリテラル化するが、
         // トークン種としては Cmd のまま返し Parser 側で解釈する
-        Token::Cmd(s)
+        Token::Cmd(intern_cmd(&buf[..len]))
     }
 }
 
@@ -462,6 +468,126 @@ fn to_hex_digit(ch: i32) -> i32 {
 
 fn bytes_to_latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| b as char).collect()
+}
+
+/// 既知演算子バイト列を `'static` に対応付け、未知は Latin-1 所有文字列にする。
+/// 集合は現状 `Token::Cmd` として返るキーワード・コンテンツ演算子を網羅する
+///（未知も従来どおり同じ文字列内容の `Cmd` になる）。
+fn intern_cmd(bytes: &[u8]) -> Cow<'static, str> {
+    match bytes {
+        // 構文・オブジェクト
+        b"obj" => Cow::Borrowed("obj"),
+        b"endobj" => Cow::Borrowed("endobj"),
+        b"stream" => Cow::Borrowed("stream"),
+        b"endstream" => Cow::Borrowed("endstream"),
+        b"xref" => Cow::Borrowed("xref"),
+        b"trailer" => Cow::Borrowed("trailer"),
+        b"startxref" => Cow::Borrowed("startxref"),
+        b"R" => Cow::Borrowed("R"),
+        b"true" => Cow::Borrowed("true"),
+        b"false" => Cow::Borrowed("false"),
+        b"null" => Cow::Borrowed("null"),
+        b"f" => Cow::Borrowed("f"),
+        b"n" => Cow::Borrowed("n"),
+        // インライン画像
+        b"BI" => Cow::Borrowed("BI"),
+        b"ID" => Cow::Borrowed("ID"),
+        b"EI" => Cow::Borrowed("EI"),
+        // グラフィックス状態
+        b"q" => Cow::Borrowed("q"),
+        b"Q" => Cow::Borrowed("Q"),
+        b"cm" => Cow::Borrowed("cm"),
+        b"w" => Cow::Borrowed("w"),
+        b"J" => Cow::Borrowed("J"),
+        b"j" => Cow::Borrowed("j"),
+        b"M" => Cow::Borrowed("M"),
+        b"d" => Cow::Borrowed("d"),
+        b"ri" => Cow::Borrowed("ri"),
+        b"i" => Cow::Borrowed("i"),
+        b"gs" => Cow::Borrowed("gs"),
+        // パス構築
+        b"m" => Cow::Borrowed("m"),
+        b"l" => Cow::Borrowed("l"),
+        b"c" => Cow::Borrowed("c"),
+        b"v" => Cow::Borrowed("v"),
+        b"y" => Cow::Borrowed("y"),
+        b"h" => Cow::Borrowed("h"),
+        b"re" => Cow::Borrowed("re"),
+        // パス描画
+        b"S" => Cow::Borrowed("S"),
+        b"s" => Cow::Borrowed("s"),
+        b"F" => Cow::Borrowed("F"),
+        b"f*" => Cow::Borrowed("f*"),
+        b"B" => Cow::Borrowed("B"),
+        b"B*" => Cow::Borrowed("B*"),
+        b"b" => Cow::Borrowed("b"),
+        b"b*" => Cow::Borrowed("b*"),
+        // クリップ
+        b"W" => Cow::Borrowed("W"),
+        b"W*" => Cow::Borrowed("W*"),
+        // 色空間・色
+        b"CS" => Cow::Borrowed("CS"),
+        b"cs" => Cow::Borrowed("cs"),
+        b"SC" => Cow::Borrowed("SC"),
+        b"SCN" => Cow::Borrowed("SCN"),
+        b"sc" => Cow::Borrowed("sc"),
+        b"scn" => Cow::Borrowed("scn"),
+        b"G" => Cow::Borrowed("G"),
+        b"g" => Cow::Borrowed("g"),
+        b"RG" => Cow::Borrowed("RG"),
+        b"rg" => Cow::Borrowed("rg"),
+        b"K" => Cow::Borrowed("K"),
+        b"k" => Cow::Borrowed("k"),
+        // シェーディング・XObject
+        b"sh" => Cow::Borrowed("sh"),
+        b"Do" => Cow::Borrowed("Do"),
+        // インライン画像以外の画像関連は BI/ID/EI に含む
+        // テキスト状態・配置・描画
+        b"BT" => Cow::Borrowed("BT"),
+        b"ET" => Cow::Borrowed("ET"),
+        b"Tc" => Cow::Borrowed("Tc"),
+        b"Tw" => Cow::Borrowed("Tw"),
+        b"Tz" => Cow::Borrowed("Tz"),
+        b"TL" => Cow::Borrowed("TL"),
+        b"Tf" => Cow::Borrowed("Tf"),
+        b"Tr" => Cow::Borrowed("Tr"),
+        b"Ts" => Cow::Borrowed("Ts"),
+        b"Td" => Cow::Borrowed("Td"),
+        b"TD" => Cow::Borrowed("TD"),
+        b"Tm" => Cow::Borrowed("Tm"),
+        b"T*" => Cow::Borrowed("T*"),
+        b"Tj" => Cow::Borrowed("Tj"),
+        b"TJ" => Cow::Borrowed("TJ"),
+        b"'" => Cow::Borrowed("'"),
+        b"\"" => Cow::Borrowed("\""),
+        // 互換・マーク付き内容
+        b"d0" => Cow::Borrowed("d0"),
+        b"d1" => Cow::Borrowed("d1"),
+        b"MP" => Cow::Borrowed("MP"),
+        b"DP" => Cow::Borrowed("DP"),
+        b"BMC" => Cow::Borrowed("BMC"),
+        b"BDC" => Cow::Borrowed("BDC"),
+        b"EMC" => Cow::Borrowed("EMC"),
+        b"BX" => Cow::Borrowed("BX"),
+        b"EX" => Cow::Borrowed("EX"),
+        // CMap
+        b"endcmap" => Cow::Borrowed("endcmap"),
+        b"usecmap" => Cow::Borrowed("usecmap"),
+        b"begincodespacerange" => Cow::Borrowed("begincodespacerange"),
+        b"endcodespacerange" => Cow::Borrowed("endcodespacerange"),
+        b"beginbfchar" => Cow::Borrowed("beginbfchar"),
+        b"endbfchar" => Cow::Borrowed("endbfchar"),
+        b"begincidchar" => Cow::Borrowed("begincidchar"),
+        b"endcidchar" => Cow::Borrowed("endcidchar"),
+        b"beginbfrange" => Cow::Borrowed("beginbfrange"),
+        b"endbfrange" => Cow::Borrowed("endbfrange"),
+        b"begincidrange" => Cow::Borrowed("begincidrange"),
+        b"endcidrange" => Cow::Borrowed("endcidrange"),
+        // 単独区切り救済
+        b">" => Cow::Borrowed(">"),
+        b")" => Cow::Borrowed(")"),
+        _ => Cow::Owned(bytes_to_latin1(bytes)),
+    }
 }
 
 #[cfg(test)]

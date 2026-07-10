@@ -2,7 +2,9 @@
 //!
 //! 準拠: pdf.js `cmap.js` / `binary_cmap.js`、specs/06
 
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use super::bcmap::decode_bcmap;
 use super::data::bcmaps::bcmap_bytes;
@@ -154,6 +156,44 @@ impl CMap {
 
     /// 定義済み CMap を名前からロード
     pub fn load_predefined(name: &str) -> Result<Self> {
+        let arc = Self::load_predefined_shared(name, None)?;
+        Ok(Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone()))
+    }
+
+    /// 定義済み CMap を名前単位で共有ロード
+    ///
+    /// `cache` があるときは構築結果をメモ化する。ロックは構築中に保持しない
+    pub fn load_predefined_shared(
+        name: &str,
+        cache: Option<&Mutex<HashMap<String, Arc<CMap>>>>,
+    ) -> Result<Arc<CMap>> {
+        if let Some(cache) = cache {
+            if let Ok(guard) = cache.lock() {
+                if let Some(c) = guard.get(name) {
+                    return Ok(Arc::clone(c));
+                }
+            }
+        }
+
+        let built = Self::build_predefined(name, cache)?;
+        let arc = Arc::new(built);
+
+        if let Some(cache) = cache {
+            if let Ok(mut guard) = cache.lock() {
+                if let Some(c) = guard.get(name) {
+                    return Ok(Arc::clone(c));
+                }
+                guard.insert(name.to_string(), Arc::clone(&arc));
+            }
+        }
+        Ok(arc)
+    }
+
+    /// 定義済み CMap を構築する。親は cache 経由でロードする
+    fn build_predefined(
+        name: &str,
+        cache: Option<&Mutex<HashMap<String, Arc<CMap>>>>,
+    ) -> Result<Self> {
         if let Some(c) = Self::from_identity_name(name) {
             return Ok(c);
         }
@@ -172,7 +212,7 @@ impl CMap {
         })?;
         if let Some(parent_name) = use_parent {
             cmap.use_cmap = Some(parent_name.clone());
-            let parent = Self::load_predefined(&parent_name)?;
+            let parent = Self::load_predefined_shared(&parent_name, cache)?;
             cmap.extend_from_parent(&parent);
         }
         Ok(cmap)
@@ -232,15 +272,15 @@ impl CMap {
         }
     }
 
-    /// 疎マップ lookup
-    pub fn lookup(&self, code: u32) -> Option<MapValue> {
+    /// 疎マップ lookup（Bytes は借用、Identity の Cid のみ所有）
+    pub fn lookup(&self, code: u32) -> Option<Cow<'_, MapValue>> {
         if self.identity {
             if code <= 0xffff {
-                return Some(MapValue::Cid(code));
+                return Some(Cow::Owned(MapValue::Cid(code)));
             }
             return None;
         }
-        self.map.get(&code).cloned()
+        self.map.get(&code).map(Cow::Borrowed)
     }
 
     /// マップ全体のイテレート
@@ -300,7 +340,7 @@ impl CMap {
                     }
                     previous = Some(tok);
                 }
-                Token::Cmd(cmd) => match cmd.as_str() {
+                Token::Cmd(cmd) => match cmd.as_ref() {
                     "endcmap" => break,
                     "usecmap" => {
                         if let Some(Token::Name(nm)) = &previous {
@@ -768,7 +808,7 @@ mod tests {
         let (code2, len2) = cmap.read_char_code(&[0x00, 0x41, 0x00, 0x42], 2);
         assert_eq!(code2, 0x0042);
         assert_eq!(len2, 2);
-        assert_eq!(cmap.lookup(0x0041), Some(MapValue::Cid(0x0041)));
+        assert_eq!(cmap.lookup(0x0041).as_deref(), Some(&MapValue::Cid(0x0041)));
     }
 
     #[test]
@@ -801,9 +841,9 @@ endcidrange
 endcmap
 "#;
         let cmap = CMap::parse_embedded(data);
-        assert_eq!(cmap.lookup(0x41), Some(MapValue::Cid(100)));
-        assert_eq!(cmap.lookup(0x42), Some(MapValue::Cid(101)));
-        assert_eq!(cmap.lookup(0x43), Some(MapValue::Cid(102)));
+        assert_eq!(cmap.lookup(0x41).as_deref(), Some(&MapValue::Cid(100)));
+        assert_eq!(cmap.lookup(0x42).as_deref(), Some(&MapValue::Cid(101)));
+        assert_eq!(cmap.lookup(0x43).as_deref(), Some(&MapValue::Cid(102)));
         let (code, len) = cmap.read_char_code(b"B", 0);
         assert_eq!(code, b'B' as u32);
         assert_eq!(len, 1);
@@ -811,8 +851,8 @@ endcmap
 
     /// lookup の Bytes 値を UTF-16BE 文字列にするテスト用ヘルパ
     fn bytes_str(cmap: &CMap, code: u32) -> String {
-        match cmap.lookup(code).unwrap() {
-            MapValue::Bytes(b) => utf16be_bytes_to_string(&b),
+        match cmap.lookup(code).as_deref() {
+            Some(MapValue::Bytes(b)) => utf16be_bytes_to_string(b),
             _ => panic!("expected bytes"),
         }
     }
@@ -873,13 +913,13 @@ endcmap
     fn japan1_cid_to_ucs2_fullwidth_space() {
         let rksj = CMap::load_predefined("90ms-RKSJ-H").expect("load RKSJ");
         let ucs2 = CMap::load_predefined("Adobe-Japan1-UCS2").expect("load UCS2");
-        let cid = match rksj.lookup(0x8140).expect("cid for 0x8140") {
-            MapValue::Cid(c) => c,
+        let cid = match rksj.lookup(0x8140).as_deref() {
+            Some(MapValue::Cid(c)) => *c,
             other => panic!("expected Cid, got {other:?}"),
         };
-        match ucs2.lookup(cid).expect("ucs2 lookup") {
-            MapValue::Bytes(b) => {
-                let s = utf16be_bytes_to_string(&b);
+        match ucs2.lookup(cid).as_deref() {
+            Some(MapValue::Bytes(b)) => {
+                let s = utf16be_bytes_to_string(b);
                 assert_eq!(s, "\u{3000}");
             }
             other => panic!("expected Bytes, got {other:?}"),
@@ -914,16 +954,16 @@ endcmap
         assert!(!cmap.codespace_ranges_for(1).is_empty());
         assert!(!cmap.codespace_ranges_for(2).is_empty());
         // 子自身のマッピングが優先
-        assert_eq!(cmap.lookup(0x8140), Some(MapValue::Cid(42)));
+        assert_eq!(cmap.lookup(0x8140).as_deref(), Some(&MapValue::Cid(42)));
         // 親にあって子に無いマッピングは継承される
         let parent = CMap::load_predefined("90ms-RKSJ-H").expect("parent");
-        let parent_cid = match parent.lookup(0x8140).expect("parent 0x8140") {
-            MapValue::Cid(c) => c,
+        let parent_cid = match parent.lookup(0x8140).as_deref() {
+            Some(MapValue::Cid(c)) => *c,
             other => panic!("expected Cid, got {other:?}"),
         };
         assert_ne!(parent_cid, 42, "parent must differ so override is observable");
         // 親の別キー（ASCII）が引き継がれている
-        assert_eq!(cmap.lookup(0x41), parent.lookup(0x41));
+        assert_eq!(cmap.lookup(0x41).as_deref(), parent.lookup(0x41).as_deref());
         assert!(cmap.lookup(0x41).is_some());
         // 2 バイト codespace の読み取りも親と同じ
         let (code, len) = cmap.read_char_code(&[0x81, 0x40], 0);

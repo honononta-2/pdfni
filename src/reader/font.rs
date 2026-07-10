@@ -85,15 +85,30 @@ impl LoadedFont {
         }
     }
 
-    /// 文字列バイト列をグリフ列に分解する
+    /// 文字列バイト列のグリフ数
+    pub fn glyph_count(&self, bytes: &[u8]) -> usize {
+        if let Some(cmap) = &self.encoding_cmap {
+            let mut i = 0;
+            let mut n = 0;
+            while i < bytes.len() {
+                let (_, len) = cmap.read_char_code(bytes, i);
+                i += len;
+                n += 1;
+            }
+            n
+        } else {
+            bytes.len()
+        }
+    }
+
+    /// 文字列バイト列をグリフごとに訪問する
     ///
-    /// 戻り値: (unicode文字列, グリフ空間の字送り幅(/1000), 元コードが1バイト空白か,
+    /// 引数: (unicode文字列, グリフ空間の字送り幅(/1000), 元コードが1バイト空白か,
     /// 縦メトリクス, 元 charcode が 0x20 か)
-    pub fn chars_to_glyphs(
-        &self,
-        bytes: &[u8],
-    ) -> Vec<(Cow<'_, str>, f64, bool, Option<VMetric>, bool)> {
-        let mut out = Vec::with_capacity(bytes.len());
+    pub fn for_each_glyph<'a, F>(&'a self, bytes: &[u8], mut visit: F)
+    where
+        F: FnMut(Cow<'a, str>, f64, bool, Option<VMetric>, bool),
+    {
         if let Some(cmap) = &self.encoding_cmap {
             let mut i = 0;
             while i < bytes.len() {
@@ -109,7 +124,7 @@ impl LoadedFont {
                     .unwrap_or(self.default_width);
                 let unicode = self.resolve_unicode(charcode, cid, true);
                 let vmetric = self.vmetric_for(cid);
-                out.push((unicode, width, is_space, vmetric, charcode == 0x20));
+                visit(unicode, width, is_space, vmetric, charcode == 0x20);
             }
         } else {
             for &b in bytes {
@@ -121,9 +136,24 @@ impl LoadedFont {
                     .unwrap_or(self.default_width);
                 let unicode = self.resolve_unicode(charcode, charcode, false);
                 let vmetric = self.vmetric_for(charcode);
-                out.push((unicode, width, b == 0x20, vmetric, charcode == 0x20));
+                visit(unicode, width, b == 0x20, vmetric, charcode == 0x20);
             }
         }
+    }
+
+    /// 文字列バイト列をグリフ列に分解する（テスト用）
+    ///
+    /// 戻り値: (unicode文字列, グリフ空間の字送り幅(/1000), 元コードが1バイト空白か,
+    /// 縦メトリクス, 元 charcode が 0x20 か)
+    #[cfg(test)]
+    pub fn chars_to_glyphs(
+        &self,
+        bytes: &[u8],
+    ) -> Vec<(Cow<'_, str>, f64, bool, Option<VMetric>, bool)> {
+        let mut out = Vec::with_capacity(self.glyph_count(bytes));
+        self.for_each_glyph(bytes, |unicode, width, is_space, vmetric, is_20| {
+            out.push((unicode, width, is_space, vmetric, is_20));
+        });
         out
     }
 
@@ -142,8 +172,8 @@ impl LoadedFont {
         }
         if composite {
             if let Some(ucs2) = &self.ucs2_cmap {
-                if let Some(MapValue::Bytes(b)) = ucs2.lookup(cid) {
-                    let s = utf16be_bytes_to_string(&b);
+                if let Some(MapValue::Bytes(b)) = ucs2.lookup(cid).as_deref() {
+                    let s = utf16be_bytes_to_string(b);
                     if !s.is_empty() {
                         return Cow::Owned(s);
                     }
@@ -180,9 +210,9 @@ impl LoadedFont {
 
 /// charcode → CID（符号化 CMap 経由）
 fn charcode_to_cid(cmap: &CMap, charcode: u32) -> u32 {
-    match cmap.lookup(charcode) {
-        Some(MapValue::Cid(cid)) => cid,
-        Some(MapValue::Bytes(b)) => bytes_as_int(&b),
+    match cmap.lookup(charcode).as_deref() {
+        Some(MapValue::Cid(cid)) => *cid,
+        Some(MapValue::Bytes(b)) => bytes_as_int(b),
         None => charcode,
     }
 }
@@ -679,7 +709,7 @@ fn load_encoding_cmap(type0: &Dict, data: &[u8], xref: Option<&XRef>) -> (CMap, 
             if let Some(c) = CMap::from_identity_name(&n) {
                 return (c, true);
             }
-            match CMap::load_predefined(&n) {
+            match load_predefined_cmap(&n, xref) {
                 Ok(c) => (c, true),
                 Err(e) => {
                     eprintln!(
@@ -718,13 +748,20 @@ fn load_ucs2_companion(
     }
     let (registry, ordering) = cid_info?;
     let name = format!("{registry}-{ordering}-UCS2");
-    match CMap::load_predefined(&name) {
+    match load_predefined_cmap(&name, xref) {
         Ok(c) => Some(c),
         Err(e) => {
             eprintln!("reader: failed to load UCS2 CMap '{name}' ({e})");
             None
         }
     }
+}
+
+/// 定義済み CMap をロード。xref があれば文書単位キャッシュを使う
+fn load_predefined_cmap(name: &str, xref: Option<&XRef>) -> crate::error::Result<CMap> {
+    let cache = xref.map(|x| x.cmap_cache.as_ref());
+    let arc = CMap::load_predefined_shared(name, cache)?;
+    Ok(Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone()))
 }
 
 fn is_cjk_ordering(ordering: &str) -> bool {
@@ -1967,8 +2004,8 @@ endcmap
             // 0x8140 → CID（全角空白）。CID は実行時に確認
             // 幅は load 後に chars_to_glyphs で引く
             let rksj = CMap::load_predefined("90ms-RKSJ-H").expect("rksj");
-            let cid_val = match rksj.lookup(0x8140).expect("cid") {
-                MapValue::Cid(c) => c as i64,
+            let cid_val = match rksj.lookup(0x8140).as_deref() {
+                Some(MapValue::Cid(c)) => *c as i64,
                 _ => panic!("expected Cid"),
             };
             cid.set(
@@ -2049,8 +2086,8 @@ endcmap
     fn identity_h_japan1_ucs2_without_tounicode() {
         // 0x8140 の CID を Identity の charcode として使う
         let rksj = CMap::load_predefined("90ms-RKSJ-H").expect("rksj");
-        let cid = match rksj.lookup(0x8140).expect("cid") {
-            MapValue::Cid(c) => c,
+        let cid = match rksj.lookup(0x8140).as_deref() {
+            Some(MapValue::Cid(c)) => *c,
             _ => panic!("expected Cid"),
         };
 
