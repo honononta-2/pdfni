@@ -751,7 +751,7 @@ fn finalize_path(
     let apply = |x: f64, y: f64| apply_ctm(ctm, x, y);
     let (ox, oy) = (view[0], view[3]);
     let mut gbox: Option<[f64; 4]> = None;
-    let mut grow = |a: (f64, f64), b: (f64, f64), gbox: &mut Option<[f64; 4]>| {
+    let grow = |a: (f64, f64), b: (f64, f64), gbox: &mut Option<[f64; 4]>| {
         if (a.0 - b.0).abs() <= 0.01 && (a.1 - b.1).abs() <= 0.01 {
             return;
         }

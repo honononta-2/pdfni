@@ -86,3 +86,43 @@ pub fn extract_text_lines_from_pdf(
     serde_json::to_string(&pages).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// PDF バイト列から文書モデルを抽出し DocDoc の JSON を返す
+#[cfg(feature = "reader")]
+#[wasm_bindgen]
+pub fn extract_document_from_pdf(
+    bytes: &[u8],
+    options_json: Option<String>,
+    password: Option<String>,
+) -> Result<String, JsError> {
+    let options: ExtractOptions = match options_json {
+        Some(s) if !s.is_empty() => {
+            serde_json::from_str(&s).map_err(|e| JsError::new(&e.to_string()))?
+        }
+        _ => ExtractOptions::default(),
+    };
+    let doc =
+        crate::document::extract_document_from_bytes(bytes, password.as_deref(), &options)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+    serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// PDF バイト列から文書モデルを抽出し Markdown 文字列を返す
+#[cfg(feature = "reader")]
+#[wasm_bindgen]
+pub fn extract_markdown_from_pdf(
+    bytes: &[u8],
+    options_json: Option<String>,
+    password: Option<String>,
+) -> Result<String, JsError> {
+    let options: ExtractOptions = match options_json {
+        Some(s) if !s.is_empty() => {
+            serde_json::from_str(&s).map_err(|e| JsError::new(&e.to_string()))?
+        }
+        _ => ExtractOptions::default(),
+    };
+    let doc =
+        crate::document::extract_document_from_bytes(bytes, password.as_deref(), &options)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(crate::document::document_to_markdown(&doc))
+}
+

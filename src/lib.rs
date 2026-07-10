@@ -9,6 +9,8 @@ mod extract;
 mod model;
 mod par;
 #[cfg(feature = "reader")]
+mod document;
+#[cfg(feature = "reader")]
 mod reader;
 #[cfg(feature = "reader")]
 mod text;
@@ -23,6 +25,11 @@ pub use extract::{
     DetectMode, EdgePart, ExtractOptions, GlyphPart, GraphicPart, PagePart, extract_from_parts,
 };
 pub use model::{BBox, Cell, Document, Orientation, Page, Table};
+#[cfg(feature = "reader")]
+pub use document::{
+    DocBlock, DocDoc, DocPage, TextBlock, TextBlockKind, assign_headings, build_blocks,
+    document_to_markdown, extract_document_from_bytes,
+};
 #[cfg(feature = "reader")]
 pub use reader::{extract_from_bytes, extract_text_from_bytes, read_pages};
 #[cfg(feature = "reader")]

@@ -1,11 +1,14 @@
 //! 座標付き文字を JSON で出力する
 
-use reticella::{build_text_items, build_text_lines, extract_text_from_bytes};
+use reticella::{
+    build_text_items, build_text_lines, document_to_markdown, extract_document_from_bytes,
+    extract_text_from_bytes, ExtractOptions,
+};
 
 fn main() {
     let mut args = std::env::args().skip(1);
     let input = args.next().unwrap_or_else(|| {
-        eprintln!("usage: text_probe <input.pdf> [lines|items] [output.json] [password]");
+        eprintln!("usage: text_probe <input.pdf> [lines|items|doc|md] [output.json] [password]");
         std::process::exit(2);
     });
 
@@ -25,6 +28,16 @@ fn main() {
                 out_path = args.next();
                 password = args.next();
             }
+            "doc" => {
+                mode = Mode::Doc;
+                out_path = args.next();
+                password = args.next();
+            }
+            "md" => {
+                mode = Mode::Md;
+                out_path = args.next();
+                password = args.next();
+            }
             _ => {
                 out_path = Some(a);
                 password = args.next();
@@ -39,6 +52,70 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    // doc / md は文書モデル入口、それ以外は座標付き文字入口
+    if matches!(mode, Mode::Doc | Mode::Md) {
+        let doc = match extract_document_from_bytes(
+            &bytes,
+            password.as_deref(),
+            &ExtractOptions::default(),
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("extract failed: {e}");
+                std::process::exit(1);
+            }
+        };
+
+        let output = match mode {
+            Mode::Doc => match serde_json::to_string_pretty(&doc) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("serialize failed: {e}");
+                    std::process::exit(1);
+                }
+            },
+            Mode::Md => document_to_markdown(&doc),
+            _ => unreachable!(),
+        };
+
+        if let Some(path) = out_path {
+            if let Err(e) = std::fs::write(&path, &output) {
+                eprintln!("failed to write {path}: {e}");
+                std::process::exit(1);
+            }
+            eprintln!("=> {path}");
+        } else {
+            println!("{output}");
+        }
+
+        match mode {
+            Mode::Doc => {
+                for (i, pg) in doc.pages.iter().enumerate() {
+                    eprintln!(
+                        "  page {i} {:.0}x{:.0} fonts={} blocks={}",
+                        pg.width,
+                        pg.height,
+                        pg.fonts.len(),
+                        pg.blocks.len()
+                    );
+                }
+            }
+            Mode::Md => {
+                for (i, pg) in doc.pages.iter().enumerate() {
+                    eprintln!(
+                        "  page {i} {:.0}x{:.0} fonts={} blocks={}",
+                        pg.width,
+                        pg.height,
+                        pg.fonts.len(),
+                        pg.blocks.len()
+                    );
+                }
+            }
+            _ => unreachable!(),
+        }
+        return;
+    }
 
     let doc = match extract_text_from_bytes(&bytes, password.as_deref()) {
         Ok(d) => d,
@@ -79,6 +156,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Mode::Doc | Mode::Md => unreachable!(),
     };
 
     if let Some(path) = out_path {
@@ -127,6 +205,7 @@ fn main() {
                 );
             }
         }
+        Mode::Doc | Mode::Md => unreachable!(),
     }
 }
 
@@ -134,4 +213,6 @@ enum Mode {
     Chars,
     Items,
     Lines,
+    Doc,
+    Md,
 }

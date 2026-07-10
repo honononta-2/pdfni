@@ -657,7 +657,7 @@ fn progress_gap(
 }
 
 /// 座標を -rot で正立へ揃える
-fn derotate_xy(x: f64, y: f64, rot: i32) -> (f64, f64) {
+pub(crate) fn derotate_xy(x: f64, y: f64, rot: i32) -> (f64, f64) {
     match rot {
         90 => (-y, x),
         180 => (-x, -y),
@@ -860,7 +860,7 @@ fn reset_last_chars(last_chars: &mut [char; 2], last_pos: &mut usize) {
     *last_pos = 0;
 }
 
-fn is_whitespace_str(s: &str) -> bool {
+pub(crate) fn is_whitespace_str(s: &str) -> bool {
     !s.is_empty() && s.chars().all(char::is_whitespace)
 }
 
