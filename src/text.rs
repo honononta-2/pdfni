@@ -91,8 +91,12 @@ const NEGATIVE_SPACE_FACTOR: f64 = -0.2;
 const SPACE_IN_FLOW_MIN_FACTOR: f64 = 0.102;
 const SPACE_IN_FLOW_MAX_FACTOR: f64 = 0.6;
 const VERTICAL_SHIFT_RATIO: f64 = 0.25;
-/// 行クラスタのベースライン差（font_size 比）
+/// 行クラスタのベースライン隣接差（font_size 比）
 const LINE_CLUSTER_FACTOR: f64 = 0.6;
+/// 行クラスタのベースライン全幅上限（font_size 比）
+const LINE_BAND_SPAN_FACTOR: f64 = 0.7;
+/// 進行軸の行分割空隙（font_size 比）
+const LINE_PROGRESS_GAP_FACTOR: f64 = 2.0;
 
 /// TextPage から pdf.js 相当の TextItem 列を構築する
 pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
@@ -390,6 +394,7 @@ pub fn build_text_lines(page: &TextPage) -> Vec<TextLine> {
 }
 
 /// 行クラスタ用のグリフ位置
+#[derive(Clone)]
 struct GlyphPos {
     idx: usize,
     baseline: f64,
@@ -454,6 +459,8 @@ fn lines_for_group(
         }
     };
     let line_thresh = median_fs * LINE_CLUSTER_FACTOR;
+    let band_thresh = median_fs * LINE_BAND_SPAN_FACTOR;
+    let progress_gap_thresh = median_fs * LINE_PROGRESS_GAP_FACTOR;
 
     glyphs.sort_by(|a, b| {
         a.baseline
@@ -470,21 +477,131 @@ fn lines_for_group(
 
     let mut out = Vec::new();
     let mut cluster: Vec<GlyphPos> = Vec::new();
+    let mut cluster_min_bl = f64::INFINITY;
+    let mut cluster_max_bl = f64::NEG_INFINITY;
     for g in glyphs {
-        if let Some(prev) = cluster.last() {
-            if g.baseline - prev.baseline > line_thresh {
-                if let Some(line) = line_from_cluster(page, &mut cluster, vertical, rot, &dir) {
-                    out.push(line);
-                }
+        if !cluster.is_empty() {
+            let adj_cut = g.baseline - cluster.last().unwrap().baseline > line_thresh;
+            let span_cut =
+                cluster_max_bl.max(g.baseline) - cluster_min_bl.min(g.baseline) > band_thresh;
+            if adj_cut || span_cut {
+                emit_cluster_lines(
+                    page,
+                    &mut cluster,
+                    vertical,
+                    rot,
+                    &dir,
+                    progress_gap_thresh,
+                    &mut out,
+                );
                 cluster.clear();
+                cluster_min_bl = f64::INFINITY;
+                cluster_max_bl = f64::NEG_INFINITY;
             }
         }
+        cluster_min_bl = cluster_min_bl.min(g.baseline);
+        cluster_max_bl = cluster_max_bl.max(g.baseline);
         cluster.push(g);
     }
-    if let Some(line) = line_from_cluster(page, &mut cluster, vertical, rot, &dir) {
-        out.push(line);
-    }
+    emit_cluster_lines(
+        page,
+        &mut cluster,
+        vertical,
+        rot,
+        &dir,
+        progress_gap_thresh,
+        &mut out,
+    );
     out
+}
+
+/// 帯クラスタを進行軸空隙で分割して行を出す
+fn emit_cluster_lines(
+    page: &TextPage,
+    cluster: &mut Vec<GlyphPos>,
+    vertical: bool,
+    rot: i32,
+    dir: &str,
+    progress_gap_thresh: f64,
+    out: &mut Vec<TextLine>,
+) {
+    if cluster.is_empty() {
+        return;
+    }
+    for mut part in split_cluster_by_progress(page, cluster, vertical, rot, progress_gap_thresh) {
+        if let Some(line) = line_from_cluster(page, &mut part, vertical, rot, dir) {
+            out.push(line);
+        }
+    }
+}
+
+/// 進行軸の大きな bbox 間隙でクラスタを分割する
+fn split_cluster_by_progress(
+    page: &TextPage,
+    cluster: &mut [GlyphPos],
+    vertical: bool,
+    rot: i32,
+    progress_gap_thresh: f64,
+) -> Vec<Vec<GlyphPos>> {
+    cluster.sort_by(|a, b| {
+        a.progress
+            .partial_cmp(&b.progress)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.idx.cmp(&b.idx))
+    });
+
+    let mut parts: Vec<Vec<GlyphPos>> = Vec::new();
+    let mut current: Vec<GlyphPos> = Vec::new();
+    let mut pending_ws: Vec<GlyphPos> = Vec::new();
+    let mut last_non_ws_idx: Option<usize> = None;
+
+    for g in cluster.iter().cloned() {
+        if g.is_ws {
+            pending_ws.push(g);
+            continue;
+        }
+        if let Some(prev_idx) = last_non_ws_idx {
+            let (_prev_lo, prev_hi) = progress_bbox_extent(&page.chars[prev_idx], vertical, rot);
+            let (next_lo, _next_hi) = progress_bbox_extent(&page.chars[g.idx], vertical, rot);
+            let gap = next_lo - prev_hi;
+            if gap > progress_gap_thresh {
+                // 間の空白は前側へ
+                current.extend(pending_ws.drain(..));
+                parts.push(std::mem::take(&mut current));
+            } else {
+                current.extend(pending_ws.drain(..));
+            }
+        } else {
+            // 先頭側に非空白が無い空白は後側へ
+            current.extend(pending_ws.drain(..));
+        }
+        last_non_ws_idx = Some(g.idx);
+        current.push(g);
+    }
+    current.extend(pending_ws);
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+/// 正立化後の進行軸での bbox 端
+fn progress_bbox_extent(ch: &TextChar, vertical: bool, rot: i32) -> (f64, f64) {
+    let corners = [
+        (ch.left, ch.top),
+        (ch.right, ch.top),
+        (ch.left, ch.bottom),
+        (ch.right, ch.bottom),
+    ];
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for &(x, y) in &corners {
+        let (dx, dy) = derotate_xy(x, y, rot);
+        let p = if vertical { dy } else { dx };
+        lo = lo.min(p);
+        hi = hi.max(p);
+    }
+    (lo, hi)
 }
 
 /// クラスタから行ビューを組み立てる
@@ -1691,5 +1808,153 @@ mod tests {
         assert_eq!(lines[0].chars, vec![0, 1]);
         assert_eq!(lines[1].words[0].text, "B");
         assert_eq!(lines[1].chars, vec![2]);
+    }
+
+    #[test]
+    fn lines_band_span_breaks_bridge_chain() {
+        // Mid-height bridge keeps adj gaps under 0.6fs; span 0.7fs splits into multiple lines
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch("B", adv, 105.0, adv, 0.0, fs, false),
+            ch("C", adv * 2.0, 110.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert!(lines.len() >= 2, "expected span cut, got {} lines", lines.len());
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.words.iter().map(|w| w.text.as_str()))
+            .collect();
+        assert_eq!(joined, "ABC");
+        assert!(lines.iter().all(|l| l.words.iter().map(|w| w.text.len()).sum::<usize>() < 3));
+    }
+
+    #[test]
+    fn lines_progress_gap_splits_same_baseline_columns() {
+        // Two runs on the same baseline with a large progress-axis gutter
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch("L", 0.0, 100.0, adv, 0.0, fs, false),
+            ch("e", adv, 100.0, adv, 0.0, fs, false),
+            ch("R", 100.0, 100.0, adv, 0.0, fs, false),
+            ch("t", 100.0 + adv, 100.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].words[0].text, "Le");
+        assert_eq!(lines[0].chars, vec![0, 1]);
+        assert_eq!(lines[1].words[0].text, "Rt");
+        assert_eq!(lines[1].chars, vec![2, 3]);
+    }
+
+    #[test]
+    fn lines_superscript_stays_in_band() {
+        // Superscript within band width stays on the body line
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch("2", adv, 97.0, adv, 0.0, fs * 0.6, false),
+            ch("B", adv * 2.0, 100.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].chars, vec![0, 1, 2]);
+        assert_eq!(lines[0].words[0].text, "A2B");
+    }
+
+    #[test]
+    fn lines_progress_gap_whitespace_attaches_to_previous() {
+        // Space between a large progress gap goes to the left line
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch(" ", 40.0, 100.0, 5.0, 0.0, fs, false),
+            ch("B", 100.0, 100.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].chars, vec![0, 1]);
+        assert_eq!(lines[0].words[0].text, "A");
+        assert_eq!(lines[1].chars, vec![2]);
+        assert_eq!(lines[1].words[0].text, "B");
+    }
+
+    #[test]
+    fn lines_progress_gap_leading_whitespace_attaches_to_next() {
+        // Leading space with no prior non-ws attaches to the following line
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch(" ", 0.0, 100.0, 5.0, 0.0, fs, false),
+            ch("A", 10.0, 100.0, adv, 0.0, fs, false),
+            ch("B", 100.0, 100.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].chars, vec![0, 1]);
+        assert_eq!(lines[0].words[0].text, "A");
+        assert_eq!(lines[1].chars, vec![2]);
+        assert_eq!(lines[1].words[0].text, "B");
+    }
+
+    #[test]
+    fn lines_progress_gap_at_or_below_factor_stays_one_line() {
+        // Gaps at or below 2.0× median (word/tab scale) do not split the line
+        let fs = 10.0;
+        let adv = 5.0;
+        let gap = LINE_PROGRESS_GAP_FACTOR * fs;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs, false),
+            ch("B", adv + gap, 100.0, adv, 0.0, fs, false),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].chars, vec![0, 1]);
+        // Word split still applies (gap >> 0.102fs)
+        assert_eq!(lines[0].words.len(), 2);
+        assert_eq!(lines[0].words[0].text, "A");
+        assert_eq!(lines[0].words[1].text, "B");
+    }
+
+    #[test]
+    fn lines_vertical_progress_gap_splits() {
+        // Vertical group: large y gutter on the same baseline splits lines
+        let fs = 10.0;
+        let p = page_v(vec![
+            ch_at("あ", 50.0, 100.0, 0.0, 10.0, fs, 0, true),
+            ch_at("い", 50.0, 110.0, 0.0, 10.0, fs, 0, true),
+            ch_at("う", 50.0, 200.0, 0.0, 10.0, fs, 0, true),
+            ch_at("え", 50.0, 210.0, 0.0, 10.0, fs, 0, true),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].dir, "ttb");
+        assert_eq!(lines[0].words[0].text, "あい");
+        assert_eq!(lines[1].words[0].text, "うえ");
+    }
+
+    #[test]
+    fn lines_rotated_90_progress_gap_splits() {
+        // rot 90: two runs separated along the derotated progress axis
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch_rot("A", 100.0, 60.0, adv, fs, 90),
+            ch_rot("B", 100.0, 60.0 - adv, adv, fs, 90),
+            // large gap in -y / derotated progress
+            ch_rot("C", 100.0, 0.0, adv, fs, 90),
+            ch_rot("D", 100.0, 0.0 - adv, adv, fs, 90),
+        ]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].rot, 90);
+        assert_eq!(lines[0].words[0].text, "AB");
+        assert_eq!(lines[0].chars, vec![0, 1]);
+        assert_eq!(lines[1].words[0].text, "CD");
+        assert_eq!(lines[1].chars, vec![2, 3]);
     }
 }
