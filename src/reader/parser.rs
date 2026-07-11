@@ -4,13 +4,15 @@
 
 use crate::error::{Error, Result};
 
-use super::lexer::{Lexer, Token};
+use super::lexer::{Cmd, Lexer, Op, Token};
 use super::object::{Dict, Object, Ref, Stream};
 
 /// 間接参照の解決。xref が実装する。/Length が Ref のときに使う
+///
+/// Ok(None) は未解決（Null 相当）、Err は解決処理自体の失敗
 #[allow(dead_code)]
 pub(crate) trait Resolver {
-    fn resolve(&self, r: Ref) -> Option<Object>;
+    fn resolve(&self, r: Ref) -> Result<Option<Object>>;
 }
 
 /// 何も解決しない Resolver（テスト・xref 未接続時用）
@@ -19,8 +21,8 @@ pub(crate) trait Resolver {
 pub(crate) struct NullResolver;
 
 impl Resolver for NullResolver {
-    fn resolve(&self, _r: Ref) -> Option<Object> {
-        None
+    fn resolve(&self, _r: Ref) -> Result<Option<Object>> {
+        Ok(None)
     }
 }
 
@@ -59,21 +61,20 @@ impl<'a> Parser<'a> {
         self.buf2 = self.lexer.next_token();
     }
 
-    fn shift(&mut self) {
-        self.buf1 = std::mem::replace(&mut self.buf2, self.lexer.next_token());
+    /// 先読みを1つ進め、消費したトークンを返す
+    fn shift(&mut self) -> Token {
+        let next = self.lexer.next_token();
+        std::mem::replace(&mut self.buf1, std::mem::replace(&mut self.buf2, next))
     }
 
     /// 1オブジェクトを構築する
     pub fn get_obj(&mut self, resolver: &dyn Resolver) -> Result<Object> {
-        let buf1 = self.buf1.clone();
-        self.shift();
-
-        match buf1 {
+        match self.shift() {
             Token::DictStart => self.parse_dict(resolver),
             Token::ArrayStart => self.parse_array(resolver),
             Token::Int(n) => {
-                if let (Token::Int(g), Token::Cmd(cmd)) = (&self.buf1, &self.buf2) {
-                    if cmd == "R" && (0..=i64::from(u32::MAX)).contains(&n) && (0..=i64::from(u16::MAX)).contains(g)
+                if let (Token::Int(g), Token::Cmd(Cmd::Op(Op::R))) = (&self.buf1, &self.buf2) {
+                    if (0..=i64::from(u32::MAX)).contains(&n) && (0..=i64::from(u16::MAX)).contains(g)
                     {
                         let r = Ref::new(n as u32, *g as u16);
                         self.shift();
@@ -86,10 +87,10 @@ impl<'a> Parser<'a> {
             Token::Real(r) => Ok(Object::Real(r)),
             Token::Str(s) => Ok(Object::Str(s)),
             Token::Name(n) => Ok(Object::Name(n)),
-            Token::Cmd(s) => match s.as_ref() {
-                "true" => Ok(Object::Bool(true)),
-                "false" => Ok(Object::Bool(false)),
-                "null" => Ok(Object::Null),
+            Token::Cmd(s) => match s {
+                Cmd::Op(Op::True) => Ok(Object::Bool(true)),
+                Cmd::Op(Op::False) => Ok(Object::Bool(false)),
+                Cmd::Op(Op::Null) => Ok(Object::Null),
                 // 構造以外のコマンドはオブジェクト値としては Null 扱い
                 _ => Ok(Object::Null),
             },
@@ -102,75 +103,62 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_dict(&mut self, resolver: &dyn Resolver) -> Result<Object> {
-        self.depth += 1;
-        if self.depth > MAX_PARSE_DEPTH {
-            self.depth -= 1;
+        if self.depth >= MAX_PARSE_DEPTH {
             return Ok(Object::Null);
         }
+        self.depth += 1;
+        let result = self.parse_dict_body(resolver);
+        self.depth -= 1;
+        result
+    }
 
+    fn parse_dict_body(&mut self, resolver: &dyn Resolver) -> Result<Object> {
         let mut dict = Dict::new();
         while !matches!(self.buf1, Token::DictEnd | Token::Eof) {
-            let key = match &self.buf1 {
-                Token::Name(n) => n.clone(),
-                _ => {
-                    // キーが Name でないトークンは読み飛ばして継続
-                    self.shift();
-                    continue;
-                }
+            let key = match self.shift() {
+                Token::Name(n) => n,
+                // キーが Name でないトークンは読み飛ばして継続
+                _ => continue,
             };
-            self.shift();
             if matches!(self.buf1, Token::Eof) {
                 break;
             }
-            let value = match self.get_obj(resolver) {
-                Ok(v) => v,
-                Err(e) => {
-                    self.depth -= 1;
-                    return Err(e);
-                }
-            };
+            let value = self.get_obj(resolver)?;
             dict.set(key, value);
         }
 
         if matches!(self.buf1, Token::Eof) {
             // EOF 到達時は読めた分を返す
-            self.depth -= 1;
             return Ok(Object::Dict(dict));
         }
 
         // buf1 は DictEnd。直後が stream ならストリーム化
-        if matches!(&self.buf2, Token::Cmd(s) if s == "stream") {
-            let result = self.make_stream(dict, resolver);
-            self.depth -= 1;
-            return result;
+        if matches!(&self.buf2, Token::Cmd(Cmd::Op(Op::Stream))) {
+            return self.make_stream(dict, resolver);
         }
         self.shift(); // >>
-        self.depth -= 1;
         Ok(Object::Dict(dict))
     }
 
     fn parse_array(&mut self, resolver: &dyn Resolver) -> Result<Object> {
-        self.depth += 1;
-        if self.depth > MAX_PARSE_DEPTH {
-            self.depth -= 1;
+        if self.depth >= MAX_PARSE_DEPTH {
             return Ok(Object::Null);
         }
+        self.depth += 1;
+        let result = self.parse_array_body(resolver);
+        self.depth -= 1;
+        result
+    }
 
+    fn parse_array_body(&mut self, resolver: &dyn Resolver) -> Result<Object> {
         let mut arr = Vec::new();
         while !matches!(self.buf1, Token::ArrayEnd | Token::Eof) {
-            match self.get_obj(resolver) {
-                Ok(v) => arr.push(v),
-                Err(e) => {
-                    self.depth -= 1;
-                    return Err(e);
-                }
-            }
+            arr.push(self.get_obj(resolver)?);
         }
         if !matches!(self.buf1, Token::Eof) {
             self.shift(); // ]
         }
         // EOF 到達時は読めた分を返す
-        self.depth -= 1;
         Ok(Object::Array(arr))
     }
 
@@ -181,7 +169,7 @@ impl<'a> Parser<'a> {
         self.lexer.skip_to_next_line();
         let start = self.lexer.byte_pos();
 
-        let mut length = resolve_length(&dict, resolver);
+        let mut length = resolve_length(&dict, resolver)?;
         let max_len = self.data.len().saturating_sub(start);
         if length > max_len {
             length = 0;
@@ -209,7 +197,7 @@ impl<'a> Parser<'a> {
             return false;
         }
         let mut lex = Lexer::new_at(self.data, pos);
-        matches!(lex.next_token(), Token::Cmd(s) if s == "endstream")
+        matches!(lex.next_token(), Token::Cmd(Cmd::Op(Op::EndStream)))
     }
 
     /// /Length が合わないときの endstream 救済スキャン
@@ -223,26 +211,19 @@ impl<'a> Parser<'a> {
             return None;
         }
         for i in start_pos..=data.len() - 3 {
-            if data[i] != b'e' || data[i + 1] != b'n' || data[i + 2] != b'd' {
+            if !data[i..].starts_with(b"end") {
                 continue;
             }
-            let after_end = i + 3;
+            let rest = &data[i + 3..];
             for part in PARTIALS {
-                let mut k = 0;
-                while k < part.len()
-                    && after_end + k < data.len()
-                    && data[after_end + k] == part[k]
-                {
-                    k += 1;
-                }
+                let k = rest.iter().zip(*part).take_while(|(a, b)| a == b).count();
                 if k >= STREAM_SUFFIX_LEN {
                     // endstream
                     return Some(i - start_pos);
                 }
                 if k == part.len() {
                     // endsteam / endstrea。直後が空白なら採用
-                    let next = after_end + k;
-                    if next < data.len() && is_endstream_whitespace(data[next]) {
+                    if rest.get(k).copied().is_some_and(is_endstream_whitespace) {
                         return Some(i - start_pos);
                     }
                     break;
@@ -257,16 +238,16 @@ fn is_endstream_whitespace(b: u8) -> bool {
     matches!(b, 0x20 | 0x09 | 0x0d | 0x0a)
 }
 
-/// /Length を解決する。非整数・解決失敗は 0
-fn resolve_length(dict: &Dict, resolver: &dyn Resolver) -> usize {
-    match dict.get("Length") {
+/// /Length を解決する。非整数・未解決は 0
+fn resolve_length(dict: &Dict, resolver: &dyn Resolver) -> Result<usize> {
+    Ok(match dict.get("Length") {
         Some(Object::Int(n)) if *n >= 0 => *n as usize,
-        Some(Object::Ref(r)) => match resolver.resolve(*r) {
+        Some(Object::Ref(r)) => match resolver.resolve(*r)? {
             Some(Object::Int(n)) if n >= 0 => n as usize,
             _ => 0,
         },
         _ => 0,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -469,11 +450,11 @@ mod tests {
     }
 
     impl Resolver for MapResolver {
-        fn resolve(&self, r: Ref) -> Option<Object> {
+        fn resolve(&self, r: Ref) -> Result<Option<Object>> {
             if r.num == self.num {
-                Some(Object::Int(self.value))
+                Ok(Some(Object::Int(self.value)))
             } else {
-                None
+                Ok(None)
             }
         }
     }

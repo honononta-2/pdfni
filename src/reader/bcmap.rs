@@ -17,6 +17,8 @@ impl std::fmt::Display for BcmapError {
     }
 }
 
+impl std::error::Error for BcmapError {}
+
 /// .bcmap ストリーム読み取り
 pub(crate) struct BinaryCMapStream<'a> {
     data: &'a [u8],
@@ -31,10 +33,6 @@ impl<'a> BinaryCMapStream<'a> {
             pos: 0,
             tmp: [0; MAX_ENCODED_NUM_SIZE],
         }
-    }
-
-    fn remaining(&self) -> bool {
-        self.pos < self.data.len()
     }
 
     fn get_byte(&mut self) -> Result<u8, BcmapError> {
@@ -98,17 +96,15 @@ impl<'a> BinaryCMapStream<'a> {
                 break;
             }
         }
-        let mut i = size as isize;
         let mut buffer: u32 = 0;
         let mut buffer_size: u32 = 0;
-        while i >= 0 {
+        for i in (0..=size).rev() {
             while buffer_size < 8 && sp > 0 {
                 sp -= 1;
                 buffer |= u32::from(self.tmp[sp]) << buffer_size;
                 buffer_size += 7;
             }
-            num[i as usize] = (buffer & 255) as u8;
-            i -= 1;
+            num[i] = (buffer & 255) as u8;
             buffer >>= 8;
             buffer_size = buffer_size.saturating_sub(8);
         }
@@ -189,11 +185,7 @@ pub(crate) fn decode_bcmap(data: &[u8], cmap: &mut CMap) -> Result<Option<String
     let mut char_code = [0u8; MAX_NUM_SIZE];
     let mut tmp = [0u8; MAX_NUM_SIZE];
 
-    while stream.remaining() {
-        let b = match stream.get_byte() {
-            Ok(v) => v,
-            Err(_) => break,
-        };
+    while let Ok(b) = stream.get_byte() {
         let type_ = b >> 5;
         if type_ == 7 {
             match b & 0x1f {
@@ -269,7 +261,7 @@ pub(crate) fn decode_bcmap(data: &[u8], cmap: &mut CMap) -> Result<Option<String
                     }
                     // code = signed_delta + (code + 1)
                     let delta = stream.read_signed()?;
-                    code = (code as i32 + 1 + delta) as u32;
+                    code = code.wrapping_add(1).wrapping_add_signed(delta);
                     cmap.map_one(hex_to_int(&ch, data_size), MapValue::Cid(code));
                 }
             }

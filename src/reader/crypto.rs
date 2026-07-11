@@ -130,7 +130,7 @@ impl CipherFactory {
             true
         };
 
-        let (cf, stm_method, str_method) = parse_crypt_filters(encrypt, algorithm)?;
+        let filters = parse_crypt_filters(encrypt, algorithm)?;
 
         let o_bytes = dict_bytes(encrypt, "O").ok_or_else(|| {
             Error::Reader("encryption dictionary missing /O".into())
@@ -187,9 +187,9 @@ impl CipherFactory {
             encryption_key,
             algorithm,
             encrypt_metadata,
-            str_method,
-            stm_method,
-            cf,
+            str_method: filters.string,
+            stm_method: filters.stream,
+            cf: filters.named,
         })
     }
 
@@ -242,13 +242,24 @@ impl CipherFactory {
     }
 }
 
-fn parse_crypt_filters(
-    encrypt: &Dict,
-    algorithm: i64,
-) -> Result<(HashMap<String, CryptMethod>, CryptMethod, CryptMethod)> {
+/// crypt filter の解析結果
+struct CryptFilters {
+    /// /CF の名前付きフィルタ
+    named: HashMap<String, CryptMethod>,
+    /// 既定のストリーム用（/StmF）
+    stream: CryptMethod,
+    /// 既定の文字列用（/StrF）
+    string: CryptMethod,
+}
+
+fn parse_crypt_filters(encrypt: &Dict, algorithm: i64) -> Result<CryptFilters> {
     if algorithm < 4 {
         // V1/V2 は常に RC4
-        return Ok((HashMap::new(), CryptMethod::V2, CryptMethod::V2));
+        return Ok(CryptFilters {
+            named: HashMap::new(),
+            stream: CryptMethod::V2,
+            string: CryptMethod::V2,
+        });
     }
 
     let stmf_name = match encrypt.get("StmF") {
@@ -281,7 +292,11 @@ fn parse_crypt_filters(
         cf.get(strf_name).copied().unwrap_or(CryptMethod::None)
     };
 
-    Ok((cf, stm_method, str_method))
+    Ok(CryptFilters {
+        named: cf,
+        stream: stm_method,
+        string: str_method,
+    })
 }
 
 fn cfm_to_method(handler: &Dict, algorithm: i64) -> Result<CryptMethod> {
@@ -448,8 +463,8 @@ fn create_encryption_key_v5(
         password
     };
 
-    if check_user_password_v5(revision, pw, user_validation_salt, user_password) {
-        let key = hash_v5(revision, pw, user_key_salt, &[]);
+    if check_user_password_v5(revision, pw, user_validation_salt, user_password)? {
+        let key = hash_v5(revision, pw, user_key_salt, &[])?;
         return Ok(Some(aes256_cbc_decrypt_no_pad(&key, &ue, &[0u8; 16])?));
     }
     if !pw.is_empty()
@@ -459,9 +474,9 @@ fn create_encryption_key_v5(
             owner_validation_salt,
             u_for_owner,
             owner_password,
-        )
+        )?
     {
-        let key = hash_v5(revision, pw, owner_key_salt, u_for_owner);
+        let key = hash_v5(revision, pw, owner_key_salt, u_for_owner)?;
         return Ok(Some(aes256_cbc_decrypt_no_pad(&key, &oe, &[0u8; 16])?));
     }
     Ok(None)
@@ -472,9 +487,9 @@ fn check_user_password_v5(
     password: &[u8],
     user_validation_salt: &[u8],
     user_password: &[u8],
-) -> bool {
-    let result = hash_v5(revision, password, user_validation_salt, &[]);
-    result.len() >= 32 && user_password.len() >= 32 && result[..32] == user_password[..32]
+) -> Result<bool> {
+    let result = hash_v5(revision, password, user_validation_salt, &[])?;
+    Ok(result.len() >= 32 && user_password.len() >= 32 && result[..32] == user_password[..32])
 }
 
 fn check_owner_password_v5(
@@ -483,12 +498,12 @@ fn check_owner_password_v5(
     owner_validation_salt: &[u8],
     u_bytes: &[u8],
     owner_password: &[u8],
-) -> bool {
-    let result = hash_v5(revision, password, owner_validation_salt, u_bytes);
-    result.len() >= 32 && owner_password.len() >= 32 && result[..32] == owner_password[..32]
+) -> Result<bool> {
+    let result = hash_v5(revision, password, owner_validation_salt, u_bytes)?;
+    Ok(result.len() >= 32 && owner_password.len() >= 32 && result[..32] == owner_password[..32])
 }
 
-fn hash_v5(revision: i64, password: &[u8], salt: &[u8], user_bytes: &[u8]) -> Vec<u8> {
+fn hash_v5(revision: i64, password: &[u8], salt: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
     let mut input = Vec::with_capacity(password.len() + salt.len() + user_bytes.len());
     input.extend_from_slice(password);
     input.extend_from_slice(salt);
@@ -496,17 +511,16 @@ fn hash_v5(revision: i64, password: &[u8], salt: &[u8], user_bytes: &[u8]) -> Ve
     if revision == 6 {
         algorithm_2b(password, &input, user_bytes)
     } else {
-        sha256_digest(&input)
+        Ok(sha256_digest(&input))
     }
 }
 
 /// Algorithm 2.B（R6）
-fn algorithm_2b(password: &[u8], input: &[u8], user_bytes: &[u8]) -> Vec<u8> {
+fn algorithm_2b(password: &[u8], input: &[u8], user_bytes: &[u8]) -> Result<Vec<u8>> {
     let mut k = sha256_digest(input);
     k.truncate(32);
-    let mut e = vec![0u8];
     let mut i = 0usize;
-    while i < 64 || e[e.len() - 1] as usize > i.saturating_sub(32) {
+    loop {
         let combined_len = password.len() + k.len() + user_bytes.len();
         let mut combined = Vec::with_capacity(combined_len);
         combined.extend_from_slice(password);
@@ -517,8 +531,7 @@ fn algorithm_2b(password: &[u8], input: &[u8], user_bytes: &[u8]) -> Vec<u8> {
         for _ in 0..64 {
             k1.extend_from_slice(&combined);
         }
-        // AES-128-CBC no pad, key=k[0..16], iv=k[16..32]
-        e = aes128_cbc_encrypt_no_pad(&k[..16], &k1, &k[16..32]);
+        let e = aes128_cbc_encrypt_no_pad(&k[..16], &k1, &k[16..32])?;
         let remainder: u32 = e[..16].iter().map(|&b| u32::from(b)).sum::<u32>() % 3;
         k = match remainder {
             0 => sha256_digest(&e),
@@ -526,9 +539,12 @@ fn algorithm_2b(password: &[u8], input: &[u8], user_bytes: &[u8]) -> Vec<u8> {
             _ => sha512_digest(&e),
         };
         i += 1;
+        if i >= 64 && e.last().copied().unwrap_or(0) as usize <= i.saturating_sub(32) {
+            break;
+        }
     }
     k.truncate(32);
-    k
+    Ok(k)
 }
 
 pub(crate) fn build_object_key(
@@ -540,11 +556,8 @@ pub(crate) fn build_object_key(
     let n = encryption_key.len();
     let mut key = Vec::with_capacity(n + 9);
     key.extend_from_slice(encryption_key);
-    key.push((num & 0xff) as u8);
-    key.push(((num >> 8) & 0xff) as u8);
-    key.push(((num >> 16) & 0xff) as u8);
-    key.push((generation & 0xff) as u8);
-    key.push(((generation >> 8) & 0xff) as u8);
+    key.extend_from_slice(&num.to_le_bytes()[..3]);
+    key.extend_from_slice(&generation.to_le_bytes());
     if is_aes {
         key.extend_from_slice(&SALT_SUFFIX);
     }
@@ -637,17 +650,15 @@ fn aes256_cbc_decrypt_no_pad(key: &[u8], data: &[u8], iv: &[u8; 16]) -> Result<V
     Ok(plain)
 }
 
-fn aes128_cbc_encrypt_no_pad(key: &[u8], data: &[u8], iv: &[u8]) -> Vec<u8> {
-    // data は 16 の倍数である必要がある
+/// AES-128-CBC 暗号化（パディングなし。data は 16 の倍数であること）
+fn aes128_cbc_encrypt_no_pad(key: &[u8], data: &[u8], iv: &[u8]) -> Result<Vec<u8>> {
     let mut buf = data.to_vec();
-    // NoPadding encrypt requires exact block size; use encrypt_padded_mut
-    let enc = Aes128CbcEnc::new_from_slices(key, iv).expect("aes128 enc");
     let len = buf.len();
-    // encrypt_padded_mut needs spare room for padding; with NoPadding spare=0 if aligned
-    let out = enc
+    let out = Aes128CbcEnc::new_from_slices(key, iv)
+        .map_err(|_| Error::Reader("AES-128 init failed".into()))?
         .encrypt_padded_mut::<NoPadding>(&mut buf, len)
-        .expect("aes128 encrypt");
-    out.to_vec()
+        .map_err(|_| Error::Reader("AES-128 encrypt failed".into()))?;
+    Ok(out.to_vec())
 }
 
 /// AES-CBC PKCS#7 暗号化（先頭に IV を付与）。テスト用
@@ -820,13 +831,13 @@ pub(crate) fn compute_u_ue_r5_r6(
     } else {
         user_password
     };
-    let u_hash = hash_v5(revision, pw, validation_salt, &[]);
+    let u_hash = hash_v5(revision, pw, validation_salt, &[])?;
     let mut u = Vec::with_capacity(48);
     u.extend_from_slice(&u_hash[..32]);
     u.extend_from_slice(validation_salt);
     u.extend_from_slice(key_salt);
 
-    let ue_key = hash_v5(revision, pw, key_salt, &[]);
+    let ue_key = hash_v5(revision, pw, key_salt, &[])?;
     let ue = aes256_cbc_encrypt_no_pad(&ue_key, file_key, &[0u8; 16])?;
     Ok((u, ue))
 }
@@ -842,12 +853,12 @@ pub(crate) fn compute_o_oe_dummy_r5_r6(
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     // オーナーパスワードは空でユーザーと別 salt にする
     let owner_pw: &[u8] = b"";
-    let o_hash = hash_v5(revision, owner_pw, validation_salt, u_bytes);
+    let o_hash = hash_v5(revision, owner_pw, validation_salt, u_bytes)?;
     let mut o = Vec::with_capacity(48);
     o.extend_from_slice(&o_hash[..32]);
     o.extend_from_slice(validation_salt);
     o.extend_from_slice(key_salt);
-    let oe_key = hash_v5(revision, owner_pw, key_salt, u_bytes);
+    let oe_key = hash_v5(revision, owner_pw, key_salt, u_bytes)?;
     let oe = aes256_cbc_encrypt_no_pad(&oe_key, file_key, &[0u8; 16])?;
     Ok((o, oe))
 }

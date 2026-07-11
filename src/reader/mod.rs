@@ -37,9 +37,10 @@ pub fn extract_from_bytes(
 pub fn extract_text_from_bytes(bytes: &[u8], password: Option<&str>) -> Result<TextDoc> {
     let xref = XRef::parse_with_password(bytes, password)?;
     let page_infos = collect_pages(bytes, &xref)?;
+    // XRef は Sync なので全スレッドで共有する
     let pages = crate::par::map_ordered(
         page_infos,
-        || xref.clone(),
+        || &xref,
         |xref, _, p| build_text_page(p, bytes, xref),
     )
     .into_iter()
@@ -52,10 +53,10 @@ pub fn read_pages(bytes: &[u8], password: Option<&str>) -> Result<Vec<PagePart>>
     // 空パスワード → 引数パスワードは CipherFactory 内で試す
     let xref = XRef::parse_with_password(bytes, password)?;
     let page_infos = collect_pages(bytes, &xref)?;
-    // xref の内部キャッシュはスレッド共有できないためスレッドごとに複製する
+    // XRef は Sync なので全スレッドで共有する
     crate::par::map_ordered(
         page_infos,
-        || xref.clone(),
+        || &xref,
         |xref, _, p| build_page_part(p, bytes, xref),
     )
     .into_iter()
@@ -65,32 +66,31 @@ pub fn read_pages(bytes: &[u8], password: Option<&str>) -> Result<Vec<PagePart>>
 /// ページ1枚分の parts を構築する
 fn build_page_part(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<PagePart> {
     let contents = decode_contents(bytes, xref, &p.contents)?;
-    let (glyphs, edges, graphics, norm_rotate) =
-        extract_parts(&contents, &p.resources, p.view, ContentCtx {
-            data: bytes,
-            xref: Some(xref),
-        }, p.rotate);
+    let parts = extract_parts(&contents, &p.resources, p.view, ContentCtx {
+        data: bytes,
+        xref: Some(xref),
+    }, p.rotate);
     let (mut width, mut height) = (view_width(p.view), view_height(p.view));
     if p.rotate == 90 || p.rotate == 270 {
         std::mem::swap(&mut width, &mut height);
     }
-    if norm_rotate == 90 || norm_rotate == 270 {
+    if parts.norm_rotate == 90 || parts.norm_rotate == 270 {
         std::mem::swap(&mut width, &mut height);
     }
     Ok(PagePart {
         width,
         height,
-        glyphs,
-        edges,
-        norm_rotate,
-        graphics,
+        glyphs: parts.glyphs,
+        edges: parts.edges,
+        norm_rotate: parts.norm_rotate,
+        graphics: parts.graphics,
     })
 }
 
 /// ページ1枚分の座標付き文字を構築する
 fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<TextPage> {
     let contents = decode_contents(bytes, xref, &p.contents)?;
-    let (width, height, fonts, chars) = extract_text(
+    let text = extract_text(
         &contents,
         &p.resources,
         p.view,
@@ -101,9 +101,9 @@ fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<Text
         p.rotate,
     );
     Ok(TextPage {
-        width,
-        height,
-        fonts,
-        chars,
+        width: text.width,
+        height: text.height,
+        fonts: text.fonts,
+        chars: text.chars,
     })
 }

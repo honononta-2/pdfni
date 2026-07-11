@@ -40,18 +40,21 @@ pub(crate) fn decode_stream(
     let filter_obj = stream
         .dict
         .get2("F", "Filter")
-        .map(|obj| resolve_owned(obj, resolver));
+        .map(|obj| resolve_owned(obj, resolver))
+        .transpose()?;
     let params_root = stream
         .dict
         .get2("DP", "DecodeParms")
-        .map(|o| resolve_owned(o, resolver));
+        .map(|o| resolve_owned(o, resolver))
+        .transpose()?;
 
     // 暗号化: /Crypt が無いとき既定 StmF で先に復号。xref は crypto_ref 無し
     let has_crypt = filter_list_has_crypt(filter_obj.as_ref());
     let skip_crypto = is_xref_stream(&stream.dict)
         || is_unencrypted_metadata(&stream.dict, cipher);
-    if let (Some(factory), Some(r), false, false) =
-        (cipher, stream.crypto_ref, has_crypt, skip_crypto)
+    if !has_crypt && !skip_crypto
+        && let Some(factory) = cipher
+        && let Some(r) = stream.crypto_ref
     {
         decoded = factory.decrypt_stream(&decoded, r.num, r.generation, None)?;
     }
@@ -78,12 +81,14 @@ pub(crate) fn decode_stream(
         }
         Object::Array(filters) => {
             for (i, f) in filters.iter().enumerate() {
-                let f = resolve_owned(f, resolver);
+                let f = resolve_owned(f, resolver)?;
                 let Object::Name(name) = f else {
                     return Err(Error::Reader(format!("Bad filter name: {f:?}")));
                 };
                 let params = match &params_root {
-                    Some(Object::Array(arr)) => arr.get(i).map(|p| resolve_owned(p, resolver)),
+                    Some(Object::Array(arr)) => {
+                        arr.get(i).map(|p| resolve_owned(p, resolver)).transpose()?
+                    }
                     // 単一 Dict を全段に使うのは仕様外。pdf.js は配列時のみインデックス参照
                     _ => None,
                 };
@@ -131,11 +136,11 @@ fn is_unencrypted_metadata(dict: &Dict, cipher: Option<&CipherFactory>) -> bool 
     matches!(dict.get("Type"), Some(Object::Name(n)) if n == "Metadata")
 }
 
-fn resolve_owned(obj: &Object, resolver: &dyn Resolver) -> Object {
-    match obj {
-        Object::Ref(r) => resolver.resolve(*r).unwrap_or(Object::Null),
+fn resolve_owned(obj: &Object, resolver: &dyn Resolver) -> Result<Object> {
+    Ok(match obj {
+        Object::Ref(r) => resolver.resolve(*r)?.unwrap_or(Object::Null),
         other => other.clone(),
-    }
+    })
 }
 
 fn apply_filter(
@@ -198,10 +203,10 @@ const MAX_DECODED_BYTES: u64 = 512 * 1024 * 1024;
 
 /// zlib → raw deflate の順で試し、失敗時は途中まで読めた分を返す
 fn decode_flate(data: &[u8]) -> Vec<u8> {
-    if let Ok(out) = read_to_end_ok(ZlibDecoder::new(data)) {
+    if let Some(out) = read_to_end_ok(ZlibDecoder::new(data)) {
         return out;
     }
-    if let Ok(out) = read_to_end_ok(DeflateDecoder::new(data)) {
+    if let Some(out) = read_to_end_ok(DeflateDecoder::new(data)) {
         return out;
     }
     let partial = read_partial(ZlibDecoder::new(data));
@@ -211,12 +216,10 @@ fn decode_flate(data: &[u8]) -> Vec<u8> {
     read_partial(DeflateDecoder::new(data))
 }
 
-fn read_to_end_ok<R: Read>(r: R) -> std::result::Result<Vec<u8>, ()> {
+fn read_to_end_ok<R: Read>(r: R) -> Option<Vec<u8>> {
     let mut out = Vec::new();
-    r.take(MAX_DECODED_BYTES)
-        .read_to_end(&mut out)
-        .map_err(|_| ())?;
-    Ok(out)
+    r.take(MAX_DECODED_BYTES).read_to_end(&mut out).ok()?;
+    Some(out)
 }
 
 /// 逐次読みで得られる分だけ保持する（壊れたストリーム耐性）
@@ -242,7 +245,7 @@ fn read_partial<R: Read>(mut r: R) -> Vec<u8> {
 
 /// LZW 復号（辞書 4096・コード長 9→12・Clear=256・EOD=257）
 fn decode_lzw(data: &[u8], early_change: i64) -> Result<Vec<u8>> {
-    let early_change = if early_change != 0 { 1 } else { 0 };
+    let early_change = u32::from(early_change != 0);
     const MAX_DICT: usize = 4096;
     const CLEAR: u32 = 256;
     const EOD: u32 = 257;
@@ -313,11 +316,10 @@ fn decode_lzw(data: &[u8], early_change: i64) -> Result<Vec<u8>> {
                 dictionary_lengths[prev_code as usize].saturating_add(1);
             dictionary_values[next_code as usize] = current_sequence[0];
             next_code += 1;
-            let n = next_code + early_change as u32;
-            // n が 2 の冪のときコード長を延ばす（pdf.js と同じ判定）
+            let n = next_code + early_change;
+            // n が 2 の冪のときコード長を延ばす
             if n > 0 && (n & (n - 1)) == 0 {
-                let new_len = ((n as f64).log2().floor() as u32).saturating_add(1);
-                code_length = new_len.min(12);
+                code_length = (n.ilog2() + 1).min(12);
             }
         }
         prev_code = code;
@@ -545,18 +547,13 @@ fn predict_tiff8(data: &[u8], colors: usize, row_bytes: usize) -> Vec<u8> {
         return Vec::new();
     }
     let mut out = Vec::with_capacity(data.len());
-    let mut offset = 0;
-    while offset + row_bytes <= data.len() {
-        let raw = &data[offset..offset + row_bytes];
-        let mut row = vec![0u8; row_bytes];
-        for i in 0..colors.min(row_bytes) {
-            row[i] = raw[i];
-        }
+    for raw in data.chunks_exact(row_bytes) {
+        let start = out.len();
+        out.extend_from_slice(raw);
+        let row = &mut out[start..];
         for i in colors..row_bytes {
-            row[i] = row[i - colors].wrapping_add(raw[i]);
+            row[i] = row[i - colors].wrapping_add(row[i]);
         }
-        out.extend_from_slice(&row);
-        offset += row_bytes;
     }
     out
 }
@@ -567,22 +564,13 @@ fn predict_png(data: &[u8], pix_bytes: usize, row_bytes: usize) -> Result<Vec<u8
     }
     let mut out = Vec::new();
     let mut prev = vec![0u8; row_bytes];
-    let mut offset = 0;
+    let mut row = vec![0u8; row_bytes];
 
-    while offset < data.len() {
-        if offset + 1 > data.len() {
-            break;
-        }
-        let filter_type = data[offset];
-        offset += 1;
-        if offset + row_bytes > data.len() {
-            // 不完全な最終行は打ち切り
-            break;
-        }
-        let raw = &data[offset..offset + row_bytes];
-        offset += row_bytes;
+    // 行は「フィルタ種 1 バイト + 本体」。不完全な最終行は打ち切り
+    for chunk in data.chunks_exact(1 + row_bytes) {
+        let filter_type = chunk[0];
+        let raw = &chunk[1..];
 
-        let mut row = vec![0u8; row_bytes];
         match filter_type {
             0 => {
                 // None
@@ -632,7 +620,7 @@ fn predict_png(data: &[u8], pix_bytes: usize, row_bytes: usize) -> Result<Vec<u8
             }
         }
         out.extend_from_slice(&row);
-        prev = row;
+        std::mem::swap(&mut prev, &mut row);
     }
     Ok(out)
 }
@@ -1066,16 +1054,16 @@ mod tests {
     fn decode_parms_ref_resolved() {
         struct MapResolver;
         impl Resolver for MapResolver {
-            fn resolve(&self, r: Ref) -> Option<Object> {
+            fn resolve(&self, r: Ref) -> Result<Option<Object>> {
                 if r.num == 5 {
                     let mut parms = Dict::new();
                     parms.set("Predictor", Object::Int(2));
                     parms.set("Columns", Object::Int(2));
                     parms.set("Colors", Object::Int(1));
                     parms.set("BitsPerComponent", Object::Int(8));
-                    Some(Object::Dict(parms))
+                    Ok(Some(Object::Dict(parms)))
                 } else {
-                    None
+                    Ok(None)
                 }
             }
         }

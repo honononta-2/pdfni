@@ -11,7 +11,7 @@ use crate::text::{TextChar, TextFont};
 
 use super::filters::decode_stream;
 use super::font::{lookup_font, LoadedFont};
-use super::lexer::{Lexer, Token};
+use super::lexer::{Cmd, Lexer, Op, Token};
 use super::object::{Dict, Object, Ref, Stream};
 use super::parser::Resolver;
 use super::xref::XRef;
@@ -31,9 +31,7 @@ pub(crate) struct ContentCtx<'a> {
 /// テキストAPI用の収集バッファ
 struct TextSink {
     fonts: Vec<TextFont>,
-    font_ids: HashMap<usize, u32>,
-    /// 登録済みフォントの実体。ポインタ番地の再利用を防ぐ
-    held_fonts: Vec<Arc<LoadedFont>>,
+    font_ids: HashMap<u64, u32>,
     chars: Vec<PendingTextChar>,
 }
 
@@ -48,10 +46,59 @@ struct PendingTextChar {
     advance: [f64; 2],
     font: u32,
     font_size: f64,
-    /// 量子化回転 0..3 または 255=軸外
-    rot_q: u8,
+    rot_q: RotQ,
     upright: bool,
     synthetic: bool,
+}
+
+/// 進行方向の量子化回転
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RotQ {
+    R0,
+    R90,
+    R180,
+    R270,
+    /// 90度刻みでない軸外
+    OffAxis,
+}
+
+impl RotQ {
+    /// 90度単位の回転数。軸外は None
+    fn quarter(self) -> Option<u8> {
+        match self {
+            RotQ::R0 => Some(0),
+            RotQ::R90 => Some(1),
+            RotQ::R180 => Some(2),
+            RotQ::R270 => Some(3),
+            RotQ::OffAxis => None,
+        }
+    }
+
+    fn from_quarter(q: u8) -> Self {
+        match q % 4 {
+            0 => RotQ::R0,
+            1 => RotQ::R90,
+            2 => RotQ::R180,
+            _ => RotQ::R270,
+        }
+    }
+
+    /// ページ回転 rot(0..=3) を打ち消した値。軸外はそのまま
+    fn unrotate(self, rot: u8) -> Self {
+        match self.quarter() {
+            Some(q) => Self::from_quarter((q + 4 - rot % 4) % 4),
+            None => self,
+        }
+    }
+
+    fn is_upright(self) -> bool {
+        self == RotQ::R0
+    }
+
+    /// 出力用の角度。軸外は 0
+    fn degrees(self) -> i32 {
+        self.quarter().map_or(0, |q| i32::from(q) * 90)
+    }
 }
 
 impl TextSink {
@@ -59,13 +106,12 @@ impl TextSink {
         Self {
             fonts: Vec::new(),
             font_ids: HashMap::new(),
-            held_fonts: Vec::new(),
             chars: Vec::new(),
         }
     }
 
-    fn font_index(&mut self, font: &Arc<LoadedFont>, resource_name: &str) -> u32 {
-        let key = Arc::as_ptr(font) as usize;
+    fn font_index(&mut self, font: &LoadedFont, resource_name: &str) -> u32 {
+        let key = font.uid();
         if let Some(&i) = self.font_ids.get(&key) {
             return i;
         }
@@ -76,39 +122,52 @@ impl TextSink {
             descent: font.descent(),
             vertical: font.vertical(),
         });
-        self.held_fonts.push(Arc::clone(font));
         self.font_ids.insert(key, i);
         i
     }
 }
 
+/// ページ1枚分の抽出結果（表検出用 parts）
+pub(crate) struct ExtractedParts {
+    pub glyphs: Vec<GlyphPart>,
+    pub edges: Vec<EdgePart>,
+    pub graphics: Vec<GraphicPart>,
+    /// ページ内容の支配回転を正規化した角度(0/90/180/270)
+    pub norm_rotate: i32,
+}
+
+/// ページ1枚分の抽出結果（座標付き文字）
+pub(crate) struct ExtractedText {
+    pub width: f64,
+    pub height: f64,
+    pub fonts: Vec<TextFont>,
+    pub chars: Vec<TextChar>,
+}
+
 /// コンテンツストリームから glyphs と edges を抽出する
 ///
 /// page_rotate はページ属性 /Rotate（表示座標系へ回してから返す）
-/// 返り値3つ目はページ内容の支配回転を正規化した角度(0/90/180/270)
 pub(crate) fn extract_parts(
     contents: &[u8],
     resources: &Dict,
     view: [f64; 4],
     ctx: ContentCtx<'_>,
     page_rotate: i32,
-) -> (Vec<GlyphPart>, Vec<EdgePart>, Vec<GraphicPart>, i32) {
+) -> ExtractedParts {
     let mut tagged = Vec::new();
     let mut edges = Vec::new();
     let mut graphics = Vec::new();
     let mut visiting = HashSet::new();
-    interpret(
-        contents,
-        resources,
+    Evaluator {
+        ctx: &ctx,
         view,
-        &ctx,
-        &mut tagged,
-        &mut edges,
-        &mut graphics,
-        &mut visiting,
-        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-        None,
-    );
+        glyphs: &mut tagged,
+        edges: &mut edges,
+        graphics: &mut graphics,
+        visiting: &mut visiting,
+        text_sink: None,
+    }
+    .interpret(contents, resources, IDENTITY_MAT);
 
     let (mut w, mut h) = (view[2] - view[0], view[3] - view[1]);
 
@@ -117,10 +176,8 @@ pub(crate) fn extract_parts(
     if page_rot != 0 {
         rotate_parts(&mut tagged, &mut edges, &mut graphics, w, h, page_rot);
         for (g, r) in &mut tagged {
-            if *r < 4 {
-                *r = (*r + 4 - page_rot) % 4;
-            }
-            g.upright = *r == 0;
+            *r = r.unrotate(page_rot);
+            g.upright = r.is_upright();
         }
         if page_rot != 2 {
             std::mem::swap(&mut w, &mut h);
@@ -132,22 +189,25 @@ pub(crate) fn extract_parts(
     if rot != 0 {
         rotate_parts(&mut tagged, &mut edges, &mut graphics, w, h, rot);
         for (g, r) in &mut tagged {
-            if *r < 4 {
-                *r = (*r + 4 - rot) % 4;
-            }
-            g.upright = *r == 0;
+            *r = r.unrotate(rot);
+            g.upright = r.is_upright();
         }
     }
     let mut glyphs: Vec<GlyphPart> = tagged
         .into_iter()
         .map(|(mut g, r)| {
-            g.rot = if r < 4 { r as i32 * 90 } else { 0 };
+            g.rot = r.degrees();
             g
         })
         .collect();
     let spaces = synth_word_spaces(&glyphs);
     glyphs.extend(spaces);
-    (glyphs, edges, graphics, rot as i32 * 90)
+    ExtractedParts {
+        glyphs,
+        edges,
+        graphics,
+        norm_rotate: i32::from(rot) * 90,
+    }
 }
 
 /// コンテンツストリームから座標付き文字を抽出する
@@ -159,24 +219,22 @@ pub(crate) fn extract_text(
     view: [f64; 4],
     ctx: ContentCtx<'_>,
     page_rotate: i32,
-) -> (f64, f64, Vec<TextFont>, Vec<TextChar>) {
+) -> ExtractedText {
     let mut tagged = Vec::new();
     let mut edges = Vec::new();
     let mut graphics = Vec::new();
     let mut visiting = HashSet::new();
     let mut sink = TextSink::new();
-    interpret(
-        contents,
-        resources,
+    Evaluator {
+        ctx: &ctx,
         view,
-        &ctx,
-        &mut tagged,
-        &mut edges,
-        &mut graphics,
-        &mut visiting,
-        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-        Some(&mut sink),
-    );
+        glyphs: &mut tagged,
+        edges: &mut edges,
+        graphics: &mut graphics,
+        visiting: &mut visiting,
+        text_sink: Some(&mut sink),
+    }
+    .interpret(contents, resources, IDENTITY_MAT);
 
     let (mut w, mut h) = (view[2] - view[0], view[3] - view[1]);
     synth_word_spaces_text(&mut sink.chars);
@@ -185,10 +243,8 @@ pub(crate) fn extract_text(
     if page_rot != 0 {
         rotate_text_chars(&mut sink.chars, w, h, page_rot);
         for c in &mut sink.chars {
-            if c.rot_q < 4 {
-                c.rot_q = (c.rot_q + 4 - page_rot) % 4;
-            }
-            c.upright = c.rot_q == 0;
+            c.rot_q = c.rot_q.unrotate(page_rot);
+            c.upright = c.rot_q.is_upright();
         }
         if page_rot != 2 {
             std::mem::swap(&mut w, &mut h);
@@ -208,27 +264,34 @@ pub(crate) fn extract_text(
             advance: c.advance,
             font: c.font,
             font_size: c.font_size,
-            rot: if c.rot_q < 4 {
-                c.rot_q as i32 * 90
-            } else {
-                0
-            },
+            rot: c.rot_q.degrees(),
             upright: c.upright,
             synthetic: c.synthetic,
         })
         .collect();
-    (w, h, sink.fonts, chars)
+    ExtractedText {
+        width: w,
+        height: h,
+        fonts: sink.fonts,
+        chars,
+    }
 }
 
 /// テキスト文字の座標をページ回転で移す
 fn rotate_text_chars(chars: &mut [PendingTextChar], w: f64, h: f64, rot: u8) {
     let rmat = page_rot_mat(w, h, rot);
     for c in chars.iter_mut() {
-        let (l, t, r, b) = rotate_box_td(c.left, c.top, c.right, c.bottom, w, h, rot);
-        c.left = l;
-        c.top = t;
-        c.right = r;
-        c.bottom = b;
+        let rect = Rect {
+            left: c.left,
+            top: c.top,
+            right: c.right,
+            bottom: c.bottom,
+        }
+        .rotate_td(w, h, rot);
+        c.left = rect.left;
+        c.top = rect.top;
+        c.right = rect.right;
+        c.bottom = rect.bottom;
         c.transform = mat_mul(rmat, c.transform);
         c.advance = rotate_vec_td(c.advance[0], c.advance[1], rot);
     }
@@ -256,7 +319,7 @@ fn rotate_vec_td(dx: f64, dy: f64, rot: u8) -> [f64; 2] {
 
 /// グリフと線分とグラフィックの座標を正規化回転で移す
 fn rotate_parts(
-    tagged: &mut [(GlyphPart, u8)],
+    tagged: &mut [(GlyphPart, RotQ)],
     edges: &mut [EdgePart],
     graphics: &mut [GraphicPart],
     w: f64,
@@ -264,18 +327,30 @@ fn rotate_parts(
     rot: u8,
 ) {
     for (g, _) in tagged.iter_mut() {
-        let (l, t, r, b) = rotate_box_td(g.left, g.top, g.right, g.bottom, w, h, rot);
-        g.left = l;
-        g.top = t;
-        g.right = r;
-        g.bottom = b;
+        let rect = Rect {
+            left: g.left,
+            top: g.top,
+            right: g.right,
+            bottom: g.bottom,
+        }
+        .rotate_td(w, h, rot);
+        g.left = rect.left;
+        g.top = rect.top;
+        g.right = rect.right;
+        g.bottom = rect.bottom;
     }
     for e in edges.iter_mut() {
-        let (l, t, r, b) = rotate_box_td(e.left, e.top, e.right, e.bottom, w, h, rot);
-        e.left = l;
-        e.top = t;
-        e.right = r;
-        e.bottom = b;
+        let rect = Rect {
+            left: e.left,
+            top: e.top,
+            right: e.right,
+            bottom: e.bottom,
+        }
+        .rotate_td(w, h, rot);
+        e.left = rect.left;
+        e.top = rect.top;
+        e.right = rect.right;
+        e.bottom = rect.bottom;
         if rot != 2 {
             e.orientation = match e.orientation {
                 Orientation::Horizontal => Orientation::Vertical,
@@ -284,11 +359,17 @@ fn rotate_parts(
         }
     }
     for g in graphics.iter_mut() {
-        let (l, t, r, b) = rotate_box_td(g.left, g.top, g.right, g.bottom, w, h, rot);
-        g.left = l;
-        g.top = t;
-        g.right = r;
-        g.bottom = b;
+        let rect = Rect {
+            left: g.left,
+            top: g.top,
+            right: g.right,
+            bottom: g.bottom,
+        }
+        .rotate_td(w, h, rot);
+        g.left = rect.left;
+        g.top = rect.top;
+        g.right = rect.right;
+        g.bottom = rect.bottom;
     }
 }
 
@@ -298,7 +379,7 @@ const NORM_ROT_MIN_RATIO: f64 = 0.9;
 /// 非空白グリフの9割以上が同一の非ゼロ回転を持つときその回転を返す
 ///
 /// 返り値は量子化回転(1/2/3 = 90/180/270度)で 支配回転が無ければ0
-fn dominant_rotation(tagged: &[(GlyphPart, u8)]) -> u8 {
+fn dominant_rotation(tagged: &[(GlyphPart, RotQ)]) -> u8 {
     let mut counts = [0usize; 4];
     let mut total = 0usize;
     for (g, r) in tagged {
@@ -306,8 +387,8 @@ fn dominant_rotation(tagged: &[(GlyphPart, u8)]) -> u8 {
             continue;
         }
         total += 1;
-        if (*r as usize) < 4 {
-            counts[*r as usize] += 1;
+        if let Some(q) = r.quarter() {
+            counts[q as usize] += 1;
         }
     }
     if total == 0 {
@@ -318,28 +399,54 @@ fn dominant_rotation(tagged: &[(GlyphPart, u8)]) -> u8 {
         .unwrap_or(0) as u8
 }
 
-/// 進行方向を0/90/180/270度へ量子化する(PDF空間 反時計回り 255=軸外)
-fn quantize_rot(ux: f64, uy: f64) -> u8 {
+/// 進行方向を0/90/180/270度へ量子化する（PDF空間 反時計回り）
+fn quantize_rot(ux: f64, uy: f64) -> RotQ {
     if uy.abs() <= 0.05 && ux > 0.05 {
-        0
+        RotQ::R0
     } else if ux.abs() <= 0.05 && uy > 0.05 {
-        1
+        RotQ::R90
     } else if uy.abs() <= 0.05 && ux < -0.05 {
-        2
+        RotQ::R180
     } else if ux.abs() <= 0.05 && uy < -0.05 {
-        3
+        RotQ::R270
     } else {
-        255
+        RotQ::OffAxis
     }
 }
 
-/// top-down座標の矩形を正規化回転で移す
-fn rotate_box_td(l: f64, t: f64, r: f64, b: f64, w: f64, h: f64, rot: u8) -> (f64, f64, f64, f64) {
-    match rot {
-        1 => (h - b, l, h - t, r),
-        2 => (w - r, h - b, w - l, h - t),
-        3 => (t, w - r, b, w - l),
-        _ => (l, t, r, b),
+/// top-down の軸平行矩形
+#[derive(Clone, Copy)]
+struct Rect {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+}
+
+impl Rect {
+    /// top-down座標の矩形を正規化回転で移す
+    fn rotate_td(self, w: f64, h: f64, rot: u8) -> Rect {
+        match rot {
+            1 => Rect {
+                left: h - self.bottom,
+                top: self.left,
+                right: h - self.top,
+                bottom: self.right,
+            },
+            2 => Rect {
+                left: w - self.right,
+                top: h - self.bottom,
+                right: w - self.left,
+                bottom: h - self.top,
+            },
+            3 => Rect {
+                left: self.top,
+                top: w - self.right,
+                right: self.bottom,
+                bottom: w - self.left,
+            },
+            _ => self,
+        }
     }
 }
 
@@ -429,8 +536,7 @@ fn synth_word_spaces_text(chars: &mut Vec<PendingTextChar>) {
     let med_h = hs[hs.len() / 2];
     let line_tol = (med_h * 0.6).max(0.5);
 
-    let indices: Vec<usize> = (0..chars.len()).collect();
-    let mut by_bottom = indices.clone();
+    let mut by_bottom: Vec<usize> = (0..chars.len()).collect();
     by_bottom.sort_by(|&a, &b| chars[a].bottom.total_cmp(&chars[b].bottom));
 
     let mut lines: Vec<Vec<usize>> = Vec::new();
@@ -531,8 +637,8 @@ fn synth_word_spaces_text(chars: &mut Vec<PendingTextChar>) {
     let mut merged = Vec::with_capacity(old.len() + inserts.len());
     let mut it = inserts.into_iter().peekable();
     for (i, c) in old.into_iter().enumerate() {
-        while it.peek().is_some_and(|(pos, _)| *pos == i) {
-            merged.push(it.next().unwrap().1);
+        while let Some((_, sp)) = it.next_if(|(pos, _)| *pos == i) {
+            merged.push(sp);
         }
         merged.push(c);
     }
@@ -554,7 +660,7 @@ pub(crate) fn extract_edges(
     view: [f64; 4],
     ctx: ContentCtx<'_>,
 ) -> Vec<EdgePart> {
-    extract_parts(contents, resources, view, ctx, 0).1
+    extract_parts(contents, resources, view, ctx, 0).edges
 }
 
 /// 単位行列
@@ -840,16 +946,16 @@ fn finalize_path(
 }
 
 /// オブジェクトを解決する
-fn resolve_obj(obj: &Object, ctx: &ContentCtx<'_>) -> Object {
+/// 間接参照を解決してキャッシュ共有のまま返す（読み取り用）
+fn resolve_obj(obj: &Object, ctx: &ContentCtx<'_>) -> Arc<Object> {
     match obj {
-        Object::Ref(r) => {
-            if let Some(xref) = ctx.xref {
-                xref.fetch(*r, ctx.data).unwrap_or(Object::Null)
-            } else {
-                Object::Null
-            }
-        }
-        other => other.clone(),
+        Object::Ref(r) => match ctx.xref {
+            Some(xref) => xref
+                .fetch_shared(*r, ctx.data)
+                .unwrap_or_else(|_| Arc::new(Object::Null)),
+            None => Arc::new(Object::Null),
+        },
+        other => Arc::new(other.clone()),
     }
 }
 
@@ -859,8 +965,9 @@ struct FetchResolver<'a> {
 }
 
 impl Resolver for FetchResolver<'_> {
-    fn resolve(&self, r: Ref) -> Option<Object> {
-        self.xref.and_then(|x| x.fetch(r, self.data).ok())
+    fn resolve(&self, r: Ref) -> crate::error::Result<Option<Object>> {
+        // コンテンツ解釈は寛容に扱い、失敗は未解決として続行する
+        Ok(self.xref.and_then(|x| x.fetch(r, self.data).ok()))
     }
 }
 
@@ -909,11 +1016,11 @@ fn parse_array(lexer: &mut Lexer<'_>) -> Object {
             Token::Real(r) => arr.push(Object::Real(r)),
             Token::Str(s) => arr.push(Object::Str(s)),
             Token::Name(n) => arr.push(Object::Name(n)),
-            Token::Cmd(s) => match s.as_ref() {
-                "true" => arr.push(Object::Bool(true)),
-                "false" => arr.push(Object::Bool(false)),
-                "null" => arr.push(Object::Null),
-                "R" => {
+            Token::Cmd(s) => match s {
+                Cmd::Op(Op::True) => arr.push(Object::Bool(true)),
+                Cmd::Op(Op::False) => arr.push(Object::Bool(false)),
+                Cmd::Op(Op::Null) => arr.push(Object::Null),
+                Cmd::Op(Op::R) => {
                     // n g R
                     if arr.len() >= 2 {
                         let g = arr.pop();
@@ -951,10 +1058,10 @@ fn parse_dict(lexer: &mut Lexer<'_>) -> Object {
                     Token::Real(r) => Object::Real(r),
                     Token::Str(s) => Object::Str(s),
                     Token::Name(n) => Object::Name(n),
-                    Token::Cmd(s) => match s.as_ref() {
-                        "true" => Object::Bool(true),
-                        "false" => Object::Bool(false),
-                        "null" => Object::Null,
+                    Token::Cmd(s) => match s {
+                        Cmd::Op(Op::True) => Object::Bool(true),
+                        Cmd::Op(Op::False) => Object::Bool(false),
+                        Cmd::Op(Op::Null) => Object::Null,
                         _ => Object::Null,
                     },
                     Token::Eof | Token::DictEnd | Token::ArrayEnd => break,
@@ -978,7 +1085,7 @@ fn parse_dict(lexer: &mut Lexer<'_>) -> Object {
 fn skip_inline_image_in(data: &[u8], lexer: &mut Lexer<'_>) {
     loop {
         match lexer.next_token() {
-            Token::Cmd(s) if s == "ID" => break,
+            Token::Cmd(Cmd::Op(Op::ID)) => break,
             Token::Eof => return,
             _ => {}
         }
@@ -1022,689 +1129,665 @@ fn is_pdf_ws(b: u8) -> bool {
     matches!(b, 0x00 | 0x09 | 0x0a | 0x0c | 0x0d | 0x20)
 }
 
-/// ストリーム本文を解釈して glyphs / edges に追記する
-fn interpret(
-    contents: &[u8],
-    resources: &Dict,
-    view: [f64; 4],
-    ctx: &ContentCtx<'_>,
-    glyphs: &mut Vec<(GlyphPart, u8)>,
-    edges: &mut Vec<EdgePart>,
-    graphics: &mut Vec<GraphicPart>,
-    visiting: &mut HashSet<(u32, u16)>,
-    ctm0: [f64; 6],
-    mut text_sink: Option<&mut TextSink>,
-) {
-    let mut lexer = Lexer::new(contents);
-    let mut stack: Vec<Object> = Vec::new();
-    let mut ctm = ctm0;
-    let mut gstack: Vec<([f64; 6], TextState)> = Vec::new();
-    let mut path = PathBuilder::new();
-    let mut text = TextState::new();
-    // この resources スコープ内の Tf 名前 → フォント
-    let mut font_memo: HashMap<String, Arc<LoadedFont>> = HashMap::new();
+/// 単位行列
+const IDENTITY_MAT: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
-    loop {
-        let token = lexer.next_token();
-        match token {
-            Token::Eof => break,
-            Token::Int(n) => stack.push(Object::Int(n)),
-            Token::Real(r) => stack.push(Object::Real(r)),
-            Token::Str(s) => stack.push(Object::Str(s)),
-            Token::Name(n) => stack.push(Object::Name(n)),
-            Token::ArrayStart => stack.push(parse_array(&mut lexer)),
-            Token::DictStart => stack.push(parse_dict(&mut lexer)),
-            Token::ArrayEnd | Token::DictEnd | Token::BraceStart | Token::BraceEnd => {
-                // 単独の区切りは無視
-            }
-            Token::Cmd(op) => {
-                match op.as_ref() {
-                    "true" => stack.push(Object::Bool(true)),
-                    "false" => stack.push(Object::Bool(false)),
-                    "null" => stack.push(Object::Null),
-                    "R" => {
-                        if let Some(nums) = take_nums::<2>(&mut stack) {
-                            let num = nums[0] as i64;
-                            let generation = nums[1] as i64;
-                            if (0..=i64::from(u32::MAX)).contains(&num)
-                                && (0..=i64::from(u16::MAX)).contains(&generation)
-                            {
-                                stack.push(Object::Ref(Ref::new(num as u32, generation as u16)));
-                            }
-                        }
-                    }
-                    "BI" => {
-                        stack.clear();
-                        skip_inline_image_in(contents, &mut lexer);
-                    }
-                    other => {
-                        dispatch_op(
-                            other,
-                            &mut stack,
-                            &mut ctm,
-                            &mut gstack,
-                            &mut path,
-                            &mut text,
-                            resources,
-                            view,
-                            ctx,
-                            glyphs,
-                            edges,
-                            graphics,
-                            visiting,
-                            &mut font_memo,
-                            text_sink.as_deref_mut(),
-                        );
-                        stack.clear();
-                    }
-                }
-            }
-        }
-    }
+/// コンテンツストリーム評価器。ページ内で共有する出力先と文脈を束ねる
+struct Evaluator<'a, 'b> {
+    ctx: &'a ContentCtx<'b>,
+    view: [f64; 4],
+    glyphs: &'a mut Vec<(GlyphPart, RotQ)>,
+    edges: &'a mut Vec<EdgePart>,
+    graphics: &'a mut Vec<GraphicPart>,
+    visiting: &'a mut HashSet<Ref>,
+    text_sink: Option<&'a mut TextSink>,
 }
 
-fn dispatch_op(
-    op: &str,
-    stack: &mut Vec<Object>,
-    ctm: &mut [f64; 6],
-    gstack: &mut Vec<([f64; 6], TextState)>,
-    path: &mut PathBuilder,
-    text: &mut TextState,
-    resources: &Dict,
-    view: [f64; 4],
-    ctx: &ContentCtx<'_>,
-    glyphs: &mut Vec<(GlyphPart, u8)>,
-    edges: &mut Vec<EdgePart>,
-    graphics: &mut Vec<GraphicPart>,
-    visiting: &mut HashSet<(u32, u16)>,
-    font_memo: &mut HashMap<String, Arc<LoadedFont>>,
-    text_sink: Option<&mut TextSink>,
-) {
-    match op {
-        // グラフィックス状態（テキスト状態も保存・復元する。アンダーフローは無視）
-        "q" => gstack.push((*ctm, text.clone())),
-        "Q" => {
-            if let Some((m, t)) = gstack.pop() {
-                *ctm = m;
-                *text = t;
-            }
-        }
-        "cm" => {
-            if let Some(n) = take_nums::<6>(stack) {
-                let m = [n[0], n[1], n[2], n[3], n[4], n[5]];
-                *ctm = mat_mul(*ctm, m);
-            }
-        }
-
-        // パス構築（text_sink 経路では edges/graphics を捨てるため構築しない）
-        "m" => {
-            if text_sink.is_none() {
-                if let Some(n) = take_nums::<2>(stack) {
-                    path.move_to(n[0], n[1]);
-                }
-            }
-        }
-        "l" => {
-            if text_sink.is_none() {
-                if let Some(n) = take_nums::<2>(stack) {
-                    path.line_to(n[0], n[1]);
-                }
-            }
-        }
-        "c" => {
-            if text_sink.is_none() {
-                if let Some(n) = take_nums::<6>(stack) {
-                    path.curve_to(n[4], n[5]);
-                }
-            }
-        }
-        "v" => {
-            if text_sink.is_none() {
-                if let Some(n) = take_nums::<4>(stack) {
-                    path.curve_to(n[2], n[3]);
-                }
-            }
-        }
-        "y" => {
-            if text_sink.is_none() {
-                if let Some(n) = take_nums::<4>(stack) {
-                    path.curve_to(n[2], n[3]);
-                }
-            }
-        }
-        "h" => {
-            if text_sink.is_none() {
-                path.close();
-            }
-        }
-        "re" => {
-            if text_sink.is_none() {
-                if let Some(n) = take_nums::<4>(stack) {
-                    path.rect(n[0], n[1], n[2], n[3]);
-                }
-            }
-        }
-
-        // ペイント（close 系は確定前に閉じを追加。text_sink 経路は捨てる）
-        "S" => {
-            if text_sink.is_none() {
-                finalize_path(path, false, *ctm, view, edges, graphics);
-            } else {
-                path.clear();
-            }
-        }
-        "s" => {
-            if text_sink.is_none() {
-                path.close();
-                finalize_path(path, false, *ctm, view, edges, graphics);
-            } else {
-                path.clear();
-            }
-        }
-        "f" | "F" | "f*" => {
-            if text_sink.is_none() {
-                finalize_path(path, true, *ctm, view, edges, graphics);
-            } else {
-                path.clear();
-            }
-        }
-        "B" | "B*" => {
-            if text_sink.is_none() {
-                finalize_path(path, true, *ctm, view, edges, graphics);
-            } else {
-                path.clear();
-            }
-        }
-        "b" | "b*" => {
-            if text_sink.is_none() {
-                path.close();
-                finalize_path(path, true, *ctm, view, edges, graphics);
-            } else {
-                path.clear();
-            }
-        }
-        "n" => path.clear(),
-
-        // クリップ・線属性は無視
-        "W" | "W*" | "w" | "d" | "J" | "j" | "M" => {}
-
-        // Form XObject
-        "Do" => {
-            if let Some(name) = take_name(stack) {
-                do_form_xobject(
-                    &name,
-                    *ctm,
-                    resources,
-                    view,
-                    ctx,
-                    glyphs,
-                    edges,
-                    graphics,
-                    visiting,
-                    text_sink,
-                );
-            }
-        }
-
-        // テキスト状態
-        "BT" => {
-            text.text_matrix = identity();
-            text.text_line_matrix = identity();
-        }
-        "ET" => {}
-        "Tf" => {
-            // /Name size Tf → stack [Name, size]
-            if let Some(sz) = take_nums::<1>(stack) {
-                if let Some(name) = take_name(stack) {
-                    text.font_size = sz[0];
-                    let font = match font_memo.get(&name) {
-                        Some(f) => Arc::clone(f),
-                        None => {
-                            let f = lookup_font(resources, &name, ctx.data, ctx.xref);
-                            font_memo.insert(name.clone(), Arc::clone(&f));
-                            f
-                        }
-                    };
-                    text.font = Some(font);
-                    text.font_name = name;
-                }
-            }
-        }
-        "Tc" => {
-            if let Some(n) = take_nums::<1>(stack) {
-                text.char_spacing = n[0];
-            }
-        }
-        "Tw" => {
-            if let Some(n) = take_nums::<1>(stack) {
-                text.word_spacing = n[0];
-            }
-        }
-        "Tz" => {
-            if let Some(n) = take_nums::<1>(stack) {
-                text.text_h_scale = n[0] / 100.0;
-            }
-        }
-        "TL" => {
-            if let Some(n) = take_nums::<1>(stack) {
-                text.leading = n[0];
-            }
-        }
-        "Ts" => {
-            if let Some(n) = take_nums::<1>(stack) {
-                text.text_rise = n[0];
-            }
-        }
-        "Tr" => {
-            // レンダリングモードは無視（不可視も出力）
-            let _ = take_nums::<1>(stack);
-        }
-        "Td" => {
-            if let Some(n) = take_nums::<2>(stack) {
-                text.move_text(n[0], n[1]);
-            }
-        }
-        "TD" => {
-            if let Some(n) = take_nums::<2>(stack) {
-                text.leading = -n[1];
-                text.move_text(n[0], n[1]);
-            }
-        }
-        "Tm" => {
-            if let Some(n) = take_nums::<6>(stack) {
-                let m = [n[0], n[1], n[2], n[3], n[4], n[5]];
-                text.text_matrix = m;
-                text.text_line_matrix = m;
-            }
-        }
-        "T*" => text.next_line(),
-        "Tj" => {
-            if let Some(Object::Str(s)) = stack.pop() {
-                show_text_bytes(text, &s, 0.0, *ctm, view, glyphs, text_sink);
-            }
-        }
-        "TJ" => {
-            if let Some(Object::Array(arr)) = stack.pop() {
-                show_text_array(text, &arr, *ctm, view, glyphs, text_sink);
-            }
-        }
-        "'" => {
-            // 改行してから Tj
-            if let Some(Object::Str(s)) = stack.pop() {
-                text.next_line();
-                show_text_bytes(text, &s, 0.0, *ctm, view, glyphs, text_sink);
-            }
-        }
-        "\"" => {
-            // aw ac string " → Tw Tc T* Tj
-            if let Some(Object::Str(s)) = stack.pop() {
-                if let Some(n) = take_nums::<2>(stack) {
-                    text.word_spacing = n[0];
-                    text.char_spacing = n[1];
-                    text.next_line();
-                    show_text_bytes(text, &s, 0.0, *ctm, view, glyphs, text_sink);
-                }
-            }
-        }
-
-        // その他は無視
-        _ => {}
-    }
-}
-
-/// TJ 配列の表示
-fn show_text_array(
-    text: &mut TextState,
-    arr: &[Object],
+/// interpret 1回分（1ストリーム分）の可変状態
+struct Frame<'r> {
+    stack: Vec<Object>,
     ctm: [f64; 6],
-    view: [f64; 4],
-    glyphs: &mut Vec<(GlyphPart, u8)>,
-    text_sink: Option<&mut TextSink>,
-) {
-    let mut text_sink = text_sink;
-    let mut buf: Vec<u8> = Vec::new();
-    for item in arr {
-        match item {
-            Object::Str(s) => buf.extend_from_slice(s),
-            Object::Int(n) => {
-                let n = *n as f64;
-                if n != 0.0 {
-                    let extra = -n / 1000.0 * text.font_size;
-                    show_text_bytes(text, &buf, extra, ctm, view, glyphs, text_sink.as_deref_mut());
-                    buf.clear();
+    gstack: Vec<([f64; 6], TextState)>,
+    path: PathBuilder,
+    text: TextState,
+    /// この resources スコープ内の Tf 名前 → フォント
+    font_memo: HashMap<String, Arc<LoadedFont>>,
+    resources: &'r Dict,
+}
+
+impl Evaluator<'_, '_> {
+    /// ストリーム本文を解釈して glyphs / edges に追記する
+    fn interpret(&mut self, contents: &[u8], resources: &Dict, ctm0: [f64; 6]) {
+        let mut lexer = Lexer::new(contents);
+        let mut frame = Frame {
+            stack: Vec::new(),
+            ctm: ctm0,
+            gstack: Vec::new(),
+            path: PathBuilder::new(),
+            text: TextState::new(),
+            font_memo: HashMap::new(),
+            resources,
+        };
+
+        loop {
+            let token = lexer.next_token();
+            let stack = &mut frame.stack;
+            match token {
+                Token::Eof => break,
+                Token::Int(n) => stack.push(Object::Int(n)),
+                Token::Real(r) => stack.push(Object::Real(r)),
+                Token::Str(s) => stack.push(Object::Str(s)),
+                Token::Name(n) => stack.push(Object::Name(n)),
+                Token::ArrayStart => stack.push(parse_array(&mut lexer)),
+                Token::DictStart => stack.push(parse_dict(&mut lexer)),
+                Token::ArrayEnd | Token::DictEnd | Token::BraceStart | Token::BraceEnd => {
+                    // 単独の区切りは無視
+                }
+                Token::Cmd(Cmd::Op(Op::True)) => stack.push(Object::Bool(true)),
+                Token::Cmd(Cmd::Op(Op::False)) => stack.push(Object::Bool(false)),
+                Token::Cmd(Cmd::Op(Op::Null)) => stack.push(Object::Null),
+                Token::Cmd(Cmd::Op(Op::R)) => {
+                    // n g R。i64 のまま扱い f64 経由の精度損失を避ける（配列パーサと同じ規則）
+                    if stack.len() >= 2 {
+                        let generation = stack.pop();
+                        let num = stack.pop();
+                        if let (Some(Object::Int(num)), Some(Object::Int(generation))) =
+                            (num, generation)
+                            && (0..=i64::from(u32::MAX)).contains(&num)
+                            && (0..=i64::from(u16::MAX)).contains(&generation)
+                        {
+                            stack.push(Object::Ref(Ref::new(num as u32, generation as u16)));
+                        }
+                        // 復元できない場合は捨てる
+                    }
+                }
+                Token::Cmd(Cmd::Op(Op::BI)) => {
+                    stack.clear();
+                    skip_inline_image_in(contents, &mut lexer);
+                }
+                Token::Cmd(Cmd::Op(op)) => {
+                    self.dispatch_op(op, &mut frame);
+                    frame.stack.clear();
+                }
+                Token::Cmd(Cmd::Other(_)) => {
+                    frame.stack.clear();
                 }
             }
-            Object::Real(n) => {
-                if *n != 0.0 {
-                    let extra = -n / 1000.0 * text.font_size;
-                    show_text_bytes(text, &buf, extra, ctm, view, glyphs, text_sink.as_deref_mut());
-                    buf.clear();
+        }
+    }
+
+    fn dispatch_op(&mut self, op: Op, frame: &mut Frame<'_>) {
+        let Frame {
+            stack,
+            ctm,
+            gstack,
+            path,
+            text,
+            font_memo,
+            resources,
+        } = frame;
+        match op {
+            // グラフィックス状態（テキスト状態も保存・復元する。アンダーフローは無視）
+            Op::LowerQ => gstack.push((*ctm, text.clone())),
+            Op::Q => {
+                if let Some((m, t)) = gstack.pop() {
+                    *ctm = m;
+                    *text = t;
                 }
             }
+            Op::Cm => {
+                if let Some(n) = take_nums::<6>(stack) {
+                    let m = [n[0], n[1], n[2], n[3], n[4], n[5]];
+                    *ctm = mat_mul(*ctm, m);
+                }
+            }
+
+            // パス構築（text_sink 経路では edges/graphics を捨てるため構築しない）
+            Op::LowerM => {
+                if self.text_sink.is_none() {
+                    if let Some(n) = take_nums::<2>(stack) {
+                        path.move_to(n[0], n[1]);
+                    }
+                }
+            }
+            Op::LowerL => {
+                if self.text_sink.is_none() {
+                    if let Some(n) = take_nums::<2>(stack) {
+                        path.line_to(n[0], n[1]);
+                    }
+                }
+            }
+            Op::LowerC => {
+                if self.text_sink.is_none() {
+                    if let Some(n) = take_nums::<6>(stack) {
+                        path.curve_to(n[4], n[5]);
+                    }
+                }
+            }
+            Op::LowerV => {
+                if self.text_sink.is_none() {
+                    if let Some(n) = take_nums::<4>(stack) {
+                        path.curve_to(n[2], n[3]);
+                    }
+                }
+            }
+            Op::LowerY => {
+                if self.text_sink.is_none() {
+                    if let Some(n) = take_nums::<4>(stack) {
+                        path.curve_to(n[2], n[3]);
+                    }
+                }
+            }
+            Op::LowerH => {
+                if self.text_sink.is_none() {
+                    path.close();
+                }
+            }
+            Op::Re => {
+                if self.text_sink.is_none() {
+                    if let Some(n) = take_nums::<4>(stack) {
+                        path.rect(n[0], n[1], n[2], n[3]);
+                    }
+                }
+            }
+
+            // ペイント（close 系は確定前に閉じを追加。text_sink 経路は捨てる）
+            Op::S => {
+                if self.text_sink.is_none() {
+                    finalize_path(path, false, *ctm, self.view, self.edges, self.graphics);
+                } else {
+                    path.clear();
+                }
+            }
+            Op::LowerS => {
+                if self.text_sink.is_none() {
+                    path.close();
+                    finalize_path(path, false, *ctm, self.view, self.edges, self.graphics);
+                } else {
+                    path.clear();
+                }
+            }
+            Op::LowerF | Op::F | Op::LowerFStar => {
+                if self.text_sink.is_none() {
+                    finalize_path(path, true, *ctm, self.view, self.edges, self.graphics);
+                } else {
+                    path.clear();
+                }
+            }
+            Op::B | Op::BStar => {
+                if self.text_sink.is_none() {
+                    finalize_path(path, true, *ctm, self.view, self.edges, self.graphics);
+                } else {
+                    path.clear();
+                }
+            }
+            Op::LowerB | Op::LowerBStar => {
+                if self.text_sink.is_none() {
+                    path.close();
+                    finalize_path(path, true, *ctm, self.view, self.edges, self.graphics);
+                } else {
+                    path.clear();
+                }
+            }
+            Op::LowerN => path.clear(),
+
+            // クリップ・線属性は無視
+            Op::W | Op::WStar | Op::LowerW | Op::LowerD | Op::J | Op::LowerJ | Op::M => {}
+
+            // Form XObject
+            Op::Do => {
+                if let Some(name) = take_name(stack) {
+                    self.do_form_xobject(&name, *ctm, resources);
+                }
+            }
+
+            // テキスト状態
+            Op::BT => {
+                text.text_matrix = identity();
+                text.text_line_matrix = identity();
+            }
+            Op::ET => {}
+            Op::Tf => {
+                // /Name size Tf → stack [Name, size]
+                if let Some(sz) = take_nums::<1>(stack) {
+                    if let Some(name) = take_name(stack) {
+                        text.font_size = sz[0];
+                        let font = match font_memo.get(&name) {
+                            Some(f) => Arc::clone(f),
+                            None => {
+                                let f = lookup_font(resources, &name, self.ctx.data, self.ctx.xref);
+                                font_memo.insert(name.clone(), Arc::clone(&f));
+                                f
+                            }
+                        };
+                        text.font = Some(font);
+                        text.font_name = name;
+                    }
+                }
+            }
+            Op::Tc => {
+                if let Some(n) = take_nums::<1>(stack) {
+                    text.char_spacing = n[0];
+                }
+            }
+            Op::Tw => {
+                if let Some(n) = take_nums::<1>(stack) {
+                    text.word_spacing = n[0];
+                }
+            }
+            Op::Tz => {
+                if let Some(n) = take_nums::<1>(stack) {
+                    text.text_h_scale = n[0] / 100.0;
+                }
+            }
+            Op::TL => {
+                if let Some(n) = take_nums::<1>(stack) {
+                    text.leading = n[0];
+                }
+            }
+            Op::Ts => {
+                if let Some(n) = take_nums::<1>(stack) {
+                    text.text_rise = n[0];
+                }
+            }
+            Op::Tr => {
+                // レンダリングモードは無視（不可視も出力）
+                let _ = take_nums::<1>(stack);
+            }
+            Op::Td => {
+                if let Some(n) = take_nums::<2>(stack) {
+                    text.move_text(n[0], n[1]);
+                }
+            }
+            Op::TD => {
+                if let Some(n) = take_nums::<2>(stack) {
+                    text.leading = -n[1];
+                    text.move_text(n[0], n[1]);
+                }
+            }
+            Op::Tm => {
+                if let Some(n) = take_nums::<6>(stack) {
+                    let m = [n[0], n[1], n[2], n[3], n[4], n[5]];
+                    text.text_matrix = m;
+                    text.text_line_matrix = m;
+                }
+            }
+            Op::TStar => text.next_line(),
+            Op::Tj => {
+                if let Some(Object::Str(s)) = stack.pop() {
+                    self.show_text_bytes(text, &s, 0.0, *ctm);
+                }
+            }
+            Op::TJ => {
+                if let Some(Object::Array(arr)) = stack.pop() {
+                    self.show_text_array(text, &arr, *ctm);
+                }
+            }
+            Op::Quote => {
+                // 改行してから Tj
+                if let Some(Object::Str(s)) = stack.pop() {
+                    text.next_line();
+                    self.show_text_bytes(text, &s, 0.0, *ctm);
+                }
+            }
+            Op::DblQuote => {
+                // aw ac string " → Tw Tc T* Tj
+                if let Some(Object::Str(s)) = stack.pop() {
+                    if let Some(n) = take_nums::<2>(stack) {
+                        text.word_spacing = n[0];
+                        text.char_spacing = n[1];
+                        text.next_line();
+                        self.show_text_bytes(text, &s, 0.0, *ctm);
+                    }
+                }
+            }
+
+            // その他は無視
             _ => {}
         }
     }
-    if !buf.is_empty() {
-        show_text_bytes(text, &buf, 0.0, ctm, view, glyphs, text_sink);
-    }
-}
 
-/// バイト列をグリフに展開して出力し textMatrix を進める
-///
-/// `extra_spacing` は最終グリフの字送りに加算（テキスト空間、hScale 前）
-/// 横書きでは pdf.js の extraSpacing（`-n/1000×fs`）と同符号
-fn show_text_bytes(
-    text: &mut TextState,
-    bytes: &[u8],
-    extra_spacing: f64,
-    ctm: [f64; 6],
-    view: [f64; 4],
-    glyphs: &mut Vec<(GlyphPart, u8)>,
-    text_sink: Option<&mut TextSink>,
-) {
-    let mut text_sink = text_sink;
-    let Some(font) = text.font.clone() else {
-        // フォント未設定時は extra だけの平行移動（TJ 数値のみ）
-        if extra_spacing != 0.0 {
-            let dx = extra_spacing * text.text_h_scale;
-            text.text_matrix = translate_mat(text.text_matrix, dx, 0.0);
-        }
-        return;
-    };
-
-    if font.vertical() {
-        show_text_bytes_vertical(
-            text,
-            &font,
-            bytes,
-            extra_spacing,
-            ctm,
-            view,
-            glyphs,
-            text_sink,
-        );
-        return;
-    }
-
-    if bytes.is_empty() {
-        if extra_spacing != 0.0 {
-            let dx = (text.char_spacing + extra_spacing) * text.text_h_scale;
-            text.text_matrix = translate_mat(text.text_matrix, dx, 0.0);
-        }
-        return;
-    }
-
-    let count = font.glyph_count(bytes);
-    let (view_left, view_top) = (view[0], view[3]);
-    let ascent = font.ascent();
-    let descent = font.descent();
-    let font_idx = text_sink
-        .as_mut()
-        .map(|s| s.font_index(&font, &text.font_name));
-    let collect_glyphs = text_sink.is_none();
-
-    // 列内で不変: TRM 線形成分と派生量（平行移動のみ変わる）
-    // text_rendering_matrix と同じ式・同じ演算順で一度だけ算出する
-    let trm_lin = text.text_rendering_matrix(ctm);
-    let font_size_dev = (trm_lin[2] * trm_lin[2] + trm_lin[3] * trm_lin[3]).sqrt();
-    let dlen = (trm_lin[0] * trm_lin[0] + trm_lin[1] * trm_lin[1]).sqrt();
-    let (ux, uy) = if dlen > 0.0 {
-        (trm_lin[0] / dlen, trm_lin[1] / dlen)
-    } else {
-        (1.0, 0.0)
-    };
-    let upright = uy.abs() <= 0.05 && ux > 0.05;
-    let rot = quantize_rot(ux, uy);
-    let a_off = ascent * font_size_dev;
-    let d_off = descent * font_size_dev;
-    // end_trm 用 tsm（text_rendering_matrix 内と同じ要素順）
-    let tsm = [
-        text.font_size * text.text_h_scale,
-        0.0,
-        0.0,
-        text.font_size,
-        0.0,
-        text.text_rise,
-    ];
-
-    let mut i = 0;
-    font.for_each_glyph(bytes, |unicode, width, is_space, _, _| {
-        let extra = if i + 1 == count { extra_spacing } else { 0.0 };
-        i += 1;
-
-        // 平行移動成分はグリフごとに再計算（線形成分は trm_lin を使う）
-        let trm = text.text_rendering_matrix(ctm);
-        let (ox, oy) = (trm[4], trm[5]);
-
-        // scaledDim = 幅/1000 × fontSize × hScale
-        let scaled_dim = width / 1000.0 * text.font_size * text.text_h_scale;
-        let mut spacing = text.char_spacing;
-        if is_space {
-            spacing += text.word_spacing;
-        }
-        // bbox 用（Tc/Tw は含む、TJ 数値 extra は位置のみ）
-        let bbox_advance = scaled_dim + spacing * text.text_h_scale;
-        // textMatrix の前進（TJ extra を加算）
-        let advance = bbox_advance + extra * text.text_h_scale;
-
-        // デバイス空間での実効字送り幅（bbox 用。進行方向への符号付き長）
-        let end_tm = translate_mat(text.text_matrix, bbox_advance, 0.0);
-        let end_trm = mat_mul(ctm, mat_mul(end_tm, tsm));
-        let (ex, ey) = (end_trm[4], end_trm[5]);
-        let device_w = (ex - ox) * ux + (ey - oy) * uy;
-
-        // 表経路: コードポイントごとに分割し幅を等分
-        if collect_glyphs {
-            let nch = unicode.chars().count().max(1);
-            let per_w = device_w / nch as f64;
-            for (k, ch) in unicode.chars().enumerate() {
-                if ch == '\n' || ch == '\r' || ch == '\t' {
-                    continue;
+    /// TJ 配列の表示
+    fn show_text_array(&mut self, text: &mut TextState, arr: &[Object], ctm: [f64; 6]) {
+        let mut buf: Vec<u8> = Vec::new();
+        for item in arr {
+            match item {
+                Object::Str(s) => buf.extend_from_slice(s),
+                Object::Int(n) => {
+                    let n = *n as f64;
+                    if n != 0.0 {
+                        let extra = -n / 1000.0 * text.font_size;
+                        self.show_text_bytes(text, &buf, extra, ctm);
+                        buf.clear();
+                    }
                 }
-                let (x0, x1, y0, y1) =
-                    glyph_box(ox, oy, ux, uy, per_w * k as f64, per_w * (k as f64 + 1.0), a_off, d_off);
-                glyphs.push((
-                    GlyphPart {
-                        ch,
-                        left: x0 - view_left,
-                        right: x1 - view_left,
-                        top: view_top - y1,
-                        bottom: view_top - y0,
-                        font_size: Some(font_size_dev),
-                        upright,
-                        rot: 0,
-                    },
-                    rot,
-                ));
+                Object::Real(n) => {
+                    if *n != 0.0 {
+                        let extra = -n / 1000.0 * text.font_size;
+                        self.show_text_bytes(text, &buf, extra, ctm);
+                        buf.clear();
+                    }
+                }
+                _ => {}
             }
         }
-
-        if let (Some(sink), Some(fi)) = (text_sink.as_mut(), font_idx) {
-            let text_str: String = unicode
-                .chars()
-                .filter(|&ch| ch != '\n' && ch != '\r' && ch != '\t')
-                .collect();
-            if !text_str.is_empty() {
-                let (x0, x1, y0, y1) =
-                    glyph_box(ox, oy, ux, uy, 0.0, device_w, a_off, d_off);
-                // 前進ベクトル（TJ 含む、表示座標）
-                let end_tm_full = translate_mat(text.text_matrix, advance, 0.0);
-                let end_trm_full = mat_mul(ctm, mat_mul(end_tm_full, tsm));
-                let (fx, fy) = (end_trm_full[4], end_trm_full[5]);
-                sink.chars.push(PendingTextChar {
-                    text: text_str,
-                    left: x0 - view_left,
-                    right: x1 - view_left,
-                    top: view_top - y1,
-                    bottom: view_top - y0,
-                    transform: [
-                        trm_lin[0],
-                        -trm_lin[1],
-                        trm_lin[2],
-                        -trm_lin[3],
-                        trm[4] - view_left,
-                        view_top - trm[5],
-                    ],
-                    advance: [fx - ox, -(fy - oy)],
-                    font: fi,
-                    font_size: font_size_dev,
-                    rot_q: rot,
-                    upright,
-                    synthetic: false,
-                });
-            }
+        if !buf.is_empty() {
+            self.show_text_bytes(text, &buf, 0.0, ctm);
         }
-
-        text.text_matrix = translate_mat(text.text_matrix, advance, 0.0);
-    });
-}
-
-/// 縦書きフォントの字送りと bbox（pdf.js evaluator / canvas 相当）
-fn show_text_bytes_vertical(
-    text: &mut TextState,
-    font: &Arc<LoadedFont>,
-    bytes: &[u8],
-    extra_spacing: f64,
-    ctm: [f64; 6],
-    view: [f64; 4],
-    glyphs: &mut Vec<(GlyphPart, u8)>,
-    mut text_sink: Option<&mut TextSink>,
-) {
-    // TJ の extra は横書き向け `-n/1000×fs`。縦書きでは符号を反転して pdf.js に合わせる
-    let vert_extra = |e: f64| -e;
-
-    if bytes.is_empty() {
-        if extra_spacing != 0.0 {
-            let cs = -text.char_spacing + vert_extra(extra_spacing);
-            text.text_matrix = translate_mat(text.text_matrix, 0.0, -cs);
-        }
-        return;
     }
 
-    let count = font.glyph_count(bytes);
-    let (view_left, view_top) = (view[0], view[3]);
-    let ascent = font.ascent();
-    let descent = font.descent();
-    let font_idx = text_sink
-        .as_mut()
-        .map(|s| s.font_index(font, &text.font_name));
-    let collect_glyphs = text_sink.is_none();
-
-    // 列内で不変: TRM 線形成分と派生量（平行移動のみ変わる）
-    let trm_lin = text.text_rendering_matrix(ctm);
-    let font_size_dev = (trm_lin[2] * trm_lin[2] + trm_lin[3] * trm_lin[3]).sqrt();
-    let dlen = (trm_lin[0] * trm_lin[0] + trm_lin[1] * trm_lin[1]).sqrt();
-    let (ux, uy) = if dlen > 0.0 {
-        (trm_lin[0] / dlen, trm_lin[1] / dlen)
-    } else {
-        (1.0, 0.0)
-    };
-    let upright = uy.abs() <= 0.05 && ux > 0.05;
-    let rot = quantize_rot(ux, uy);
-    let a_off = ascent * font_size_dev;
-    let d_off = descent * font_size_dev;
-    let tsm = [
-        text.font_size * text.text_h_scale,
-        0.0,
-        0.0,
-        text.font_size,
-        0.0,
-        text.text_rise,
-    ];
-
-    let mut i = 0;
-    font.for_each_glyph(bytes, |unicode, width, _, vmetric, original_space| {
-        let extra = if i + 1 == count {
-            vert_extra(extra_spacing)
-        } else {
-            0.0
+    /// バイト列をグリフに展開して出力し textMatrix を進める
+    ///
+    /// `extra_spacing` は最終グリフの字送りに加算（テキスト空間、hScale 前）
+    /// 横書きでは pdf.js の extraSpacing（`-n/1000×fs`）と同符号
+    fn show_text_bytes(
+        &mut self,
+        text: &mut TextState,
+        bytes: &[u8],
+        extra_spacing: f64,
+        ctm: [f64; 6],
+    ) {
+        let Some(font) = text.font.clone() else {
+            // フォント未設定時は extra だけの平行移動（TJ 数値のみ）
+            if extra_spacing != 0.0 {
+                let dx = extra_spacing * text.text_h_scale;
+                text.text_matrix = translate_mat(text.text_matrix, dx, 0.0);
+            }
+            return;
         };
-        i += 1;
-        // [w1y, v1x, v1y]。欠落時は横幅の負値と半角オフセット
-        let [w1y, v1x, v1y] = vmetric.unwrap_or([-width, width * 0.5, 880.0]);
-
-        let trm = text.text_rendering_matrix(ctm);
-        // テキスト状態の原点（v1 ずらし前）。transform / advance の基準
-        let (wx, wy) = (trm[4], trm[5]);
-        // 描画原点: canvas の vx=-v1x, vy=v1y（線形成分は trm_lin）
-        let ox = wx + trm_lin[0] * (-v1x / 1000.0) + trm_lin[2] * (v1y / 1000.0);
-        let oy = wy + trm_lin[1] * (-v1x / 1000.0) + trm_lin[3] * (v1y / 1000.0);
-
-        // 縦前進（hScale なし）。Tc は pdf.js どおり符号反転
-        let scaled_dim = w1y / 1000.0 * text.font_size;
-        let mut cs = -text.char_spacing + extra;
-        if original_space {
-            cs += text.word_spacing;
+        if font.vertical() {
+            self.show_text_bytes_vertical(text, &font, bytes, extra_spacing, ctm);
+            return;
         }
-        let advance_y = scaled_dim - cs;
+        let view = self.view;
+        let glyphs = &mut *self.glyphs;
+        let mut text_sink = self.text_sink.as_deref_mut();
 
-        // TRM 上の幅端点を横軸へ射影する。軸の鏡映は ux/uy にだけ持たせる
-        let width_end_x = ox + trm_lin[0] * (width / 1000.0);
-        let width_end_y = oy + trm_lin[1] * (width / 1000.0);
-        let device_w = (width_end_x - ox) * ux + (width_end_y - oy) * uy;
+        if bytes.is_empty() {
+            if extra_spacing != 0.0 {
+                let dx = (text.char_spacing + extra_spacing) * text.text_h_scale;
+                text.text_matrix = translate_mat(text.text_matrix, dx, 0.0);
+            }
+            return;
+        }
 
-        if collect_glyphs {
-            let nch = unicode.chars().count().max(1);
-            let per_w = device_w / nch as f64;
-            for (k, ch) in unicode.chars().enumerate() {
-                if ch == '\n' || ch == '\r' || ch == '\t' {
-                    continue;
+        let count = font.glyph_count(bytes);
+        let (view_left, view_top) = (view[0], view[3]);
+        let ascent = font.ascent();
+        let descent = font.descent();
+        let font_idx = text_sink
+            .as_mut()
+            .map(|s| s.font_index(&font, &text.font_name));
+        let collect_glyphs = text_sink.is_none();
+
+        // 列内で不変: TRM 線形成分と派生量（平行移動のみ変わる）
+        // text_rendering_matrix と同じ式・同じ演算順で一度だけ算出する
+        let trm_lin = text.text_rendering_matrix(ctm);
+        let font_size_dev = (trm_lin[2] * trm_lin[2] + trm_lin[3] * trm_lin[3]).sqrt();
+        let dlen = (trm_lin[0] * trm_lin[0] + trm_lin[1] * trm_lin[1]).sqrt();
+        let (ux, uy) = if dlen > 0.0 {
+            (trm_lin[0] / dlen, trm_lin[1] / dlen)
+        } else {
+            (1.0, 0.0)
+        };
+        let upright = uy.abs() <= 0.05 && ux > 0.05;
+        let rot = quantize_rot(ux, uy);
+        let a_off = ascent * font_size_dev;
+        let d_off = descent * font_size_dev;
+        // end_trm 用 tsm（text_rendering_matrix 内と同じ要素順）
+        let tsm = [
+            text.font_size * text.text_h_scale,
+            0.0,
+            0.0,
+            text.font_size,
+            0.0,
+            text.text_rise,
+        ];
+
+        let mut i = 0;
+        font.for_each_glyph(bytes, |g| {
+            let unicode = g.unicode;
+            let extra = if i + 1 == count { extra_spacing } else { 0.0 };
+            i += 1;
+
+            // 平行移動成分はグリフごとに再計算（線形成分は trm_lin を使う）
+            let trm = text.text_rendering_matrix(ctm);
+            let (ox, oy) = (trm[4], trm[5]);
+
+            // scaledDim = 幅/1000 × fontSize × hScale
+            let scaled_dim = g.width / 1000.0 * text.font_size * text.text_h_scale;
+            let mut spacing = text.char_spacing;
+            if g.is_space {
+                spacing += text.word_spacing;
+            }
+            // bbox 用（Tc/Tw は含む、TJ 数値 extra は位置のみ）
+            let bbox_advance = scaled_dim + spacing * text.text_h_scale;
+            // textMatrix の前進（TJ extra を加算）
+            let advance = bbox_advance + extra * text.text_h_scale;
+
+            // デバイス空間での実効字送り幅（bbox 用。進行方向への符号付き長）
+            let end_tm = translate_mat(text.text_matrix, bbox_advance, 0.0);
+            let end_trm = mat_mul(ctm, mat_mul(end_tm, tsm));
+            let (ex, ey) = (end_trm[4], end_trm[5]);
+            let device_w = (ex - ox) * ux + (ey - oy) * uy;
+
+            // 表経路: コードポイントごとに分割し幅を等分
+            if collect_glyphs {
+                let nch = unicode.chars().count().max(1);
+                let per_w = device_w / nch as f64;
+                for (k, ch) in unicode.chars().enumerate() {
+                    if ch == '\n' || ch == '\r' || ch == '\t' {
+                        continue;
+                    }
+                    let (x0, x1, y0, y1) =
+                        glyph_box(ox, oy, ux, uy, per_w * k as f64, per_w * (k as f64 + 1.0), a_off, d_off);
+                    glyphs.push((
+                        GlyphPart {
+                            ch,
+                            left: x0 - view_left,
+                            right: x1 - view_left,
+                            top: view_top - y1,
+                            bottom: view_top - y0,
+                            font_size: Some(font_size_dev),
+                            upright,
+                            rot: 0,
+                        },
+                        rot,
+                    ));
                 }
-                let (x0, x1, y0, y1) =
-                    glyph_box(ox, oy, ux, uy, per_w * k as f64, per_w * (k as f64 + 1.0), a_off, d_off);
-                glyphs.push((
-                    GlyphPart {
-                        ch,
+            }
+
+            if let (Some(sink), Some(fi)) = (text_sink.as_mut(), font_idx) {
+                let text_str: String = unicode
+                    .chars()
+                    .filter(|&ch| ch != '\n' && ch != '\r' && ch != '\t')
+                    .collect();
+                if !text_str.is_empty() {
+                    let (x0, x1, y0, y1) =
+                        glyph_box(ox, oy, ux, uy, 0.0, device_w, a_off, d_off);
+                    // 前進ベクトル（TJ 含む、表示座標）
+                    let end_tm_full = translate_mat(text.text_matrix, advance, 0.0);
+                    let end_trm_full = mat_mul(ctm, mat_mul(end_tm_full, tsm));
+                    let (fx, fy) = (end_trm_full[4], end_trm_full[5]);
+                    sink.chars.push(PendingTextChar {
+                        text: text_str,
                         left: x0 - view_left,
                         right: x1 - view_left,
                         top: view_top - y1,
                         bottom: view_top - y0,
-                        font_size: Some(font_size_dev),
+                        transform: [
+                            trm_lin[0],
+                            -trm_lin[1],
+                            trm_lin[2],
+                            -trm_lin[3],
+                            trm[4] - view_left,
+                            view_top - trm[5],
+                        ],
+                        advance: [fx - ox, -(fy - oy)],
+                        font: fi,
+                        font_size: font_size_dev,
+                        rot_q: rot,
                         upright,
-                        rot: 0,
-                    },
-                    rot,
-                ));
+                        synthetic: false,
+                    });
+                }
             }
+
+            text.text_matrix = translate_mat(text.text_matrix, advance, 0.0);
+        });
+    }
+
+    /// 縦書きフォントの字送りと bbox
+    fn show_text_bytes_vertical(
+        &mut self,
+        text: &mut TextState,
+        font: &LoadedFont,
+        bytes: &[u8],
+        extra_spacing: f64,
+        ctm: [f64; 6],
+    ) {
+        let view = self.view;
+        let glyphs = &mut *self.glyphs;
+        let mut text_sink = self.text_sink.as_deref_mut();
+
+        // TJ の extra は横書き向け `-n/1000×fs`。縦書きでは符号を反転して pdf.js に合わせる
+        let vert_extra = |e: f64| -e;
+
+        if bytes.is_empty() {
+            if extra_spacing != 0.0 {
+                let cs = -text.char_spacing + vert_extra(extra_spacing);
+                text.text_matrix = translate_mat(text.text_matrix, 0.0, -cs);
+            }
+            return;
         }
 
-        if let (Some(sink), Some(fi)) = (text_sink.as_mut(), font_idx) {
-            let text_str: String = unicode
-                .chars()
-                .filter(|&ch| ch != '\n' && ch != '\r' && ch != '\t')
-                .collect();
-            if !text_str.is_empty() {
-                let (x0, x1, y0, y1) =
-                    glyph_box(ox, oy, ux, uy, 0.0, device_w, a_off, d_off);
-                let end_tm_full = translate_mat(text.text_matrix, 0.0, advance_y);
-                let end_trm_full = mat_mul(ctm, mat_mul(end_tm_full, tsm));
-                let (fx, fy) = (end_trm_full[4], end_trm_full[5]);
-                sink.chars.push(PendingTextChar {
-                    text: text_str,
-                    left: x0 - view_left,
-                    right: x1 - view_left,
-                    top: view_top - y1,
-                    bottom: view_top - y0,
-                    transform: [
-                        trm_lin[0],
-                        -trm_lin[1],
-                        trm_lin[2],
-                        -trm_lin[3],
-                        wx - view_left,
-                        view_top - wy,
-                    ],
-                    advance: [fx - wx, -(fy - wy)],
-                    font: fi,
-                    font_size: font_size_dev,
-                    rot_q: rot,
-                    upright,
-                    synthetic: false,
-                });
-            }
-        }
+        let count = font.glyph_count(bytes);
+        let (view_left, view_top) = (view[0], view[3]);
+        let ascent = font.ascent();
+        let descent = font.descent();
+        let font_idx = text_sink
+            .as_mut()
+            .map(|s| s.font_index(font, &text.font_name));
+        let collect_glyphs = text_sink.is_none();
 
-        text.text_matrix = translate_mat(text.text_matrix, 0.0, advance_y);
-    });
+        // 列内で不変: TRM 線形成分と派生量（平行移動のみ変わる）
+        let trm_lin = text.text_rendering_matrix(ctm);
+        let font_size_dev = (trm_lin[2] * trm_lin[2] + trm_lin[3] * trm_lin[3]).sqrt();
+        let dlen = (trm_lin[0] * trm_lin[0] + trm_lin[1] * trm_lin[1]).sqrt();
+        let (ux, uy) = if dlen > 0.0 {
+            (trm_lin[0] / dlen, trm_lin[1] / dlen)
+        } else {
+            (1.0, 0.0)
+        };
+        let upright = uy.abs() <= 0.05 && ux > 0.05;
+        let rot = quantize_rot(ux, uy);
+        let a_off = ascent * font_size_dev;
+        let d_off = descent * font_size_dev;
+        let tsm = [
+            text.font_size * text.text_h_scale,
+            0.0,
+            0.0,
+            text.font_size,
+            0.0,
+            text.text_rise,
+        ];
+
+        let mut i = 0;
+        font.for_each_glyph(bytes, |g| {
+            let unicode = g.unicode;
+            let width = g.width;
+            let extra = if i + 1 == count {
+                vert_extra(extra_spacing)
+            } else {
+                0.0
+            };
+            i += 1;
+            // [w1y, v1x, v1y]。欠落時は横幅の負値と半角オフセット
+            let [w1y, v1x, v1y] = g.vmetric.unwrap_or([-width, width * 0.5, 880.0]);
+
+            let trm = text.text_rendering_matrix(ctm);
+            // テキスト状態の原点（v1 ずらし前）。transform / advance の基準
+            let (wx, wy) = (trm[4], trm[5]);
+            // 描画原点: canvas の vx=-v1x, vy=v1y（線形成分は trm_lin）
+            let ox = wx + trm_lin[0] * (-v1x / 1000.0) + trm_lin[2] * (v1y / 1000.0);
+            let oy = wy + trm_lin[1] * (-v1x / 1000.0) + trm_lin[3] * (v1y / 1000.0);
+
+            // 縦前進（hScale なし）。Tc は pdf.js どおり符号反転
+            let scaled_dim = w1y / 1000.0 * text.font_size;
+            let mut cs = -text.char_spacing + extra;
+            if g.is_code_space {
+                cs += text.word_spacing;
+            }
+            let advance_y = scaled_dim - cs;
+
+            // TRM 上の幅端点を横軸へ射影する。軸の鏡映は ux/uy にだけ持たせる
+            let width_end_x = ox + trm_lin[0] * (width / 1000.0);
+            let width_end_y = oy + trm_lin[1] * (width / 1000.0);
+            let device_w = (width_end_x - ox) * ux + (width_end_y - oy) * uy;
+
+            if collect_glyphs {
+                let nch = unicode.chars().count().max(1);
+                let per_w = device_w / nch as f64;
+                for (k, ch) in unicode.chars().enumerate() {
+                    if ch == '\n' || ch == '\r' || ch == '\t' {
+                        continue;
+                    }
+                    let (x0, x1, y0, y1) =
+                        glyph_box(ox, oy, ux, uy, per_w * k as f64, per_w * (k as f64 + 1.0), a_off, d_off);
+                    glyphs.push((
+                        GlyphPart {
+                            ch,
+                            left: x0 - view_left,
+                            right: x1 - view_left,
+                            top: view_top - y1,
+                            bottom: view_top - y0,
+                            font_size: Some(font_size_dev),
+                            upright,
+                            rot: 0,
+                        },
+                        rot,
+                    ));
+                }
+            }
+
+            if let (Some(sink), Some(fi)) = (text_sink.as_mut(), font_idx) {
+                let text_str: String = unicode
+                    .chars()
+                    .filter(|&ch| ch != '\n' && ch != '\r' && ch != '\t')
+                    .collect();
+                if !text_str.is_empty() {
+                    let (x0, x1, y0, y1) =
+                        glyph_box(ox, oy, ux, uy, 0.0, device_w, a_off, d_off);
+                    let end_tm_full = translate_mat(text.text_matrix, 0.0, advance_y);
+                    let end_trm_full = mat_mul(ctm, mat_mul(end_tm_full, tsm));
+                    let (fx, fy) = (end_trm_full[4], end_trm_full[5]);
+                    sink.chars.push(PendingTextChar {
+                        text: text_str,
+                        left: x0 - view_left,
+                        right: x1 - view_left,
+                        top: view_top - y1,
+                        bottom: view_top - y0,
+                        transform: [
+                            trm_lin[0],
+                            -trm_lin[1],
+                            trm_lin[2],
+                            -trm_lin[3],
+                            wx - view_left,
+                            view_top - wy,
+                        ],
+                        advance: [fx - wx, -(fy - wy)],
+                        font: fi,
+                        font_size: font_size_dev,
+                        rot_q: rot,
+                        upright,
+                        synthetic: false,
+                    });
+                }
+            }
+
+            text.text_matrix = translate_mat(text.text_matrix, 0.0, advance_y);
+        });
+    }
 }
 
 /// 進行方向とその直交方向から字箱の外接軸平行矩形を求める
@@ -1746,106 +1829,78 @@ fn glyph_box(
     (x0, x1, y0, y1)
 }
 
-fn do_form_xobject(
-    name: &str,
-    ctm: [f64; 6],
-    resources: &Dict,
-    view: [f64; 4],
-    ctx: &ContentCtx<'_>,
-    glyphs: &mut Vec<(GlyphPart, u8)>,
-    edges: &mut Vec<EdgePart>,
-    graphics: &mut Vec<GraphicPart>,
-    visiting: &mut HashSet<(u32, u16)>,
-    text_sink: Option<&mut TextSink>,
-) {
-    // ネスト段数が上限以上なら再帰しない
-    if visiting.len() >= MAX_FORM_DEPTH {
-        return;
-    }
-
-    let Some(xo_obj) = resources.get("XObject") else {
-        return;
-    };
-    let xo = resolve_obj(xo_obj, ctx);
-    let Object::Dict(xo_dict) = xo else {
-        return;
-    };
-    let Some(entry) = xo_dict.get(name) else {
-        return;
-    };
-
-    // 循環検出（参照番号）
-    let ref_id = match entry {
-        Object::Ref(r) => Some(*r),
-        _ => None,
-    };
-    if let Some(r) = ref_id {
-        if !visiting.insert((r.num, r.generation)) {
+impl Evaluator<'_, '_> {
+    fn do_form_xobject(&mut self, name: &str, ctm: [f64; 6], resources: &Dict) {
+        // ネスト段数が上限以上なら再帰しない
+        if self.visiting.len() >= MAX_FORM_DEPTH {
             return;
         }
-    }
 
-    let resolved = resolve_obj(entry, ctx);
-    let Object::Stream(stream) = resolved else {
-        if let Some(r) = ref_id {
-            visiting.remove(&(r.num, r.generation));
-        }
-        return;
-    };
+        let Some(xo_obj) = resources.get("XObject") else {
+            return;
+        };
+        let xo = resolve_obj(xo_obj, self.ctx);
+        let Object::Dict(xo_dict) = &*xo else {
+            return;
+        };
+        let Some(entry) = xo_dict.get(name) else {
+            return;
+        };
 
-    // Subtype = Form のみ
-    let subtype = stream
-        .dict
-        .get("Subtype")
-        .map(|o| resolve_obj(o, ctx))
-        .unwrap_or(Object::Null);
-    let is_form = matches!(&subtype, Object::Name(n) if n == "Form");
-    if !is_form {
-        if let Some(r) = ref_id {
-            visiting.remove(&(r.num, r.generation));
-        }
-        return;
-    }
-
-    // /Matrix を CTM に合成（無ければ単位行列）
-    let form_mat = parse_matrix(stream.dict.get("Matrix"), ctx).unwrap_or_else(identity);
-
-    // /Resources（無ければ親を継承）
-    let form_res = match stream.dict.get("Resources") {
-        Some(obj) => match resolve_obj(obj, ctx) {
-            Object::Dict(d) => d,
-            _ => resources.clone(),
-        },
-        None => resources.clone(),
-    };
-
-    // 本文デコード（間接参照は文書単位でメモ化。解釈自体は毎回）
-    let body = match form_stream_body(ref_id, &stream, ctx) {
-        Some(b) => b,
-        None => {
-            if let Some(r) = ref_id {
-                visiting.remove(&(r.num, r.generation));
-            }
+        // 循環検出（参照番号）。挿入と除去はここで対にする
+        let ref_id = match entry {
+            Object::Ref(r) => Some(*r),
+            _ => None,
+        };
+        if let Some(r) = ref_id
+            && !self.visiting.insert(r)
+        {
             return;
         }
-    };
 
-    // /Matrix を CTM に合成して本文を実行（テキスト状態は Form 内で独立）
-    interpret(
-        body.as_ref(),
-        &form_res,
-        view,
-        ctx,
-        glyphs,
-        edges,
-        graphics,
-        visiting,
-        mat_mul(ctm, form_mat),
-        text_sink,
-    );
+        self.run_form_xobject(entry, ref_id, ctm, resources);
 
-    if let Some(r) = ref_id {
-        visiting.remove(&(r.num, r.generation));
+        if let Some(r) = ref_id {
+            self.visiting.remove(&r);
+        }
+    }
+
+    /// Form XObject の解決と本文実行（循環検出の出入りは呼び出し側で行う）
+    fn run_form_xobject(
+        &mut self,
+        entry: &Object,
+        ref_id: Option<Ref>,
+        ctm: [f64; 6],
+        resources: &Dict,
+    ) {
+        let resolved = resolve_obj(entry, self.ctx);
+        let Object::Stream(stream) = &*resolved else {
+            return;
+        };
+
+        // Subtype = Form のみ
+        let subtype = stream.dict.get("Subtype").map(|o| resolve_obj(o, self.ctx));
+        if !matches!(subtype.as_deref(), Some(Object::Name(n)) if n == "Form") {
+            return;
+        }
+
+        // /Matrix を CTM に合成（無ければ単位行列）
+        let form_mat = parse_matrix(stream.dict.get("Matrix"), self.ctx).unwrap_or_else(identity);
+
+        // /Resources（無ければ親を継承）
+        let resolved_res = stream.dict.get("Resources").map(|o| resolve_obj(o, self.ctx));
+        let form_res: &Dict = match resolved_res.as_deref() {
+            Some(Object::Dict(d)) => d,
+            _ => resources,
+        };
+
+        // 本文デコード（間接参照は文書単位でメモ化。解釈自体は毎回）
+        let Some(body) = form_stream_body(ref_id, stream, self.ctx) else {
+            return;
+        };
+
+        // /Matrix を CTM に合成して本文を実行（テキスト状態は Form 内で独立）
+        self.interpret(body.as_ref(), form_res, mat_mul(ctm, form_mat));
     }
 }
 
@@ -1899,7 +1954,7 @@ fn form_stream_body(
 
 fn parse_matrix(obj: Option<&Object>, ctx: &ContentCtx<'_>) -> Option<[f64; 6]> {
     let obj = resolve_obj(obj?, ctx);
-    let Object::Array(arr) = obj else {
+    let Object::Array(arr) = &*obj else {
         return None;
     };
     if arr.len() < 6 {
@@ -1964,15 +2019,37 @@ mod tests {
     /// 90度正規化の座標移送
     #[test]
     fn rotate_box_td_90_moves_axes() {
-        let (l, t, r, b) = rotate_box_td(10.0, 20.0, 30.0, 40.0, 100.0, 200.0, 1);
-        assert!(approx(l, 160.0) && approx(t, 10.0) && approx(r, 180.0) && approx(b, 30.0));
+        let rect = Rect {
+            left: 10.0,
+            top: 20.0,
+            right: 30.0,
+            bottom: 40.0,
+        }
+        .rotate_td(100.0, 200.0, 1);
+        assert!(
+            approx(rect.left, 160.0)
+                && approx(rect.top, 10.0)
+                && approx(rect.right, 180.0)
+                && approx(rect.bottom, 30.0)
+        );
     }
 
     /// 270度正規化の座標移送
     #[test]
     fn rotate_box_td_270_moves_axes() {
-        let (l, t, r, b) = rotate_box_td(10.0, 20.0, 30.0, 40.0, 100.0, 200.0, 3);
-        assert!(approx(l, 20.0) && approx(t, 70.0) && approx(r, 40.0) && approx(b, 90.0));
+        let rect = Rect {
+            left: 10.0,
+            top: 20.0,
+            right: 30.0,
+            bottom: 40.0,
+        }
+        .rotate_td(100.0, 200.0, 3);
+        assert!(
+            approx(rect.left, 20.0)
+                && approx(rect.top, 70.0)
+                && approx(rect.right, 40.0)
+                && approx(rect.bottom, 90.0)
+        );
     }
 
     /// 正立: xが進行区間 yがディセント〜アセント
@@ -1994,7 +2071,7 @@ mod tests {
     /// /Rotate 90 で線分が表示座標系へ回る
     #[test]
     fn page_rotate_moves_edges_to_display_frame() {
-        let (_, edges, _, _) = extract_parts(
+        let ExtractedParts { edges, .. } = extract_parts(
             b"10 20 50 50 re S",
             &Dict::new(),
             [0.0, 0.0, 100.0, 200.0],
@@ -2298,7 +2375,7 @@ Q
             },
             0,
         )
-        .0
+        .glyphs
     }
 
     /// スタブ: 幅 500/1000、fontSize に対する字送り = 0.5 * fontSize（hScale=1）
@@ -2523,7 +2600,7 @@ Q
     // -----------------------------------------------------------------------
 
     fn text_of(contents: &[u8], view: [f64; 4]) -> (f64, f64, Vec<TextFont>, Vec<TextChar>) {
-        extract_text(
+        let t = extract_text(
             contents,
             &Dict::new(),
             view,
@@ -2532,12 +2609,18 @@ Q
                 xref: None,
             },
             0,
-        )
+        );
+        (t.width, t.height, t.fonts, t.chars)
     }
 
     fn rotated_synth_space(rot: i32) -> (f64, f64, Vec<TextChar>) {
         let contents = b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (AB) Tj 1 0 0 1 13 50 Tm (CD) Tj ET";
-        let (w, h, _, chars) = extract_text(
+        let ExtractedText {
+            width: w,
+            height: h,
+            chars,
+            ..
+        } = extract_text(
             contents,
             &Dict::new(),
             [0.0, 0.0, 100.0, 200.0],
@@ -2669,7 +2752,12 @@ Q
         // 非正方形 view: 100×200
         let view = [0.0, 0.0, 100.0, 200.0];
         let contents = b"BT /F1 10 Tf 1 0 0 1 10 20 Tm (A) Tj ET";
-        let (w, h, _, chars) = extract_text(
+        let ExtractedText {
+            width: w,
+            height: h,
+            chars,
+            ..
+        } = extract_text(
             contents,
             &Dict::new(),
             view,
@@ -2743,7 +2831,7 @@ Q
         resources: &Dict,
         view: [f64; 4],
     ) -> (f64, f64, Vec<TextFont>, Vec<TextChar>) {
-        extract_text(
+        let t = extract_text(
             contents,
             resources,
             view,
@@ -2752,7 +2840,8 @@ Q
                 xref: None,
             },
             0,
-        )
+        );
+        (t.width, t.height, t.fonts, t.chars)
     }
 
     /// 縦書き: 前進が縦方向、bbox が縦に並ぶ、TextFont.vertical
@@ -2886,7 +2975,7 @@ Q
     fn glyphs_vertical_stack() {
         let contents = b"BT /F1 10 Tf 1 0 0 1 50 150 Tm <00410042> Tj ET";
         let res = vertical_resources(false);
-        let (glyphs, _, _, _) = extract_parts(
+        let ExtractedParts { glyphs, .. } = extract_parts(
             contents,
             &res,
             default_view(),
@@ -2947,7 +3036,7 @@ Q
 
         let contents =
             b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (A) Tj /F2 12 Tf 1 0 0 1 20 50 Tm (B) Tj ET";
-        let (_, _, fonts, chars) = extract_text(
+        let ExtractedText { fonts, chars, .. } = extract_text(
             contents,
             &res,
             default_view(),

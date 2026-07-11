@@ -4,6 +4,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::cmap::{utf16be_bytes_to_string, CMap, MapValue};
@@ -31,7 +32,7 @@ const FLAG_NONSYMBOLIC: i64 = 32;
 pub(crate) type VMetric = [f64; 3];
 
 /// 読み込み済みフォント
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct LoadedFont {
     /// リソース上の名前
     name: String,
@@ -44,16 +45,35 @@ pub(crate) struct LoadedFont {
     vmetrics: HashMap<u32, VMetric>,
     /// 縦書き時の既定 vmetric。横書きは None
     default_vmetric: Option<VMetric>,
-    /// charcode → Unicode 文字列
-    to_unicode: HashMap<u32, String>,
+    to_unicode: ToUnicode,
     /// 複合用符号化 CMap（None なら1バイト）
-    encoding_cmap: Option<CMap>,
+    encoding_cmap: Option<Arc<CMap>>,
     /// UCS2 コンパニオン（CID → UTF-16BE）。遅延 lookup 用
-    ucs2_cmap: Option<CMap>,
-    /// ToUnicode が Identity 相当
-    identity_tounicode: bool,
+    ucs2_cmap: Option<Arc<CMap>>,
     ascent: f64,
     descent: f64,
+    /// 構築ごとに一意な識別子
+    uid: u64,
+}
+
+fn next_font_uid() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// ToUnicode の解釈結果
+#[derive(Debug, Clone)]
+enum ToUnicode {
+    /// charcode をそのままコードポイントとする
+    Identity,
+    /// charcode → Unicode 文字列の疎マップ
+    Map(HashMap<u32, String>),
+}
+
+impl ToUnicode {
+    fn empty() -> Self {
+        ToUnicode::Map(HashMap::new())
+    }
 }
 
 impl LoadedFont {
@@ -67,13 +87,18 @@ impl LoadedFont {
             default_width: PROVISIONAL_WIDTH,
             vmetrics: HashMap::new(),
             default_vmetric: None,
-            to_unicode: HashMap::new(),
+            to_unicode: ToUnicode::empty(),
             encoding_cmap: None,
             ucs2_cmap: None,
-            identity_tounicode: false,
             ascent: DEFAULT_ASCENT,
             descent: DEFAULT_DESCENT,
+            uid: next_font_uid(),
         }
+    }
+
+    /// 構築時に採番した一意な識別子
+    pub fn uid(&self) -> u64 {
+        self.uid
     }
 
     /// 公開用フォント名（BaseFont 優先、なければロード時のリソース名）
@@ -104,7 +129,7 @@ impl LoadedFont {
             let mut i = 0;
             let mut n = 0;
             while i < bytes.len() {
-                let (_, len) = cmap.read_char_code(bytes, i);
+                let (_, len) = cmap.read_char_code(bytes, i).unwrap_or((0, 1));
                 i += len;
                 n += 1;
             }
@@ -115,17 +140,15 @@ impl LoadedFont {
     }
 
     /// 文字列バイト列をグリフごとに訪問する
-    ///
-    /// 引数: (unicode文字列, グリフ空間の字送り幅(/1000), 元コードが1バイト空白か,
-    /// 縦メトリクス, 元 charcode が 0x20 か)
     pub fn for_each_glyph<'a, F>(&'a self, bytes: &[u8], mut visit: F)
     where
-        F: FnMut(Cow<'a, str>, f64, bool, Option<VMetric>, bool),
+        F: FnMut(Glyph<'a>),
     {
         if let Some(cmap) = &self.encoding_cmap {
             let mut i = 0;
             while i < bytes.len() {
-                let (charcode, len) = cmap.read_char_code(bytes, i);
+                // range 不一致は code 0・1バイト消費として進める（pdf.js 準拠）
+                let (charcode, len) = cmap.read_char_code(bytes, i).unwrap_or((0, 1));
                 let is_space = len == 1 && bytes[i] == 0x20;
                 i += len;
 
@@ -135,9 +158,13 @@ impl LoadedFont {
                     .get(&cid)
                     .copied()
                     .unwrap_or(self.default_width);
-                let unicode = self.resolve_unicode(charcode, cid, true);
-                let vmetric = self.vmetric_for(cid);
-                visit(unicode, width, is_space, vmetric, charcode == 0x20);
+                visit(Glyph {
+                    unicode: self.resolve_unicode(charcode, cid, true),
+                    width,
+                    is_space,
+                    vmetric: self.vmetric_for(cid),
+                    is_code_space: charcode == 0x20,
+                });
             }
         } else {
             for &b in bytes {
@@ -147,26 +174,22 @@ impl LoadedFont {
                     .get(&charcode)
                     .copied()
                     .unwrap_or(self.default_width);
-                let unicode = self.resolve_unicode(charcode, charcode, false);
-                let vmetric = self.vmetric_for(charcode);
-                visit(unicode, width, b == 0x20, vmetric, charcode == 0x20);
+                visit(Glyph {
+                    unicode: self.resolve_unicode(charcode, charcode, false),
+                    width,
+                    is_space: b == 0x20,
+                    vmetric: self.vmetric_for(charcode),
+                    is_code_space: charcode == 0x20,
+                });
             }
         }
     }
 
     /// 文字列バイト列をグリフ列に分解する（テスト用）
-    ///
-    /// 戻り値: (unicode文字列, グリフ空間の字送り幅(/1000), 元コードが1バイト空白か,
-    /// 縦メトリクス, 元 charcode が 0x20 か)
     #[cfg(test)]
-    pub fn chars_to_glyphs(
-        &self,
-        bytes: &[u8],
-    ) -> Vec<(Cow<'_, str>, f64, bool, Option<VMetric>, bool)> {
+    pub fn chars_to_glyphs(&self, bytes: &[u8]) -> Vec<Glyph<'_>> {
         let mut out = Vec::with_capacity(self.glyph_count(bytes));
-        self.for_each_glyph(bytes, |unicode, width, is_space, vmetric, is_20| {
-            out.push((unicode, width, is_space, vmetric, is_20));
-        });
+        self.for_each_glyph(bytes, |g| out.push(g));
         out
     }
 
@@ -177,11 +200,13 @@ impl LoadedFont {
     }
 
     fn resolve_unicode(&self, charcode: u32, cid: u32, composite: bool) -> Cow<'_, str> {
-        if let Some(s) = self.to_unicode.get(&charcode) {
-            return Cow::Borrowed(s.as_str());
-        }
-        if self.identity_tounicode {
-            return Cow::Owned(codepoint_to_string(charcode));
+        match &self.to_unicode {
+            ToUnicode::Map(m) => {
+                if let Some(s) = m.get(&charcode) {
+                    return Cow::Borrowed(s.as_str());
+                }
+            }
+            ToUnicode::Identity => return Cow::Owned(codepoint_to_string(charcode)),
         }
         if composite {
             if let Some(ucs2) = &self.ucs2_cmap {
@@ -221,11 +246,30 @@ impl LoadedFont {
     }
 }
 
+/// グリフ分解の1文字分
+pub(crate) struct Glyph<'a> {
+    /// unicode 文字列
+    pub unicode: Cow<'a, str>,
+    /// グリフ空間の字送り幅（/1000 単位）
+    pub width: f64,
+    /// 元コードが1バイトの空白か
+    pub is_space: bool,
+    /// 縦メトリクス（縦書きフォントのみ）
+    pub vmetric: Option<VMetric>,
+    /// 元 charcode が 0x20 か（Tw 単語間隔の適用判定）
+    pub is_code_space: bool,
+}
+
+/// i64 を u32 へ。負値・u32 超は 0
+fn u32_or_zero(n: i64) -> u32 {
+    u32::try_from(n).unwrap_or(0)
+}
+
 /// charcode → CID（符号化 CMap 経由）
 fn charcode_to_cid(cmap: &CMap, charcode: u32) -> u32 {
     match cmap.lookup(charcode).as_deref() {
         Some(MapValue::Cid(cid)) => *cid,
-        Some(MapValue::Bytes(b)) => bytes_as_int(b),
+        Some(MapValue::Bytes(b)) => super::cmap::bytes_to_int(b),
         None => charcode,
     }
 }
@@ -251,7 +295,7 @@ pub(crate) fn lookup_font(
     // 間接参照は文書内でキャッシュする
     // 読み込み中はロックを保持しない（読み込みが再帰的にキャッシュへ入る可能性があるため）
     if let (Object::Ref(r), Some(xref)) = (entry, xref) {
-        let key = (r.num, r.generation);
+        let key = *r;
         if let Ok(guard) = xref.font_cache.lock() {
             if let Some(cached) = guard.get(&key) {
                 return Arc::clone(cached);
@@ -303,8 +347,7 @@ fn load_font_dict(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> 
 
 /// 単純フォント（Type1 / TrueType）
 fn load_simple(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> LoadedFont {
-    let first_char = dict_int(dict, "FirstChar", data, xref).unwrap_or(0).max(0) as u32;
-    let _last_char = dict_int(dict, "LastChar", data, xref).unwrap_or(0xff).max(0) as u32;
+    let first_char = u32_or_zero(dict_int(dict, "FirstChar", data, xref).unwrap_or(0));
 
     let descriptor = font_descriptor(dict, data, xref);
     let base_font = base_font_name(dict, data, xref);
@@ -329,7 +372,7 @@ fn load_simple(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Loa
     if base_encoding_name.is_none() {
         if let Some(builtin) = type1_builtin_encoding(&descriptor, data, xref) {
             for (code, name) in builtin {
-                default_encoding[code as usize] = name;
+                default_encoding[code as usize] = Cow::Owned(name);
             }
         }
     }
@@ -352,16 +395,16 @@ fn load_simple(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Loa
         }
     }
 
-    let (mut to_unicode, identity_tounicode) = load_tounicode(dict, None, data, xref);
+    let mut to_unicode = load_tounicode(dict, None, data, xref);
     // ToUnicode が無い、または穴がある場合に Encoding+AGL で埋める
-    if !identity_tounicode {
+    if let ToUnicode::Map(map) = &mut to_unicode {
         let simple_tu =
             simple_font_to_unicode(&default_encoding, &differences, base_encoding_name.as_deref());
-        if to_unicode.is_empty() {
-            to_unicode = simple_tu;
+        if map.is_empty() {
+            *map = simple_tu;
         } else {
             for (cc, s) in simple_tu {
-                to_unicode.entry(cc).or_insert(s);
+                map.entry(cc).or_insert(s);
             }
         }
     }
@@ -379,15 +422,15 @@ fn load_simple(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Loa
         to_unicode,
         encoding_cmap: None,
         ucs2_cmap: None,
-        identity_tounicode,
         ascent,
         descent,
+        uid: next_font_uid(),
     }
 }
 
 /// Type3: 幅を FontMatrix[0]*1000 で /1000 換算に正規化
 fn load_type3(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> LoadedFont {
-    let first_char = dict_int(dict, "FirstChar", data, xref).unwrap_or(0).max(0) as u32;
+    let first_char = u32_or_zero(dict_int(dict, "FirstChar", data, xref).unwrap_or(0));
     let descriptor = font_descriptor(dict, data, xref);
     let (mut widths, mut default_width) =
         extract_simple_widths(dict, &descriptor, first_char, data, xref);
@@ -408,15 +451,15 @@ fn load_type3(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Load
     let (default_encoding, differences, base_encoding_name) =
         resolve_simple_encoding(dict, "Type3", flags, &base_font, false, data, xref);
 
-    let (mut to_unicode, identity_tounicode) = load_tounicode(dict, None, data, xref);
-    if !identity_tounicode {
+    let mut to_unicode = load_tounicode(dict, None, data, xref);
+    if let ToUnicode::Map(map) = &mut to_unicode {
         let simple_tu =
             simple_font_to_unicode(&default_encoding, &differences, base_encoding_name.as_deref());
-        if to_unicode.is_empty() {
-            to_unicode = simple_tu;
+        if map.is_empty() {
+            *map = simple_tu;
         } else {
             for (cc, s) in simple_tu {
-                to_unicode.entry(cc).or_insert(s);
+                map.entry(cc).or_insert(s);
             }
         }
     }
@@ -434,9 +477,9 @@ fn load_type3(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Load
         to_unicode,
         encoding_cmap: None,
         ucs2_cmap: None,
-        identity_tounicode,
         ascent,
         descent,
+        uid: next_font_uid(),
     }
 }
 
@@ -452,12 +495,12 @@ fn load_type0(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Load
 
     let (widths, default_width) = extract_cid_widths(&cid_dict, data, xref);
 
-    let (encoding_cmap, encoding_builtin) = load_encoding_cmap(dict, data, xref);
-    let (to_unicode, identity_tounicode) = load_tounicode(dict, Some(dict), data, xref);
+    let (encoding_cmap, encoding_origin) = load_encoding_cmap(dict, data, xref);
+    let to_unicode = load_tounicode(dict, Some(dict), data, xref);
 
     // ToUnicode が無いとき UCS2 コンパニオンを遅延 lookup 用に保持
-    let ucs2_cmap = if !identity_tounicode && to_unicode.is_empty() {
-        load_ucs2_companion(&encoding_cmap, encoding_builtin, &cid_dict, data, xref)
+    let ucs2_cmap = if matches!(&to_unicode, ToUnicode::Map(m) if m.is_empty()) {
+        load_ucs2_companion(&encoding_cmap, encoding_origin, &cid_dict, data, xref)
     } else {
         None
     };
@@ -481,9 +524,9 @@ fn load_type0(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Load
         to_unicode,
         encoding_cmap: Some(encoding_cmap),
         ucs2_cmap,
-        identity_tounicode,
         ascent,
         descent,
+        uid: next_font_uid(),
     }
 }
 
@@ -591,7 +634,7 @@ fn extract_cid_widths(
         let next = resolve_obj(&arr[i], data, xref);
         if let Object::Array(ws) = next {
             // c [w1 w2 ...]
-            let mut c = start.max(0) as u32;
+            let mut c = u32_or_zero(start);
             for w in &ws {
                 if let Some(n) = as_number(&resolve_obj(w, data, xref)) {
                     widths.insert(c, n);
@@ -611,8 +654,8 @@ fn extract_cid_widths(
                 continue;
             };
             i += 1;
-            let s = start.max(0) as u32;
-            let e = end.max(0) as u32;
+            let s = u32_or_zero(start);
+            let e = u32_or_zero(end);
             // 正当な入力を弾かない上限: CID は 16bit で 65535 超は参照されない
             let e = e.min(65535);
             if s <= e {
@@ -674,7 +717,7 @@ fn extract_cid_vmetrics(
         let next = resolve_obj(&arr[i], data, xref);
         if let Object::Array(vals) = next {
             // c [w1y v1x v1y w1y v1x v1y ...]
-            let mut c = start.max(0) as u32;
+            let mut c = u32_or_zero(start);
             let mut j = 0;
             while j + 2 < vals.len() {
                 let w1 = as_number(&resolve_obj(&vals[j], data, xref));
@@ -700,8 +743,8 @@ fn extract_cid_vmetrics(
             let Some(w1) = w1 else { continue };
             let Some(vx) = vx else { continue };
             let Some(vy) = vy else { continue };
-            let s = start.max(0) as u32;
-            let e = end.max(0) as u32;
+            let s = u32_or_zero(start);
+            let e = u32_or_zero(end);
             // 正当な入力を弾かない上限: CID は 16bit で 65535 超は参照されない
             let e = e.min(65535);
             if s <= e {
@@ -717,34 +760,47 @@ fn extract_cid_vmetrics(
     (vmetrics, Some(default_vmetric))
 }
 
-/// /Encoding を CMap に解決する。戻り値の bool は定義済み（builtin）か
-fn load_encoding_cmap(type0: &Dict, data: &[u8], xref: Option<&XRef>) -> (CMap, bool) {
+/// /Encoding の由来
+enum EncodingOrigin {
+    Predefined,
+    Embedded,
+}
+
+/// /Encoding を CMap に解決する
+fn load_encoding_cmap(
+    type0: &Dict,
+    data: &[u8],
+    xref: Option<&XRef>,
+) -> (Arc<CMap>, EncodingOrigin) {
     let Some(enc) = type0.get("Encoding") else {
         eprintln!("reader: Type0 font missing /Encoding; treating as Identity-H");
-        return (CMap::identity_h(), true);
+        return (Arc::new(CMap::identity_h()), EncodingOrigin::Predefined);
     };
     match resolve_obj(enc, data, xref) {
         Object::Name(n) => {
             if let Some(c) = CMap::from_identity_name(&n) {
-                return (c, true);
+                return (Arc::new(c), EncodingOrigin::Predefined);
             }
             match load_predefined_cmap(&n, xref) {
-                Ok(c) => (c, true),
+                Ok(c) => (c, EncodingOrigin::Predefined),
                 Err(e) => {
                     eprintln!(
                         "reader: failed to load predefined CMap '{n}' ({e}); treating as Identity-H"
                     );
-                    (CMap::identity_h(), true)
+                    (Arc::new(CMap::identity_h()), EncodingOrigin::Predefined)
                 }
             }
         }
         Object::Stream(s) => {
             let decoded = decode_stream_bytes(data, &s, xref).unwrap_or_default();
-            (CMap::parse_embedded(&decoded), false)
+            (
+                Arc::new(CMap::parse_embedded(&decoded)),
+                EncodingOrigin::Embedded,
+            )
         }
         _ => {
             eprintln!("reader: invalid /Encoding; treating as Identity-H");
-            (CMap::identity_h(), true)
+            (Arc::new(CMap::identity_h()), EncodingOrigin::Predefined)
         }
     }
 }
@@ -752,13 +808,14 @@ fn load_encoding_cmap(type0: &Dict, data: &[u8], xref: Option<&XRef>) -> (CMap, 
 /// UCS2 コンパニオン CMap を条件に応じてロードする
 fn load_ucs2_companion(
     encoding_cmap: &CMap,
-    encoding_builtin: bool,
+    encoding_origin: EncodingOrigin,
     cid_dict: &Dict,
     data: &[u8],
     xref: Option<&XRef>,
-) -> Option<CMap> {
+) -> Option<Arc<CMap>> {
     let cid_info = read_cid_system_info(cid_dict, data, xref);
-    let use_ucs2 = (encoding_builtin && !encoding_cmap.is_identity())
+    let use_ucs2 = (matches!(encoding_origin, EncodingOrigin::Predefined)
+        && !encoding_cmap.is_identity())
         || cid_info
             .as_ref()
             .is_some_and(|(reg, ord)| reg == "Adobe" && is_cjk_ordering(ord));
@@ -776,11 +833,10 @@ fn load_ucs2_companion(
     }
 }
 
-/// 定義済み CMap をロード。xref があれば文書単位キャッシュを使う
-fn load_predefined_cmap(name: &str, xref: Option<&XRef>) -> crate::error::Result<CMap> {
+/// 定義済み CMap をロード。xref があれば文書単位キャッシュを使い共有のまま返す
+fn load_predefined_cmap(name: &str, xref: Option<&XRef>) -> crate::error::Result<Arc<CMap>> {
     let cache = xref.map(|x| x.cmap_cache.as_ref());
-    let arc = CMap::load_predefined_shared(name, cache)?;
-    Ok(Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone()))
+    CMap::load_predefined_shared(name, cache)
 }
 
 fn is_cjk_ordering(ordering: &str) -> bool {
@@ -816,42 +872,41 @@ fn load_tounicode(
     base_dict: Option<&Dict>,
     data: &[u8],
     xref: Option<&XRef>,
-) -> (HashMap<u32, String>, bool) {
+) -> ToUnicode {
     let tu = dict
         .get("ToUnicode")
         .or_else(|| base_dict.and_then(|b| b.get("ToUnicode")));
     let Some(tu) = tu else {
-        return (HashMap::new(), false);
+        return ToUnicode::empty();
     };
 
     match resolve_obj(tu, data, xref) {
         Object::Name(n) => {
             if n == "Identity-H" || n == "Identity-V" || n == "Identity" {
-                return (HashMap::new(), true);
+                return ToUnicode::Identity;
             }
             // その他の名前付き ToUnicode は第2段階
             eprintln!("reader: named ToUnicode '{n}' not loaded yet");
-            (HashMap::new(), false)
+            ToUnicode::empty()
         }
         Object::Stream(s) => {
-            let decoded = match decode_stream_bytes(data, &s, xref) {
-                Some(d) => d,
-                None => return (HashMap::new(), false),
+            let Some(decoded) = decode_stream_bytes(data, &s, xref) else {
+                return ToUnicode::empty();
             };
             let cmap = CMap::parse_embedded(&decoded);
             if cmap.is_identity()
                 || cmap.name() == "Identity-H"
                 || cmap.name() == "Identity-V"
             {
-                return (HashMap::new(), true);
+                return ToUnicode::Identity;
             }
             let mut map = HashMap::new();
             // for_each が Identity 全空間を回すのは避け、疎マップのみ
             // parse 後 identity でなければ map を直接使う
             build_tounicode_from_cmap(&cmap, &mut map);
-            (map, false)
+            ToUnicode::Map(map)
         }
-        _ => (HashMap::new(), false),
+        _ => ToUnicode::empty(),
     }
 }
 
@@ -947,6 +1002,9 @@ fn resolve_metrics_font_name(base_font: &str) -> String {
 }
 
 /// Encoding + Differences を解決して defaultEncoding[256] と differences を返す
+/// 単純フォントの charcode → グリフ名表。静的表は借用のまま持つ
+type SimpleEncoding = [Cow<'static, str>; 256];
+
 fn resolve_simple_encoding(
     dict: &Dict,
     subtype: &str,
@@ -955,7 +1013,7 @@ fn resolve_simple_encoding(
     embedded: bool,
     data: &[u8],
     xref: Option<&XRef>,
-) -> ([String; 256], HashMap<u32, String>, Option<String>) {
+) -> (SimpleEncoding, HashMap<u32, String>, Option<String>) {
     let mut differences: HashMap<u32, String> = HashMap::new();
     let mut base_encoding_name: Option<String> = None;
 
@@ -1045,14 +1103,14 @@ fn resolve_simple_encoding(
         enc
     };
 
-    let default_encoding: [String; 256] = std::array::from_fn(|i| table[i].to_string());
+    let default_encoding: SimpleEncoding = std::array::from_fn(|i| Cow::Borrowed(table[i]));
     (default_encoding, differences, base_encoding_name)
 }
 
 /// buildCharCodeToWidth 相当（JS と同様、幅 0 は未登録扱い）
 fn build_char_code_to_width(
     metrics_font: &str,
-    default_encoding: &[String; 256],
+    default_encoding: &SimpleEncoding,
     differences: &HashMap<u32, String>,
 ) -> HashMap<u32, f64> {
     // Courier 系は等幅で widths 表が空、defaultWidth=600 のみ使う
@@ -1087,17 +1145,17 @@ fn build_char_code_to_width(
 
 /// Encoding+Differences+AGL による Unicode 復元
 fn simple_font_to_unicode(
-    default_encoding: &[String; 256],
+    default_encoding: &SimpleEncoding,
     differences: &HashMap<u32, String>,
     base_encoding_name: Option<&str>,
 ) -> HashMap<u32, String> {
-    let mut encoding: [String; 256] = default_encoding.clone();
+    let mut encoding: SimpleEncoding = default_encoding.clone();
     for (&cc, gname) in differences {
         if gname == ".notdef" {
             continue;
         }
         if (cc as usize) < 256 {
-            encoding[cc as usize] = gname.clone();
+            encoding[cc as usize] = Cow::Owned(gname.clone());
         }
     }
 
@@ -1109,7 +1167,7 @@ fn simple_font_to_unicode(
 }
 
 fn try_simple_to_unicode(
-    encoding: &[String; 256],
+    encoding: &SimpleEncoding,
     base_encoding_name: Option<&str>,
     force_glyphs: bool,
 ) -> Option<HashMap<u32, String>> {
@@ -1125,7 +1183,7 @@ fn try_simple_to_unicode(
         }
         // ヒューリスティック
         match glyph_name_to_codepoint(glyph_name, force_glyphs) {
-            Ok(Some(code)) => {
+            GlyphNameCode::Code(code) => {
                 if code > 0 && code <= 0x10_ffff {
                     // baseEncoding があり code==charcode なら base のグリフを優先
                     if let Some(ben) = base_encoding_name {
@@ -1146,14 +1204,13 @@ fn try_simple_to_unicode(
                     }
                 }
             }
-            Ok(None) => {
+            GlyphNameCode::NotFound => {
                 // 合字など
                 if let Some(s) = ligature_fallback(glyph_name) {
                     to_unicode.insert(charcode, s);
                 }
             }
-            Err(()) => {
-                // Cdd の再解析要求
+            GlyphNameCode::RetryAsHex => {
                 if !force_glyphs {
                     return None;
                 }
@@ -1163,43 +1220,53 @@ fn try_simple_to_unicode(
     Some(to_unicode)
 }
 
-/// グリフ名ヒューリスティック。Err は Cdd の 16 進再解析要求
-fn glyph_name_to_codepoint(glyph_name: &str, force_glyphs: bool) -> Result<Option<u32>, ()> {
+/// グリフ名ヒューリスティックの結果
+enum GlyphNameCode {
+    /// 数値コードとして解釈できた
+    Code(u32),
+    /// 解釈できない（合字等の後段フォールバックへ）
+    NotFound,
+    /// Cdd の10進解釈が矛盾。表全体を16進で再解析する
+    RetryAsHex,
+}
+
+/// グリフ名ヒューリスティック
+fn glyph_name_to_codepoint(glyph_name: &str, force_glyphs: bool) -> GlyphNameCode {
     let bytes = glyph_name.as_bytes();
     if bytes.is_empty() {
-        return Ok(None);
+        return GlyphNameCode::NotFound;
     }
     match bytes[0] {
         b'G' if glyph_name.len() == 3 => {
             if let Ok(code) = u32::from_str_radix(&glyph_name[1..], 16) {
-                return Ok(Some(code));
+                return GlyphNameCode::Code(code);
             }
         }
         b'g' if glyph_name.len() == 5 => {
             if let Ok(code) = u32::from_str_radix(&glyph_name[1..], 16) {
-                return Ok(Some(code));
+                return GlyphNameCode::Code(code);
             }
         }
         b'C' | b'c' if (3..=4).contains(&glyph_name.len()) => {
             let code_str = &glyph_name[1..];
             if force_glyphs {
                 if let Ok(code) = u32::from_str_radix(code_str, 16) {
-                    return Ok(Some(code));
+                    return GlyphNameCode::Code(code);
                 }
             } else if let Ok(code) = code_str.parse::<u32>() {
-                return Ok(Some(code));
+                return GlyphNameCode::Code(code);
             } else if u32::from_str_radix(code_str, 16).is_ok() {
-                return Err(());
+                return GlyphNameCode::RetryAsHex;
             }
         }
         b'u' => {
             if let Some(code) = unicode_from_uni_name(glyph_name) {
-                return Ok(Some(code));
+                return GlyphNameCode::Code(code);
             }
         }
         _ => {}
     }
-    Ok(None)
+    GlyphNameCode::NotFound
 }
 
 /// uniXXXX / uXXXX{XX}（大文字 hex のみ）
@@ -1390,13 +1457,8 @@ pub(crate) fn parse_ttf_ascent_descent(font: &[u8]) -> Option<(f64, f64)> {
     Some((ascent, descent))
 }
 
+/// FontMatrix の第1成分。欠落・不正時は既定の 0.001
 fn font_matrix_a(dict: &Dict, data: &[u8], xref: Option<&XRef>) -> f64 {
-    // 既定 Type3 も PDF では [0.001 0 0 0.001 0 0] が一般的だが、
-    // 欠落時は identity 相当の 1.0（lookupMatrix の FONT_IDENTITY_MATRIX）
-    // pdf.js FONT_IDENTITY_MATRIX = [1,0,0,1,0,0] for missing; Type3 usually has explicit.
-    // evaluator: lookupMatrix(dict.getArray("FontMatrix"), FONT_IDENTITY_MATRIX)
-    // FONT_IDENTITY_MATRIX = [0.001,0,0,0.001,0,0] in shared/util.js? 
-    // Actually in pdf.js: const FONT_IDENTITY_MATRIX = [0.001, 0, 0, 0.001, 0, 0];
     match dict.get("FontMatrix") {
         Some(o) => match resolve_obj(o, data, xref) {
             Object::Array(a) if !a.is_empty() => {
@@ -1414,8 +1476,9 @@ fn decode_stream_bytes(data: &[u8], stream: &Stream, xref: Option<&XRef>) -> Opt
         data: &'a [u8],
     }
     impl Resolver for FetchResolver<'_> {
-        fn resolve(&self, r: Ref) -> Option<Object> {
-            self.xref.and_then(|x| x.fetch(r, self.data).ok())
+        fn resolve(&self, r: Ref) -> crate::error::Result<Option<Object>> {
+            // フォント解釈は寛容に扱い、失敗は未解決として続行する
+            Ok(self.xref.and_then(|x| x.fetch(r, self.data).ok()))
         }
     }
     decode_stream(
@@ -1459,14 +1522,6 @@ fn as_int(obj: &Object) -> Option<i64> {
         Object::Real(n) if n.fract() == 0.0 && n.is_finite() => Some(*n as i64),
         _ => None,
     }
-}
-
-fn bytes_as_int(bytes: &[u8]) -> u32 {
-    let mut a: u32 = 0;
-    for &b in bytes {
-        a = (a << 8) | u32::from(b);
-    }
-    a
 }
 
 fn codepoint_to_string(cp: u32) -> String {
@@ -1564,13 +1619,13 @@ mod tests {
         let font = LoadedFont::stub("F1");
         let gs = font.chars_to_glyphs(b"A \xff");
         assert_eq!(gs.len(), 3);
-        assert_eq!(gs[0].0, "A");
-        assert!(approx(gs[0].1, 500.0));
-        assert!(!gs[0].2);
-        assert_eq!(gs[1].0, " ");
-        assert!(gs[1].2);
-        assert_eq!(gs[2].0, "\u{00ff}");
-        assert!(!gs[2].2);
+        assert_eq!(gs[0].unicode, "A");
+        assert!(approx(gs[0].width, 500.0));
+        assert!(!gs[0].is_space);
+        assert_eq!(gs[1].unicode, " ");
+        assert!(gs[1].is_space);
+        assert_eq!(gs[2].unicode, "\u{00ff}");
+        assert!(!gs[2].is_space);
     }
 
     #[test]
@@ -1599,12 +1654,12 @@ mod tests {
 
         let font = load_font_dict(&font_dict, "F1", &[], None);
         let gs = font.chars_to_glyphs(b"ABC");
-        assert!(approx(gs[0].1, 600.0));
-        assert!(approx(gs[1].1, 700.0));
-        assert!(approx(gs[2].1, 800.0));
+        assert!(approx(gs[0].width, 600.0));
+        assert!(approx(gs[1].width, 700.0));
+        assert!(approx(gs[2].width, 800.0));
         // 範囲外 → MissingWidth
         let out = font.chars_to_glyphs(&[0x20]);
-        assert!(approx(out[0].1, 250.0));
+        assert!(approx(out[0].width, 250.0));
         assert!(approx(font.ascent(), 0.8));
         assert!(approx(font.descent(), -0.2));
     }
@@ -1632,10 +1687,10 @@ mod tests {
 
         let font = load_font_dict(&font_dict, "F1", &[], None);
         let gs = font.chars_to_glyphs(&[0, 1, 2]);
-        assert!(approx(gs[0].1, 500.0));
+        assert!(approx(gs[0].width, 500.0));
         // index 1 は非数値スキップで widths に無い → MissingWidth
-        assert!(approx(gs[1].1, 100.0));
-        assert!(approx(gs[2].1, 600.0));
+        assert!(approx(gs[1].width, 100.0));
+        assert!(approx(gs[2].width, 600.0));
     }
 
     #[test]
@@ -1668,16 +1723,16 @@ mod tests {
         // charcode 0x0001 → width 100
         let g = font.chars_to_glyphs(&[0x00, 0x01]);
         assert_eq!(g.len(), 1);
-        assert!(approx(g[0].1, 100.0));
+        assert!(approx(g[0].width, 100.0));
         let g = font.chars_to_glyphs(&[0x00, 0x02]);
-        assert!(approx(g[0].1, 200.0));
+        assert!(approx(g[0].width, 200.0));
         let g = font.chars_to_glyphs(&[0x00, 0x0a]); // 10
-        assert!(approx(g[0].1, 300.0));
+        assert!(approx(g[0].width, 300.0));
         let g = font.chars_to_glyphs(&[0x00, 0x0c]); // 12
-        assert!(approx(g[0].1, 300.0));
+        assert!(approx(g[0].width, 300.0));
         // DW
         let g = font.chars_to_glyphs(&[0x00, 0xff]);
-        assert!(approx(g[0].1, 1000.0));
+        assert!(approx(g[0].width, 1000.0));
     }
 
     #[test]
@@ -1702,7 +1757,7 @@ mod tests {
 
         let font = load_font_dict(&font_dict, "T3", &[], None);
         let g = font.chars_to_glyphs(b"A");
-        assert!(approx(g[0].1, 600.0), "got {}", g[0].1);
+        assert!(approx(g[0].width, 600.0), "got {}", g[0].width);
 
         // FontMatrix[0]=0.001, width=600 → 600*0.001*1000 = 600
         let mut font_dict2 = Dict::new();
@@ -1722,7 +1777,7 @@ mod tests {
         );
         let font2 = load_font_dict(&font_dict2, "T3b", &[], None);
         let g2 = font2.chars_to_glyphs(b"A");
-        assert!(approx(g2[0].1, 600.0), "got {}", g2[0].1);
+        assert!(approx(g2[0].width, 600.0), "got {}", g2[0].width);
     }
 
     #[test]
@@ -1751,7 +1806,7 @@ endcmap
 
         let font = load_font_dict(&font_dict, "F1", cmap_data, None);
         let g = font.chars_to_glyphs(b"A");
-        assert_eq!(g[0].0, "B");
+        assert_eq!(g[0].unicode, "B");
     }
 
     #[test]
@@ -1841,9 +1896,9 @@ currentfile eexec\n\
 
         let font = load_font_dict(&d, "T1", pfa, None);
         let g = font.chars_to_glyphs(&[11, 12, 39]);
-        assert_eq!(g[0].0, "\u{fb00}", "ff ligature, got {:?}", g[0].0);
-        assert_eq!(g[1].0, "\u{fb01}", "fi ligature, got {:?}", g[1].0);
-        assert_eq!(g[2].0, "\u{2019}", "quoteright, got {:?}", g[2].0);
+        assert_eq!(g[0].unicode, "\u{fb00}", "ff ligature, got {:?}", g[0].unicode);
+        assert_eq!(g[1].unicode, "\u{fb01}", "fi ligature, got {:?}", g[1].unicode);
+        assert_eq!(g[2].unicode, "\u{2019}", "quoteright, got {:?}", g[2].unicode);
     }
 
     #[test]
@@ -1885,7 +1940,7 @@ endcmap
         let font = load_font_dict(&type0, "C1", cmap_data, None);
         let g = font.chars_to_glyphs(b"A");
         assert_eq!(g.len(), 1);
-        assert!(approx(g[0].1, 777.0), "width={}", g[0].1);
+        assert!(approx(g[0].width, 777.0), "width={}", g[0].width);
     }
 
     #[test]
@@ -1903,11 +1958,11 @@ endcmap
         // 2-byte 0x0020 is NOT word-spacing (length != 1)
         let g = font.chars_to_glyphs(&[0x00, 0x20]);
         assert_eq!(g.len(), 1);
-        assert!(!g[0].2);
+        assert!(!g[0].is_space);
         // simple font space is
         let simple = LoadedFont::stub("S");
         let g2 = simple.chars_to_glyphs(b" ");
-        assert!(g2[0].2);
+        assert!(g2[0].is_space);
     }
 
     #[test]
@@ -1956,8 +2011,8 @@ endcmap
 
         let font = load_font_dict(&font_dict, "F1", &[], None);
         let g = font.chars_to_glyphs(b"A");
-        assert!(approx(g[0].1, 667.0), "width={}", g[0].1);
-        assert_eq!(g[0].0, "A");
+        assert!(approx(g[0].width, 667.0), "width={}", g[0].width);
+        assert_eq!(g[0].unicode, "A");
     }
 
     #[test]
@@ -1985,9 +2040,9 @@ endcmap
 
         let font = load_font_dict(&font_dict, "F1", &[], None);
         let g = font.chars_to_glyphs(b"AB");
-        assert_eq!(g[0].0, "W");
-        assert!(approx(g[0].1, 944.0), "width={}", g[0].1);
-        assert_eq!(g[1].0, "α");
+        assert_eq!(g[0].unicode, "W");
+        assert!(approx(g[0].width, 944.0), "width={}", g[0].width);
+        assert_eq!(g[1].unicode, "α");
     }
 
     #[test]
@@ -2054,14 +2109,14 @@ endcmap
         // 0x8140 → 全角空白 U+3000、幅 500
         let g = font.chars_to_glyphs(&[0x81, 0x40]);
         assert_eq!(g.len(), 1);
-        assert_eq!(g[0].0, "\u{3000}");
-        assert!(approx(g[0].1, 500.0), "width={}", g[0].1);
+        assert_eq!(g[0].unicode, "\u{3000}");
+        assert!(approx(g[0].width, 500.0), "width={}", g[0].width);
 
         // 1バイト ASCII "A" + 2バイト 0x8140
         let g2 = font.chars_to_glyphs(&[0x41, 0x81, 0x40]);
         assert_eq!(g2.len(), 2);
-        assert!(!g2[0].0.is_empty());
-        assert_eq!(g2[1].0, "\u{3000}");
+        assert!(!g2[0].unicode.is_empty());
+        assert_eq!(g2[1].unicode, "\u{3000}");
     }
 
     #[test]
@@ -2072,8 +2127,8 @@ endcmap
         assert!(!h.vertical());
         let gh = h.chars_to_glyphs(&[0x81, 0x40]);
         let gv = v.chars_to_glyphs(&[0x81, 0x40]);
-        assert_eq!(gh[0].0, "\u{3000}");
-        assert_eq!(gv[0].0, gh[0].0);
+        assert_eq!(gh[0].unicode, "\u{3000}");
+        assert_eq!(gv[0].unicode, gh[0].unicode);
     }
 
     #[test]
@@ -2098,7 +2153,7 @@ endcmap
 
         let font = load_font_dict(&type0, "Cjk", cmap_data, None);
         let g = font.chars_to_glyphs(&[0x81, 0x40]);
-        assert_eq!(g[0].0, "X");
+        assert_eq!(g[0].unicode, "X");
     }
 
     #[test]
@@ -2137,9 +2192,9 @@ endcmap
         let lo = (cid & 0xff) as u8;
         let g = font.chars_to_glyphs(&[hi, lo]);
         assert_eq!(g.len(), 1);
-        assert_eq!(g[0].0, "\u{3000}");
-        assert!(approx(g[0].1, 600.0), "width={}", g[0].1);
-        assert!(g[0].3.is_none());
+        assert_eq!(g[0].unicode, "\u{3000}");
+        assert!(approx(g[0].width, 600.0), "width={}", g[0].width);
+        assert!(g[0].vmetric.is_none());
     }
 
     fn type0_identity_v(with_w2: bool) -> Dict {
@@ -2182,7 +2237,7 @@ endcmap
         // 0x0042 → CID 0x42、W2 無し → 既定 [-1000, 500, 880]
         let g = font.chars_to_glyphs(&[0x00, 0x42]);
         assert_eq!(g.len(), 1);
-        let vm = g[0].3.expect("vmetric");
+        let vm = g[0].vmetric.expect("vmetric");
         assert!(approx(vm[0], -1000.0), "w1y={}", vm[0]);
         assert!(approx(vm[1], 500.0), "v1x={}", vm[1]);
         assert!(approx(vm[2], 880.0), "v1y={}", vm[2]);
@@ -2193,13 +2248,13 @@ endcmap
         let font = load_font_dict(&type0_identity_v(true), "V", &[], None);
         assert!(font.vertical());
         let g = font.chars_to_glyphs(&[0x00, 0x41]);
-        let vm = g[0].3.expect("vmetric");
+        let vm = g[0].vmetric.expect("vmetric");
         assert!(approx(vm[0], -800.0));
         assert!(approx(vm[1], 400.0));
         assert!(approx(vm[2], 700.0));
         // 他 CID は既定
         let g2 = font.chars_to_glyphs(&[0x00, 0x42]);
-        let vm2 = g2[0].3.expect("vmetric");
+        let vm2 = g2[0].vmetric.expect("vmetric");
         assert!(approx(vm2[0], -1000.0));
         assert!(approx(vm2[1], 500.0));
         assert!(approx(vm2[2], 880.0));
@@ -2277,6 +2332,6 @@ endcmap
         let font = load_font_dict(&type0, "H", &[], None);
         assert!(!font.vertical());
         let g = font.chars_to_glyphs(&[0x00, 0x41]);
-        assert!(g[0].3.is_none());
+        assert!(g[0].vmetric.is_none());
     }
 }

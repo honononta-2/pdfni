@@ -105,9 +105,9 @@ impl Dict {
         let mut out = Dict::new();
         for d in dicts {
             for (k, v) in &d.map {
-                if !out.map.contains_key(k) {
-                    out.map.insert(k.clone(), v.clone());
-                }
+                out.map
+                    .entry(k.clone())
+                    .or_insert_with(|| v.clone());
             }
         }
         out

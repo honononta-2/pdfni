@@ -2,7 +2,6 @@
 //!
 //! 準拠: pdf.js `xref.js` の readXRef / fetch / fetchCompressed（ストリーミング再開は省略）
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -13,7 +12,7 @@ use super::crypto::{decrypt_object_tree, CipherFactory};
 use super::file::{find_pdf_header_offset, find_startxref};
 use super::filters::decode_stream;
 use super::font::LoadedFont;
-use super::lexer::{Lexer, Token};
+use super::lexer::{Cmd, Lexer, Op, Token};
 use super::object::{Dict, Object, Ref, Stream};
 use super::parser::{NullResolver, Parser, Resolver};
 
@@ -27,7 +26,7 @@ pub(crate) enum XrefEntry {
 }
 
 /// 相互参照表とオブジェクトキャッシュ
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct XRef {
     /// `%PDF-` 署名のファイル内オフセット（オフセット基準）
@@ -35,18 +34,16 @@ pub(crate) struct XRef {
     entries: HashMap<u32, XrefEntry>,
     /// 最初に得た trailer（/Root /Size /Encrypt /Info の参照元）
     trailer: Dict,
-    /// ページ間 clone でオブジェクト本体を共有する
-    cache: RefCell<HashMap<u32, Arc<Object>>>,
-    /// 文書内で共有する読み込み済みフォント（キーは (オブジェクト番号, 世代)）
-    pub(super) font_cache: Arc<Mutex<HashMap<(u32, u16), Arc<LoadedFont>>>>,
+    /// スレッド間で共有するオブジェクトキャッシュ
+    cache: Mutex<HashMap<u32, Arc<Object>>>,
+    /// 文書内で共有する読み込み済みフォント
+    pub(super) font_cache: Arc<Mutex<HashMap<Ref, Arc<LoadedFont>>>>,
     /// 文書内で共有する定義済み CMap（名前 → 構築結果）
     pub(super) cmap_cache: Arc<Mutex<HashMap<String, Arc<CMap>>>>,
     /// 文書内で共有する Form XObject 復号済み本文（参照番号 → 本文）
     pub(super) form_body_cache: Arc<Mutex<HashMap<u32, Arc<Vec<u8>>>>>,
-    /// 取得中の参照（循環検出）
-    pending: RefCell<HashSet<(u32, u16)>>,
-    /// Resolver 経由で起きたエラー（循環など）を fetch 呼び出し元へ伝える
-    resolve_error: RefCell<Option<String>>,
+    /// スレッド別の取得中参照（循環検出）
+    pending: Mutex<HashMap<std::thread::ThreadId, HashSet<Ref>>>,
     /// Standard セキュリティハンドラ（無ければ平文）
     cipher: Option<CipherFactory>,
     /// /Encrypt オブジェクト番号（復号対象外）
@@ -63,14 +60,8 @@ struct XRefResolver<'a> {
 }
 
 impl Resolver for XRefResolver<'_> {
-    fn resolve(&self, r: Ref) -> Option<Object> {
-        match self.xref.fetch(r, self.data) {
-            Ok(obj) => Some(obj),
-            Err(e) => {
-                *self.xref.resolve_error.borrow_mut() = Some(e.to_string());
-                None
-            }
-        }
+    fn resolve(&self, r: Ref) -> Result<Option<Object>> {
+        self.xref.fetch(r, self.data).map(Some)
     }
 }
 
@@ -100,12 +91,11 @@ impl XRef {
             header_offset,
             entries: HashMap::new(),
             trailer: Dict::new(),
-            cache: RefCell::new(HashMap::new()),
+            cache: Mutex::new(HashMap::new()),
             font_cache: Arc::new(Mutex::new(HashMap::new())),
             cmap_cache: Arc::new(Mutex::new(HashMap::new())),
             form_body_cache: Arc::new(Mutex::new(HashMap::new())),
-            pending: RefCell::new(HashSet::new()),
-            resolve_error: RefCell::new(None),
+            pending: Mutex::new(HashMap::new()),
             cipher: None,
             encrypt_num: None,
             #[cfg(test)]
@@ -171,22 +161,26 @@ impl XRef {
         let Some(root_raw) = self.trailer.get("Root") else {
             return false;
         };
-        let root = match root_raw {
-            Object::Ref(r) => match self.fetch(*r, data) {
-                Ok(o) => o,
-                Err(_) => return false,
-            },
-            Object::Dict(d) => Object::Dict(d.clone()),
+        let fetched;
+        let catalog: &Dict = match root_raw {
+            Object::Ref(r) => {
+                let Ok(o) = self.fetch_shared(*r, data) else {
+                    return false;
+                };
+                fetched = o;
+                match &*fetched {
+                    Object::Dict(d) => d,
+                    _ => return false,
+                }
+            }
+            Object::Dict(d) => d,
             _ => return false,
-        };
-        let Object::Dict(catalog) = root else {
-            return false;
         };
         let Some(pages_raw) = catalog.get("Pages") else {
             return false;
         };
         match pages_raw {
-            Object::Ref(r) => matches!(self.fetch(*r, data), Ok(Object::Dict(_))),
+            Object::Ref(r) => matches!(self.fetch_shared(*r, data).as_deref(), Ok(Object::Dict(_))),
             Object::Dict(_) => true,
             _ => false,
         }
@@ -197,30 +191,38 @@ impl XRef {
         let Some(root_raw) = trailer.get("Root") else {
             return false;
         };
-        let root = match root_raw {
-            Object::Ref(r) => match self.fetch(*r, data) {
-                Ok(o) => o,
-                Err(_) => return false,
-            },
-            Object::Dict(d) => Object::Dict(d.clone()),
+        let fetched_root;
+        let catalog: &Dict = match root_raw {
+            Object::Ref(r) => {
+                let Ok(o) = self.fetch_shared(*r, data) else {
+                    return false;
+                };
+                fetched_root = o;
+                match &*fetched_root {
+                    Object::Dict(d) => d,
+                    _ => return false,
+                }
+            }
+            Object::Dict(d) => d,
             _ => return false,
-        };
-        let Object::Dict(catalog) = root else {
-            return false;
         };
         let Some(pages_raw) = catalog.get("Pages") else {
             return false;
         };
-        let pages = match pages_raw {
-            Object::Ref(r) => match self.fetch(*r, data) {
-                Ok(o) => o,
-                Err(_) => return false,
-            },
-            Object::Dict(d) => Object::Dict(d.clone()),
+        let fetched_pages;
+        let pages_dict: &Dict = match pages_raw {
+            Object::Ref(r) => {
+                let Ok(o) = self.fetch_shared(*r, data) else {
+                    return false;
+                };
+                fetched_pages = o;
+                match &*fetched_pages {
+                    Object::Dict(d) => d,
+                    _ => return false,
+                }
+            }
+            Object::Dict(d) => d,
             _ => return false,
-        };
-        let Object::Dict(pages_dict) = pages else {
-            return false;
         };
         matches!(pages_dict.get("Count"), Some(Object::Int(_)) | Some(Object::Real(_)))
     }
@@ -353,7 +355,7 @@ impl XRef {
             {
                 trailer_dicts.push(dict);
             }
-            xref.cache.borrow_mut().clear();
+            xref.cache.lock().unwrap().clear();
         }
 
         // trailer 選定: /Root→/Pages→/Count が引けるものを後勝ちで採用
@@ -363,7 +365,7 @@ impl XRef {
             if dict.has("Root") {
                 if xref.trailer_pages_valid(data, dict) {
                     chosen = Some(dict.clone());
-                } else if fallback.is_none() || dict.has("Root") {
+                } else {
                     fallback = Some(dict.clone());
                 }
             }
@@ -385,7 +387,7 @@ impl XRef {
         })?;
 
         // キャッシュを空にして暗号初期化（fetch 結果が混ざるのを防ぐ）
-        xref.cache.borrow_mut().clear();
+        xref.cache.lock().unwrap().clear();
         xref.init_cipher(data, password)?;
 
         if !xref.has_usable_root(data) {
@@ -476,31 +478,57 @@ impl XRef {
         }
     }
 
-    /// オブジェクトを取得する
+    /// Ref なら fetch_shared、それ以外は clone を包んで返す（読み取り用）
+    pub fn resolve_shared(&self, obj: &Object, data: &[u8]) -> Arc<Object> {
+        match obj {
+            Object::Ref(r) => self
+                .fetch_shared(*r, data)
+                .unwrap_or_else(|_| Arc::new(Object::Null)),
+            other => Arc::new(other.clone()),
+        }
+    }
+
+    /// 取得中集合へ追加。既に取得中なら false（循環）
+    fn pending_insert(&self, r: Ref) -> bool {
+        let mut map = self.pending.lock().unwrap();
+        map.entry(std::thread::current().id()).or_default().insert(r)
+    }
+
+    fn pending_remove(&self, r: Ref) {
+        let mut map = self.pending.lock().unwrap();
+        if let Some(set) = map.get_mut(&std::thread::current().id()) {
+            set.remove(&r);
+        }
+    }
+
+    /// オブジェクトを取得する（所有コピーが要る呼び出し側向け）
     pub fn fetch(&self, r: Ref, data: &[u8]) -> Result<Object> {
+        Ok((*self.fetch_shared(r, data)?).clone())
+    }
+
+    /// オブジェクトをキャッシュ共有のまま取得する
+    ///
+    /// Stream はバッファ上の範囲参照のためキャッシュせずその都度組み立てる
+    pub fn fetch_shared(&self, r: Ref, data: &[u8]) -> Result<Arc<Object>> {
         let num = r.num;
         let generation = r.generation;
 
-        if let Some(arc) = self.cache.borrow().get(&num) {
-            return Ok((**arc).clone());
+        if let Some(arc) = self.cache.lock().unwrap().get(&num) {
+            return Ok(Arc::clone(arc));
         }
 
         let entry = match self.entries.get(&num) {
             None | Some(XrefEntry::Free) => {
-                return Ok(Object::Null);
+                return Ok(Arc::new(Object::Null));
             }
             Some(e) => e.clone(),
         };
 
-        {
-            let mut pending = self.pending.borrow_mut();
-            if pending.contains(&(num, generation)) {
-                return Err(Error::Reader(format!(
-                    "circular reference detected: {} {}",
-                    num, generation
-                )));
-            }
-            pending.insert((num, generation));
+        if !self.pending_insert(r) {
+            return Err(Error::Reader(format!(
+                "circular reference detected: {} {}",
+                num, generation
+            )));
         }
 
         let result = match &entry {
@@ -514,11 +542,11 @@ impl XRef {
             }
         };
 
-        self.pending.borrow_mut().remove(&(num, generation));
+        self.pending_remove(r);
 
-        let obj = result?;
-        if !matches!(obj, Object::Stream(_)) {
-            self.cache.borrow_mut().insert(num, Arc::new(obj.clone()));
+        let obj = Arc::new(result?);
+        if !matches!(*obj, Object::Stream(_)) {
+            self.cache.lock().unwrap().insert(num, Arc::clone(&obj));
         }
         Ok(obj)
     }
@@ -586,12 +614,9 @@ impl XRef {
         }
 
         match cmd_tok {
-            Token::Cmd(cmd) if cmd == "obj" => {
+            Token::Cmd(Cmd::Op(Op::Obj)) => {
                 let mut parser = Parser::new(data, lexer.byte_pos());
                 let mut obj = parser.get_obj(resolver)?;
-                if let Some(msg) = self.resolve_error.borrow_mut().take() {
-                    return Err(Error::Reader(msg));
-                }
                 // /Encrypt オブジェクト自体は復号しない
                 let skip = self.encrypt_num == Some(r.num);
                 if let Some(cipher) = self.cipher.as_ref() {
@@ -601,7 +626,7 @@ impl XRef {
                 }
                 Ok(obj)
             }
-            Token::Cmd(cmd) if cmd.starts_with("obj") => {
+            Token::Cmd(Cmd::Other(cmd)) if cmd.starts_with("obj") => {
                 // `obj1234` のようにヘッダが数値と誤結合した救済
                 let rest = &cmd[3..];
                 if let Ok(n) = rest.parse::<i64>() {
@@ -627,8 +652,8 @@ impl XRef {
         data: &[u8],
     ) -> Result<Object> {
         let stm_ref = Ref::new(objstm_num, 0);
-        let stm_obj = self.fetch(stm_ref, data)?;
-        let Object::Stream(stream) = stm_obj else {
+        let stm_obj = self.fetch_shared(stm_ref, data)?;
+        let Object::Stream(stream) = &*stm_obj else {
             return Err(Error::Reader("bad ObjStm stream".into()));
         };
 
@@ -649,9 +674,6 @@ impl XRef {
         let resolver = XRefResolver { xref: self, data };
         // ObjStm 本文はストリームとして復号。中身のオブジェクトは再復号しない
         let decoded = decode_stream(data, &stream, &resolver, self.cipher.as_ref())?;
-        if let Some(msg) = self.resolve_error.borrow_mut().take() {
-            return Err(Error::Reader(msg));
-        }
 
         // 先頭の `<num> <相対offset>` ペア N 個
         let mut lexer = Lexer::new_at(&decoded, 0);
@@ -701,9 +723,6 @@ impl XRef {
 
         let mut parser = Parser::new(&decoded, obj_start);
         let obj = parser.get_obj(&resolver)?;
-        if let Some(msg) = self.resolve_error.borrow_mut().take() {
-            return Err(Error::Reader(msg));
-        }
 
         // 同ストリーム内の非 Stream オブジェクトをキャッシュ
         if !matches!(obj, Object::Stream(_)) {
@@ -712,7 +731,7 @@ impl XRef {
                 if j == i {
                     continue;
                 }
-                if self.cache.borrow().contains_key(&onum) {
+                if self.cache.lock().unwrap().contains_key(&onum) {
                     continue;
                 }
                 let start = match first.checked_add(offsets[j]) {
@@ -722,7 +741,7 @@ impl XRef {
                 let mut p = Parser::new(&decoded, start);
                 if let Ok(sib) = p.get_obj(&NullResolver) {
                     if !matches!(sib, Object::Stream(_)) {
-                        self.cache.borrow_mut().insert(onum, Arc::new(sib));
+                        self.cache.lock().unwrap().insert(onum, Arc::new(sib));
                     }
                 }
             }
@@ -746,7 +765,7 @@ impl XRef {
         let first = lexer.next_token();
 
         match first {
-            Token::Cmd(cmd) if cmd == "xref" => {
+            Token::Cmd(Cmd::Op(Op::Xref)) => {
                 let dict = self.read_xref_table(body, lexer.byte_pos())?;
                 // /XRefStm
                 if let Some(Object::Int(off)) = dict.get("XRefStm").cloned() {
@@ -766,7 +785,7 @@ impl XRef {
                     return Err(Error::Reader("Invalid XRef stream".into()));
                 };
                 match obj_tok {
-                    Token::Cmd(cmd) if cmd == "obj" => {}
+                    Token::Cmd(Cmd::Op(Op::Obj)) => {}
                     _ => return Err(Error::Reader("Invalid XRef stream".into())),
                 }
 
@@ -790,7 +809,7 @@ impl XRef {
         loop {
             let tok = lexer.next_token();
             match tok {
-                Token::Cmd(cmd) if cmd == "trailer" => break,
+                Token::Cmd(Cmd::Op(Op::Trailer)) => break,
                 Token::Int(first_raw) => {
                     let Token::Int(count_raw) = lexer.next_token() else {
                         return Err(Error::Reader(
@@ -818,8 +837,8 @@ impl XRef {
                         };
                         let type_tok = lexer.next_token();
                         let (is_free, is_in_use) = match type_tok {
-                            Token::Cmd(ref s) if s == "f" => (true, false),
-                            Token::Cmd(ref s) if s == "n" => (false, true),
+                            Token::Cmd(Cmd::Op(Op::LowerF)) => (true, false),
+                            Token::Cmd(Cmd::Op(Op::LowerN)) => (false, true),
                             _ => {
                                 return Err(Error::Reader(format!(
                                     "Invalid entry in XRef subsection: {first}, {count}"
@@ -907,21 +926,18 @@ impl XRef {
 
         let size = dict_int(&stream.dict, "Size").unwrap_or(0).max(0) as usize;
         let index_pairs: Vec<(u32, u32)> = match stream.dict.get("Index") {
-            Some(Object::Array(arr)) => {
-                let mut pairs = Vec::new();
-                let mut i = 0;
-                while i + 1 < arr.len() {
-                    let first = as_nonneg_u32(&arr[i]).ok_or_else(|| {
+            Some(Object::Array(arr)) => arr
+                .chunks_exact(2)
+                .map(|pair| {
+                    let first = as_nonneg_u32(&pair[0]).ok_or_else(|| {
                         Error::Reader("Invalid XRef range fields".into())
                     })?;
-                    let n = as_nonneg_u32(&arr[i + 1]).ok_or_else(|| {
+                    let n = as_nonneg_u32(&pair[1]).ok_or_else(|| {
                         Error::Reader("Invalid XRef range fields".into())
                     })?;
-                    pairs.push((first, n));
-                    i += 2;
-                }
-                pairs
-            }
+                    Ok((first, n))
+                })
+                .collect::<Result<_>>()?,
             _ => vec![(0, size as u32)],
         };
 
@@ -983,8 +999,13 @@ impl Resolver for XRef {
     ///
     /// 通常の Length 解決は `XRefResolver`（fetch 内部）経由。
     /// 外部から `dyn Resolver` として使う場合はキャッシュヒットのみ。
-    fn resolve(&self, r: Ref) -> Option<Object> {
-        self.cache.borrow().get(&r.num).map(|arc| (**arc).clone())
+    fn resolve(&self, r: Ref) -> Result<Option<Object>> {
+        Ok(self
+            .cache
+            .lock()
+            .unwrap()
+            .get(&r.num)
+            .map(|arc| (**arc).clone()))
     }
 }
 
@@ -1284,13 +1305,11 @@ mod tests {
         let data_a = build_pdf_with_font("Helvetica");
         let data_b = build_pdf_with_font("Courier");
         let xref_a = XRef::parse(&data_a).expect("parse first document");
-        let xref_a_clone = xref_a.clone();
         let xref_b = XRef::parse(&data_b).expect("parse second document");
-        assert!(Arc::ptr_eq(&xref_a.font_cache, &xref_a_clone.font_cache));
         assert!(!Arc::ptr_eq(&xref_a.font_cache, &xref_b.font_cache));
 
         let font_a = lookup_font(&resources(), "F1", &data_a, Some(&xref_a));
-        let font_a_cached = lookup_font(&resources(), "F1", &data_a, Some(&xref_a_clone));
+        let font_a_cached = lookup_font(&resources(), "F1", &data_a, Some(&xref_a));
         let font_b = lookup_font(&resources(), "F1", &data_b, Some(&xref_b));
         assert!(Arc::ptr_eq(&font_a, &font_a_cached));
         assert!(!Arc::ptr_eq(&font_a, &font_b));

@@ -57,23 +57,18 @@ fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// startxref 直後の整数オフセットを読む
-fn parse_offset_after_startxref(data: &[u8], mut i: usize) -> Result<usize> {
-    while i < data.len() && is_pdf_whitespace(data[i]) {
-        i += 1;
+fn parse_offset_after_startxref(data: &[u8], i: usize) -> Result<usize> {
+    let invalid = || Error::Reader("startxref offset is missing or invalid".into());
+    let rest = data.get(i..).unwrap_or_default();
+    let ws = rest.iter().take_while(|&&b| is_pdf_whitespace(b)).count();
+    let digits = rest[ws..].iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits == 0 {
+        return Err(invalid());
     }
-    let start = i;
-    while i < data.len() && data[i].is_ascii_digit() {
-        i += 1;
-    }
-    if start == i {
-        return Err(Error::Reader(
-            "startxref offset is missing or invalid".into(),
-        ));
-    }
-    let s = std::str::from_utf8(&data[start..i])
-        .map_err(|_| Error::Reader("startxref offset is missing or invalid".into()))?;
-    s.parse::<usize>()
-        .map_err(|_| Error::Reader("startxref offset is missing or invalid".into()))
+    std::str::from_utf8(&rest[ws..ws + digits])
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .ok_or_else(invalid)
 }
 
 fn is_pdf_whitespace(b: u8) -> bool {

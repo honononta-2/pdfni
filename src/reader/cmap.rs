@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use super::bcmap::decode_bcmap;
 use super::data::bcmaps::bcmap_bytes;
-use super::lexer::{Lexer, Token};
+use super::lexer::{Cmd, Lexer, Op, Token};
 use crate::error::{Error, Result};
 
 /// 範囲展開の上限（DoS 対策、pdf.js MAX_MAP_RANGE）
@@ -228,13 +228,8 @@ impl CMap {
         if high < low || high - low > MAX_MAP_RANGE {
             return;
         }
-        let mut code = low;
-        while code <= high {
+        for code in low..=high {
             self.map.insert(code, MapValue::Cid(dst_low));
-            if code == high {
-                break;
-            }
-            code += 1;
             dst_low = dst_low.saturating_add(1);
         }
     }
@@ -244,13 +239,8 @@ impl CMap {
         if high < low || high - low > MAX_MAP_RANGE || dst.is_empty() {
             return;
         }
-        let mut code = low;
-        while code <= high {
+        for code in low..=high {
             self.map.insert(code, MapValue::Bytes(dst.clone()));
-            if code == high {
-                break;
-            }
-            code += 1;
             increment_last_byte(&mut dst);
         }
     }
@@ -260,15 +250,8 @@ impl CMap {
         if high < low || high - low > MAX_MAP_RANGE {
             return;
         }
-        let mut code = low;
-        let mut i = 0;
-        while code <= high && i < array.len() {
-            self.map.insert(code, MapValue::Bytes(array[i].clone()));
-            if code == high {
-                break;
-            }
-            code += 1;
-            i += 1;
+        for (code, dst) in (low..=high).zip(array) {
+            self.map.insert(code, MapValue::Bytes(dst.clone()));
         }
     }
 
@@ -296,26 +279,18 @@ impl CMap {
         }
     }
 
-    /// バイト列から (charcode, 消費バイト長) を返す
-    ///
-    /// どの range にも入らなければ (0, 1)
-    pub fn read_char_code(&self, bytes: &[u8], offset: usize) -> (u32, usize) {
-        if offset >= bytes.len() {
-            return (0, 1);
-        }
+    /// バイト列から (charcode, 消費バイト長) を読む。どの range にも入らなければ None
+    pub fn read_char_code(&self, bytes: &[u8], offset: usize) -> Option<(u32, usize)> {
         let mut c: u32 = 0;
-        for n in 0..4 {
-            if offset + n >= bytes.len() {
-                break;
-            }
-            c = (c << 8) | u32::from(bytes[offset + n]);
+        for (n, &b) in bytes.get(offset..)?.iter().take(4).enumerate() {
+            c = (c << 8) | u32::from(b);
             for &(low, high) in &self.codespace_ranges[n] {
                 if low <= c && c <= high {
-                    return (c, n + 1);
+                    return Some((c, n + 1));
                 }
             }
         }
-        (0, 1)
+        None
     }
 
     /// 埋め込みテキスト形式 CMap をパース
@@ -340,31 +315,31 @@ impl CMap {
                     }
                     previous = Some(tok);
                 }
-                Token::Cmd(cmd) => match cmd.as_ref() {
-                    "endcmap" => break,
-                    "usecmap" => {
+                Token::Cmd(cmd) => match cmd {
+                    Cmd::Op(Op::EndCmap) => break,
+                    Cmd::Op(Op::UseCmap) => {
                         if let Some(Token::Name(nm)) = &previous {
                             cmap.use_cmap = Some(nm.clone());
                         }
                         previous = None;
                     }
-                    "begincodespacerange" => {
+                    Cmd::Op(Op::BeginCodespaceRange) => {
                         parse_codespace_range(&mut cmap, &mut lexer);
                         previous = None;
                     }
-                    "beginbfchar" => {
+                    Cmd::Op(Op::BeginBfChar) => {
                         parse_bf_char(&mut cmap, &mut lexer);
                         previous = None;
                     }
-                    "begincidchar" => {
+                    Cmd::Op(Op::BeginCidChar) => {
                         parse_cid_char(&mut cmap, &mut lexer);
                         previous = None;
                     }
-                    "beginbfrange" => {
+                    Cmd::Op(Op::BeginBfRange) => {
                         parse_bf_range(&mut cmap, &mut lexer);
                         previous = None;
                     }
-                    "begincidrange" => {
+                    Cmd::Op(Op::BeginCidRange) => {
                         parse_cid_range(&mut cmap, &mut lexer);
                         previous = None;
                     }
@@ -428,7 +403,7 @@ fn increment_last_byte(dst: &mut Vec<u8>) {
 }
 
 /// 16進文字列等を整数キーに畳む
-fn bytes_to_int(bytes: &[u8]) -> u32 {
+pub(crate) fn bytes_to_int(bytes: &[u8]) -> u32 {
     let mut a: u32 = 0;
     for &b in bytes {
         a = (a << 8) | u32::from(b);
@@ -456,7 +431,7 @@ fn parse_codespace_range(cmap: &mut CMap, lexer: &mut Lexer<'_>) {
         let tok = lexer.next_token();
         match &tok {
             Token::Eof => break,
-            Token::Cmd(c) if c == "endcodespacerange" => return,
+            Token::Cmd(Cmd::Op(Op::EndCodespaceRange)) => return,
             Token::Str(low_bytes) => {
                 let n = low_bytes.len();
                 let low = bytes_to_int(low_bytes);
@@ -479,7 +454,7 @@ fn parse_bf_char(cmap: &mut CMap, lexer: &mut Lexer<'_>) {
         let tok = lexer.next_token();
         match &tok {
             Token::Eof => break,
-            Token::Cmd(c) if c == "endbfchar" => return,
+            Token::Cmd(Cmd::Op(Op::EndBfChar)) => return,
             Token::Str(src_bytes) => {
                 let src = bytes_to_int(src_bytes);
                 let dst_tok = lexer.next_token();
@@ -498,7 +473,7 @@ fn parse_cid_char(cmap: &mut CMap, lexer: &mut Lexer<'_>) {
         let tok = lexer.next_token();
         match &tok {
             Token::Eof => break,
-            Token::Cmd(c) if c == "endcidchar" => return,
+            Token::Cmd(Cmd::Op(Op::EndCidChar)) => return,
             Token::Str(src_bytes) => {
                 let src = bytes_to_int(src_bytes);
                 let dst_tok = lexer.next_token();
@@ -519,7 +494,7 @@ fn parse_cid_range(cmap: &mut CMap, lexer: &mut Lexer<'_>) {
         let tok = lexer.next_token();
         match &tok {
             Token::Eof => break,
-            Token::Cmd(c) if c == "endcidrange" => return,
+            Token::Cmd(Cmd::Op(Op::EndCidRange)) => return,
             Token::Str(low_bytes) => {
                 let low = bytes_to_int(low_bytes);
                 let high_tok = lexer.next_token();
@@ -545,7 +520,7 @@ fn parse_bf_range(cmap: &mut CMap, lexer: &mut Lexer<'_>) {
         let tok = lexer.next_token();
         match &tok {
             Token::Eof => break,
-            Token::Cmd(c) if c == "endbfrange" => return,
+            Token::Cmd(Cmd::Op(Op::EndBfRange)) => return,
             Token::Str(low_bytes) => {
                 let low = bytes_to_int(low_bytes);
                 let high_tok = lexer.next_token();
@@ -762,17 +737,22 @@ fn is_built_in_cmap(name: &str) -> bool {
     BUILT_IN_CMAPS.contains(&name)
 }
 
-/// ToUnicode 用: UTF-16BE バイト列を文字列へ（サロゲート対・奇数長0詰め）
+/// ToUnicode 用: UTF-16BE バイト列を文字列へ（サロゲート対・奇数長は先頭0詰め）
+///
+/// 不正なサロゲート列も次のユニットと結合する寛容な復号のため
+/// `char::decode_utf16` は使わない
 pub(crate) fn utf16be_bytes_to_string(token: &[u8]) -> String {
-    let mut bytes = token.to_vec();
-    if bytes.len() % 2 != 0 {
-        bytes.insert(0, 0);
-    }
+    let (first, rest) = if token.len() % 2 != 0 {
+        (Some(u16::from(token[0])), &token[1..])
+    } else {
+        (None, token)
+    };
+    let mut units = first
+        .into_iter()
+        .chain(rest.chunks_exact(2).map(|p| u16::from_be_bytes([p[0], p[1]])));
+
     let mut out = String::new();
-    let mut k = 0;
-    while k + 1 < bytes.len() {
-        let w1 = (u16::from(bytes[k]) << 8) | u16::from(bytes[k + 1]);
-        k += 2;
+    while let Some(w1) = units.next() {
         // サロゲート領域外
         if (w1 & 0xf800) != 0xd800 {
             if let Some(ch) = char::from_u32(u32::from(w1)) {
@@ -781,11 +761,7 @@ pub(crate) fn utf16be_bytes_to_string(token: &[u8]) -> String {
             continue;
         }
         // 高サロゲート + 低サロゲート
-        if k + 1 >= bytes.len() {
-            break;
-        }
-        let w2 = (u16::from(bytes[k]) << 8) | u16::from(bytes[k + 1]);
-        k += 2;
+        let Some(w2) = units.next() else { break };
         let cp = (u32::from(w1 & 0x3ff) << 10) + u32::from(w2 & 0x3ff) + 0x1_0000;
         if let Some(ch) = char::from_u32(cp) {
             out.push(ch);
@@ -802,10 +778,10 @@ mod tests {
     fn identity_h_two_byte_read() {
         let cmap = CMap::identity_h();
         // 0x0041 → charcode 0x41, length 2
-        let (code, len) = cmap.read_char_code(&[0x00, 0x41, 0x00, 0x42], 0);
+        let (code, len) = cmap.read_char_code(&[0x00, 0x41, 0x00, 0x42], 0).expect("match");
         assert_eq!(code, 0x0041);
         assert_eq!(len, 2);
-        let (code2, len2) = cmap.read_char_code(&[0x00, 0x41, 0x00, 0x42], 2);
+        let (code2, len2) = cmap.read_char_code(&[0x00, 0x41, 0x00, 0x42], 2).expect("match");
         assert_eq!(code2, 0x0042);
         assert_eq!(len2, 2);
         assert_eq!(cmap.lookup(0x0041).as_deref(), Some(&MapValue::Cid(0x0041)));
@@ -815,10 +791,9 @@ mod tests {
     fn read_char_code_no_match_consumes_one() {
         let mut cmap = CMap::new();
         cmap.add_codespace_range(1, 0x20, 0x7e);
-        let (code, len) = cmap.read_char_code(&[0x01, 0x41], 0);
-        assert_eq!(code, 0);
-        assert_eq!(len, 1);
-        let (code2, len2) = cmap.read_char_code(b"A", 0);
+        // no match -> None (callers advance by one byte)
+        assert_eq!(cmap.read_char_code(&[0x01, 0x41], 0), None);
+        let (code2, len2) = cmap.read_char_code(b"A", 0).expect("match");
         assert_eq!(code2, b'A' as u32);
         assert_eq!(len2, 1);
     }
@@ -844,7 +819,7 @@ endcmap
         assert_eq!(cmap.lookup(0x41).as_deref(), Some(&MapValue::Cid(100)));
         assert_eq!(cmap.lookup(0x42).as_deref(), Some(&MapValue::Cid(101)));
         assert_eq!(cmap.lookup(0x43).as_deref(), Some(&MapValue::Cid(102)));
-        let (code, len) = cmap.read_char_code(b"B", 0);
+        let (code, len) = cmap.read_char_code(b"B", 0).expect("match");
         assert_eq!(code, b'B' as u32);
         assert_eq!(len, 1);
     }
@@ -901,10 +876,10 @@ endcmap
         let cmap = CMap::load_predefined("90ms-RKSJ-H").expect("load 90ms-RKSJ-H");
         assert!(!cmap.codespace_ranges_for(1).is_empty());
         assert!(!cmap.codespace_ranges_for(2).is_empty());
-        let (code, len) = cmap.read_char_code(&[0x41], 0);
+        let (code, len) = cmap.read_char_code(&[0x41], 0).expect("match");
         assert_eq!(code, 0x41);
         assert_eq!(len, 1);
-        let (code2, len2) = cmap.read_char_code(&[0x81, 0x40], 0);
+        let (code2, len2) = cmap.read_char_code(&[0x81, 0x40], 0).expect("match");
         assert_eq!(code2, 0x8140);
         assert_eq!(len2, 2);
     }
@@ -966,7 +941,7 @@ endcmap
         assert_eq!(cmap.lookup(0x41).as_deref(), parent.lookup(0x41).as_deref());
         assert!(cmap.lookup(0x41).is_some());
         // 2 バイト codespace の読み取りも親と同じ
-        let (code, len) = cmap.read_char_code(&[0x81, 0x40], 0);
+        let (code, len) = cmap.read_char_code(&[0x81, 0x40], 0).expect("match");
         assert_eq!(code, 0x8140);
         assert_eq!(len, 2);
     }
