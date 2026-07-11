@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+use crate::columns::{Participant, ParticipantKind, split_regions};
 use crate::error::{Error, Result};
 use crate::extract::ExtractOptions;
 use crate::model::{BBox, Cell, Table};
@@ -311,6 +312,21 @@ fn build_blocks_owned(page: &TextPage, tables: Vec<Table>) -> Vec<DocBlock> {
         .filter_map(|line| filter_table_owned_line(page, line, &valid_cells))
         .collect();
 
+    let (parts, word_part_ids, table_part_ids, other_part_ids) =
+        collect_participants(&body_lines, &tables);
+
+    if let Some(leaf_of) = split_regions(page.width, page.height, &parts) {
+        return build_blocks_with_regions(
+            page,
+            body_lines,
+            tables,
+            &leaf_of,
+            &word_part_ids,
+            &table_part_ids,
+            &other_part_ids,
+        );
+    }
+
     let text_blocks = build_text_blocks(page, body_lines);
 
     let n_tables = tables.len();
@@ -335,6 +351,262 @@ fn build_blocks_owned(page: &TextPage, tables: Vec<Table>) -> Vec<DocBlock> {
             .then_with(|| a.2.cmp(&b.2))
     });
     keyed.into_iter().map(|(_, _, _, b)| b).collect()
+}
+
+/// 対象本文行か（横書き・正立）
+fn is_target_body_line(line: &TextLine) -> bool {
+    line.dir == "ltr" && line.rot == 0
+}
+
+/// 参加要素列を安定ID順で構築する
+fn collect_participants(
+    body_lines: &[TextLine],
+    tables: &[Table],
+) -> (
+    Vec<Participant>,
+    Vec<Vec<usize>>,
+    Vec<usize>,
+    Vec<Option<usize>>,
+) {
+    let mut parts = Vec::new();
+    let mut word_part_ids: Vec<Vec<usize>> = vec![Vec::new(); body_lines.len()];
+    let mut other_part_ids: Vec<Option<usize>> = vec![None; body_lines.len()];
+    let mut table_part_ids = Vec::with_capacity(tables.len());
+
+    for (li, line) in body_lines.iter().enumerate() {
+        if !is_target_body_line(line) {
+            continue;
+        }
+        for word in &line.words {
+            let id = parts.len();
+            word_part_ids[li].push(id);
+            parts.push(Participant {
+                left: word.left,
+                right: word.right,
+                top: word.top,
+                bottom: word.bottom,
+                kind: ParticipantKind::Word { line: li },
+            });
+        }
+    }
+    for table in tables {
+        let id = parts.len();
+        table_part_ids.push(id);
+        parts.push(Participant {
+            left: table.bbox.x0,
+            right: table.bbox.x1,
+            top: table.bbox.top,
+            bottom: table.bbox.bottom,
+            kind: ParticipantKind::Table,
+        });
+    }
+    for (li, line) in body_lines.iter().enumerate() {
+        if is_target_body_line(line) {
+            continue;
+        }
+        let id = parts.len();
+        other_part_ids[li] = Some(id);
+        parts.push(Participant {
+            left: line.left,
+            right: line.right,
+            top: line.top,
+            bottom: line.bottom,
+            kind: ParticipantKind::OtherLine,
+        });
+    }
+
+    (parts, word_part_ids, table_part_ids, other_part_ids)
+}
+
+/// X分割ありのページで葉領域ごとにブロック列を構築する
+fn build_blocks_with_regions(
+    page: &TextPage,
+    body_lines: Vec<TextLine>,
+    tables: Vec<Table>,
+    leaf_of: &[usize],
+    word_part_ids: &[Vec<usize>],
+    table_part_ids: &[usize],
+    other_part_ids: &[Option<usize>],
+) -> Vec<DocBlock> {
+    let n_leaves = leaf_of.iter().copied().max().map(|m| m + 1).unwrap_or(0);
+    let mut leaf_lines: Vec<Vec<TextLine>> = (0..n_leaves).map(|_| Vec::new()).collect();
+
+    for (li, line) in body_lines.into_iter().enumerate() {
+        if is_target_body_line(&line) {
+            let word_leaves: Vec<usize> = word_part_ids[li]
+                .iter()
+                .map(|&pid| leaf_of[pid])
+                .collect();
+            for (leaf, frag) in reconstitute_line_by_leaves(page, line, &word_leaves) {
+                if leaf < leaf_lines.len() {
+                    leaf_lines[leaf].push(frag);
+                }
+            }
+        } else if let Some(pid) = other_part_ids[li] {
+            let leaf = leaf_of[pid];
+            if leaf < leaf_lines.len() {
+                leaf_lines[leaf].push(line);
+            }
+        }
+    }
+
+    let n_tables = tables.len();
+    let mut keyed: Vec<(usize, f64, f64, usize, DocBlock)> = Vec::new();
+
+    for (i, table) in tables.into_iter().enumerate() {
+        let leaf = leaf_of[table_part_ids[i]];
+        let top = table.bbox.top;
+        let left = table.bbox.x0;
+        keyed.push((leaf, top, left, i, DocBlock::Table(table)));
+    }
+
+    let mut gen_no = n_tables;
+    for (leaf, lines) in leaf_lines.into_iter().enumerate() {
+        if lines.is_empty() {
+            continue;
+        }
+        let text_blocks = build_text_blocks(page, lines);
+        for tb in text_blocks {
+            let top = tb.top;
+            let left = tb.left;
+            keyed.push((leaf, top, left, gen_no, DocBlock::Text(tb)));
+            gen_no += 1;
+        }
+    }
+
+    keyed.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.total_cmp(&b.1))
+            .then_with(|| a.2.total_cmp(&b.2))
+            .then_with(|| a.3.cmp(&b.3))
+    });
+    keyed.into_iter().map(|(_, _, _, _, b)| b).collect()
+}
+
+/// 対象本文行を葉ごとの行断片へ振り分ける
+fn reconstitute_line_by_leaves(
+    page: &TextPage,
+    line: TextLine,
+    word_leaves: &[usize],
+) -> Vec<(usize, TextLine)> {
+    if line.words.is_empty() || word_leaves.is_empty() {
+        return Vec::new();
+    }
+    debug_assert_eq!(line.words.len(), word_leaves.len());
+
+    let first = word_leaves[0];
+    if word_leaves.iter().all(|&l| l == first) {
+        return vec![(first, line)];
+    }
+
+    // 各グリフが属する単語（無ければ単語外）
+    let mut char_word: Vec<(u32, usize)> = Vec::new();
+    for (wi, w) in line.words.iter().enumerate() {
+        for &c in &w.chars {
+            char_word.push((c, wi));
+        }
+    }
+    char_word.sort_unstable_by_key(|&(c, _)| c);
+
+    let find_word = |cidx: u32| -> Option<usize> {
+        char_word
+            .binary_search_by_key(&cidx, |&(c, _)| c)
+            .ok()
+            .map(|i| char_word[i].1)
+    };
+
+    // 葉の出現順（語順）
+    let mut leaf_order: Vec<usize> = Vec::new();
+    for &l in word_leaves {
+        if !leaf_order.contains(&l) {
+            leaf_order.push(l);
+        }
+    }
+
+    // 単語外空白の葉（進行軸順で直前語、行頭は直後語）
+    let mut free_ws_leaf: Vec<(u32, usize)> = Vec::new();
+    let mut last_word: Option<usize> = None;
+    for (pos, &cidx) in line.chars.iter().enumerate() {
+        if let Some(wi) = find_word(cidx) {
+            last_word = Some(wi);
+            continue;
+        }
+        if !is_whitespace_str(&page.chars[cidx as usize].text) {
+            continue;
+        }
+        if let Some(wi) = last_word {
+            free_ws_leaf.push((cidx, word_leaves[wi]));
+        } else {
+            let mut next = None;
+            for &c2 in &line.chars[pos + 1..] {
+                if let Some(wi) = find_word(c2) {
+                    next = Some(wi);
+                    break;
+                }
+            }
+            if let Some(wi) = next {
+                free_ws_leaf.push((cidx, word_leaves[wi]));
+            }
+        }
+    }
+    free_ws_leaf.sort_unstable_by_key(|&(c, _)| c);
+
+    let free_leaf = |cidx: u32| -> Option<usize> {
+        free_ws_leaf
+            .binary_search_by_key(&cidx, |&(c, _)| c)
+            .ok()
+            .map(|i| free_ws_leaf[i].1)
+    };
+
+    // 元の line.chars 順を保って各葉へ積む
+    let mut chars_by_leaf: Vec<Vec<u32>> = vec![Vec::new(); leaf_order.len()];
+    let leaf_slot = |leaf: usize| -> Option<usize> {
+        leaf_order.iter().position(|&l| l == leaf)
+    };
+    for &cidx in &line.chars {
+        let leaf = if let Some(wi) = find_word(cidx) {
+            word_leaves[wi]
+        } else if let Some(l) = free_leaf(cidx) {
+            l
+        } else {
+            continue;
+        };
+        if let Some(slot) = leaf_slot(leaf) {
+            chars_by_leaf[slot].push(cidx);
+        }
+    }
+
+    let mut out = Vec::new();
+    for (slot, &leaf) in leaf_order.iter().enumerate() {
+        let words: Vec<TextWord> = line
+            .words
+            .iter()
+            .zip(word_leaves.iter())
+            .filter(|(_, l)| **l == leaf)
+            .map(|(w, _)| w.clone())
+            .collect();
+        if words.is_empty() {
+            continue;
+        }
+        let chars = chars_by_leaf[slot].clone();
+        let Some((left, right, top, bottom)) = non_ws_union_bbox(page, &chars) else {
+            continue;
+        };
+        out.push((
+            leaf,
+            TextLine {
+                left,
+                right,
+                top,
+                bottom,
+                dir: line.dir.clone(),
+                rot: line.rot,
+                words,
+                chars,
+            },
+        ));
+    }
+    out
 }
 
 /// 有効セルの bbox を集める
@@ -2007,5 +2279,265 @@ mod tests {
             text_block(TextBlockKind::Paragraph, "\u{2028}\u{2029}"),
         ]);
         assert_eq!(document_to_markdown(&doc), "keep");
+    }
+
+    /// ベースラインの揃った2列ページ（行が列をまたぐ）
+    fn two_col_aligned_page() -> TextPage {
+        let fs = 10.0;
+        let adv = 5.0;
+        let mut chars = Vec::new();
+        let left = ["A", "B", "C", "D", "E"];
+        let right = ["F", "G", "H", "I", "J"];
+        for i in 0..5 {
+            let y = 20.0 + i as f64 * 15.0;
+            chars.push(ch(left[i], 20.0, y, adv, 0.0, fs));
+            chars.push(ch(right[i], 100.0, y, adv, 0.0, fs));
+        }
+        TextPage {
+            width: 200.0,
+            height: 300.0,
+            fonts: vec![font(false)],
+            chars,
+        }
+    }
+
+    #[test]
+    fn columns_aligned_two_col_reading_order() {
+        let p = two_col_aligned_page();
+        let blocks = build_blocks(&p, &[]);
+        let tb = text_blocks(&blocks);
+        assert_eq!(tb.len(), 2);
+        assert_eq!(tb[0].text, "A B C D E");
+        assert_eq!(tb[1].text, "F G H I J");
+        assert!(tb[0].left < tb[1].left);
+    }
+
+    #[test]
+    fn columns_line_fragment_whitespace_and_bbox() {
+        let fs = 10.0;
+        let adv = 5.0;
+        let mut chars = Vec::new();
+        // ストリーム順と進行軸順が逆転する行:
+        // chars 配列は右語 F → 列間空白 → 左語 A → 先頭空白相当の順で積み、
+        // 表示 x は A が左・F が右。build_text_lines が進行軸順に並べ替えた
+        // line.chars の相対順を断片が保つことを検証する
+        // インデックス: 0=F(右), 1=空白(列間), 2=A(左), 3=空白(A 左隣)
+        chars.push(ch("F", 100.0, 20.0, adv, 0.0, fs));
+        chars.push(ch(" ", 50.0, 20.0, 5.0, 0.0, fs));
+        chars.push(ch("A", 20.0, 20.0, adv, 0.0, fs));
+        chars.push(ch(" ", 10.0, 20.0, 5.0, 0.0, fs));
+        let left = ["B", "C", "D", "E"];
+        let right = ["G", "H", "I", "J"];
+        for i in 0..4 {
+            let y = 20.0 + (i + 1) as f64 * 15.0;
+            // 右列を先にストリーム投入（x は左が小さい）
+            chars.push(ch(right[i], 100.0, y, adv, 0.0, fs));
+            chars.push(ch(left[i], 20.0, y, adv, 0.0, fs));
+        }
+        let p = TextPage {
+            width: 200.0,
+            height: 300.0,
+            fonts: vec![font(false)],
+            chars,
+        };
+        let blocks = build_blocks(&p, &[]);
+        let tb = text_blocks(&blocks);
+        assert_eq!(tb.len(), 2);
+        assert_eq!(tb[0].text, "A B C D E");
+        assert_eq!(tb[1].text, "F G H I J");
+
+        let left0 = &tb[0].lines[0];
+        assert_eq!(left0.words.len(), 1);
+        assert_eq!(left0.words[0].text, "A");
+        // 先頭空白は直後の単語（A）側、列間空白は直前の単語（A）側
+        let left_ws: Vec<_> = left0
+            .chars
+            .iter()
+            .filter(|&&i| is_whitespace_str(&p.chars[i as usize].text))
+            .copied()
+            .collect();
+        assert_eq!(left_ws.len(), 2);
+        // 進行軸順: 空白(x=10, idx3) → A(idx2) → 空白(x=50, idx1)
+        // 断片 chars は元 line.chars の相対順（進行軸順）を保ち、
+        // ストリーム index 昇順ではない
+        assert_eq!(left0.chars, vec![3, 2, 1]);
+        // bbox は非空白のみ（A）
+        assert!((left0.left - 20.0).abs() < 1e-9);
+        assert!((left0.right - 25.0).abs() < 1e-9);
+
+        let right0 = &tb[1].lines[0];
+        assert_eq!(right0.words.len(), 1);
+        assert_eq!(right0.words[0].text, "F");
+        assert!(right0
+            .chars
+            .iter()
+            .all(|&i| !is_whitespace_str(&p.chars[i as usize].text)));
+        assert_eq!(right0.chars, vec![0]);
+        assert!((right0.left - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn columns_staggered_two_col_leaf_assign_only() {
+        let fs = 10.0;
+        let adv = 5.0;
+        let mut chars = Vec::new();
+        let left = ["A", "B", "C", "D", "E"];
+        let right = ["F", "G", "H", "I", "J"];
+        for i in 0..5 {
+            let yl = 20.0 + i as f64 * 16.0;
+            let yr = 28.0 + i as f64 * 16.0;
+            chars.push(ch(left[i], 20.0, yl, adv, 0.0, fs));
+            chars.push(ch(right[i], 100.0, yr, adv, 0.0, fs));
+        }
+        let p = TextPage {
+            width: 200.0,
+            height: 300.0,
+            fonts: vec![font(false)],
+            chars,
+        };
+        let blocks = build_blocks(&p, &[]);
+        let tb = text_blocks(&blocks);
+        // 行は元々別なので断片分割は不要。葉割り当てで左→右
+        let texts: Vec<&str> = tb.iter().map(|t| t.text.as_str()).collect();
+        let joined = texts.join(" ");
+        let left_pos = joined.find('A').expect("A");
+        let right_pos = joined.find('F').expect("F");
+        assert!(left_pos < right_pos);
+        for t in &tb {
+            for line in &t.lines {
+                // 1行1語（列をまたがない）
+                assert_eq!(line.words.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn columns_table_and_two_col_order() {
+        let fs = 10.0;
+        let adv = 5.0;
+        let mut chars = Vec::new();
+        let left = ["A", "B", "C", "D", "E"];
+        let right = ["F", "G", "H", "I", "J"];
+        for i in 0..5 {
+            let y = 40.0 + i as f64 * 15.0;
+            chars.push(ch(left[i], 20.0, y, adv, 0.0, fs));
+            chars.push(ch(right[i], 100.0, y, adv, 0.0, fs));
+        }
+        let p = TextPage {
+            width: 200.0,
+            height: 300.0,
+            fonts: vec![font(false)],
+            chars,
+        };
+        // 全幅の表（Y分割で上帯へ）
+        let t = table_one(
+            vec![vec![cell("T", 20.0, 5.0, 180.0, 24.0)]],
+            20.0,
+            5.0,
+            180.0,
+            24.0,
+        );
+        let blocks = build_blocks(&p, &[t]);
+        assert!(matches!(blocks[0], DocBlock::Table(_)));
+        let tb = text_blocks(&blocks);
+        assert_eq!(tb.len(), 2);
+        assert_eq!(tb[0].text, "A B C D E");
+        assert_eq!(tb[1].text, "F G H I J");
+        // 生成番号: 表0、左本文1、右本文2 → 葉順でも表が先頭
+        assert_eq!(blocks.len(), 3);
+    }
+
+    #[test]
+    fn columns_single_column_matches_legacy() {
+        let fs = 10.0;
+        let adv = 5.0;
+        let p = page(vec![
+            ch("A", 0.0, 100.0, adv, 0.0, fs),
+            ch("B", adv, 100.0, adv, 0.0, fs),
+            ch("C", 0.0, 115.0, adv, 0.0, fs),
+            ch("D", adv, 115.0, adv, 0.0, fs),
+        ]);
+        let blocks = build_blocks(&p, &[]);
+        let tb = text_blocks(&blocks);
+        assert_eq!(tb.len(), 1);
+        assert_eq!(tb[0].text, "AB CD");
+        assert_eq!(tb[0].lines.len(), 2);
+        assert_eq!(tb[0].kind, TextBlockKind::Paragraph);
+        assert!((tb[0].left - 0.0).abs() < 1e-9);
+        assert!((tb[0].top - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn columns_vertical_line_stays_one_block() {
+        let fs = 10.0;
+        let adv = 5.0;
+        let mut chars = Vec::new();
+        let left = ["A", "B", "C", "D", "E"];
+        let right = ["F", "G", "H", "I", "J"];
+        for i in 0..5 {
+            let y = 20.0 + i as f64 * 15.0;
+            chars.push(ch(left[i], 20.0, y, adv, 0.0, fs));
+            chars.push(ch(right[i], 100.0, y, adv, 0.0, fs));
+        }
+        // 縦書き行（OtherLine）
+        chars.push(ch_at("あ", 170.0, 30.0, 0.0, 10.0, fs, 1, true));
+        chars.push(ch_at("い", 170.0, 40.0, 0.0, 10.0, fs, 1, true));
+        let p = TextPage {
+            width: 200.0,
+            height: 300.0,
+            fonts: vec![font(false), font(true)],
+            chars,
+        };
+        let blocks = build_blocks(&p, &[]);
+        let tb = text_blocks(&blocks);
+        let vert: Vec<_> = tb.iter().filter(|t| t.dir == "ttb").collect();
+        assert_eq!(vert.len(), 1);
+        assert_eq!(vert[0].text, "あい");
+        assert_eq!(vert[0].lines.len(), 1);
+        assert_eq!(vert[0].lines[0].words.len(), 1);
+    }
+
+    #[test]
+    fn columns_headings_and_markdown_pipeline() {
+        let fs = 10.0;
+        let adv = 5.0;
+        let mut chars = Vec::new();
+        // 左列先頭を大きめ見出し相当
+        chars.push(ch("T", 20.0, 20.0, adv, 0.0, 18.0));
+        chars.push(ch("U", 100.0, 20.0, adv, 0.0, fs));
+        let left = ["B", "C", "D", "E"];
+        let right = ["V", "W", "X", "Y"];
+        for i in 0..4 {
+            let y = 20.0 + (i + 1) as f64 * 15.0;
+            chars.push(ch(left[i], 20.0, y, adv, 0.0, fs));
+            chars.push(ch(right[i], 100.0, y, adv, 0.0, fs));
+        }
+        let p = TextPage {
+            width: 200.0,
+            height: 300.0,
+            fonts: vec![font(false)],
+            chars,
+        };
+        let blocks = build_blocks(&p, &[]);
+        let mut doc = DocDoc {
+            pages: vec![DocPage {
+                page_number: 1,
+                width: p.width,
+                height: p.height,
+                fonts: p.fonts.clone(),
+                chars: p.chars.clone(),
+                blocks,
+            }],
+        };
+        assign_headings(&mut doc);
+        let md = document_to_markdown(&doc);
+        // 左列が先に出る
+        let pos_t = md.find('T').expect("T");
+        let pos_u = md.find('U').expect("U");
+        assert!(pos_t < pos_u);
+        let kinds = text_kinds(&doc);
+        let title = kinds.iter().find(|(t, _)| *t == "T").unwrap();
+        assert_eq!(title.1, TextBlockKind::Heading { level: 1 });
+        assert!(md.starts_with("# T") || md.contains("# T"));
     }
 }

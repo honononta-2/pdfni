@@ -9,6 +9,8 @@ mod extract;
 mod model;
 mod par;
 #[cfg(feature = "reader")]
+mod columns;
+#[cfg(feature = "reader")]
 mod document;
 #[cfg(feature = "reader")]
 mod reader;
