@@ -34,11 +34,13 @@ impl BBox {
     pub fn cy(&self) -> f64 {
         (self.top + self.bottom) / 2.0
     }
+    /// 点が self に入るか（左上閉・右下開）
+    pub fn contains_point(&self, cx: f64, cy: f64) -> bool {
+        cx >= self.x0 && cx < self.x1 && cy >= self.top && cy < self.bottom
+    }
     /// inner の中心が self に入るか
     pub fn contains_center(&self, inner: &BBox) -> bool {
-        let cx = inner.cx();
-        let cy = inner.cy();
-        cx >= self.x0 && cx < self.x1 && cy >= self.top && cy < self.bottom
+        self.contains_point(inner.cx(), inner.cy())
     }
 }
 

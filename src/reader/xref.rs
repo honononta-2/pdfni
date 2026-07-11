@@ -37,8 +37,8 @@ pub(crate) struct XRef {
     trailer: Dict,
     /// ページ間 clone でオブジェクト本体を共有する
     cache: RefCell<HashMap<u32, Arc<Object>>>,
-    /// 文書内で共有する読み込み済みフォント
-    pub(super) font_cache: Arc<Mutex<HashMap<u32, Arc<LoadedFont>>>>,
+    /// 文書内で共有する読み込み済みフォント（キーは (オブジェクト番号, 世代)）
+    pub(super) font_cache: Arc<Mutex<HashMap<(u32, u16), Arc<LoadedFont>>>>,
     /// 文書内で共有する定義済み CMap（名前 → 構築結果）
     pub(super) cmap_cache: Arc<Mutex<HashMap<String, Arc<CMap>>>>,
     /// 文書内で共有する Form XObject 復号済み本文（参照番号 → 本文）

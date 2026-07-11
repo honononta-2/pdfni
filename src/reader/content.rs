@@ -32,6 +32,8 @@ pub(crate) struct ContentCtx<'a> {
 struct TextSink {
     fonts: Vec<TextFont>,
     font_ids: HashMap<usize, u32>,
+    /// 登録済みフォントの実体。ポインタ番地の再利用を防ぐ
+    held_fonts: Vec<Arc<LoadedFont>>,
     chars: Vec<PendingTextChar>,
 }
 
@@ -57,22 +59,24 @@ impl TextSink {
         Self {
             fonts: Vec::new(),
             font_ids: HashMap::new(),
+            held_fonts: Vec::new(),
             chars: Vec::new(),
         }
     }
 
-    fn font_index(&mut self, font: &Arc<LoadedFont>) -> u32 {
+    fn font_index(&mut self, font: &Arc<LoadedFont>, resource_name: &str) -> u32 {
         let key = Arc::as_ptr(font) as usize;
         if let Some(&i) = self.font_ids.get(&key) {
             return i;
         }
         let i = self.fonts.len() as u32;
         self.fonts.push(TextFont {
-            name: font.display_name().to_string(),
+            name: font.text_font_name(resource_name).to_string(),
             ascent: font.ascent(),
             descent: font.descent(),
             vertical: font.vertical(),
         });
+        self.held_fonts.push(Arc::clone(font));
         self.font_ids.insert(key, i);
         i
     }
@@ -599,6 +603,8 @@ struct TextState {
     text_rise: f64,
     leading: f64,
     font: Option<Arc<LoadedFont>>,
+    /// Tf で指定されたリソース名
+    font_name: String,
 }
 
 impl TextState {
@@ -613,6 +619,7 @@ impl TextState {
             text_rise: 0.0,
             leading: 0.0,
             font: None,
+            font_name: String::new(),
         }
     }
 
@@ -1034,6 +1041,8 @@ fn interpret(
     let mut gstack: Vec<([f64; 6], TextState)> = Vec::new();
     let mut path = PathBuilder::new();
     let mut text = TextState::new();
+    // この resources スコープ内の Tf 名前 → フォント
+    let mut font_memo: HashMap<String, Arc<LoadedFont>> = HashMap::new();
 
     loop {
         let token = lexer.next_token();
@@ -1083,6 +1092,7 @@ fn interpret(
                             edges,
                             graphics,
                             visiting,
+                            &mut font_memo,
                             text_sink.as_deref_mut(),
                         );
                         stack.clear();
@@ -1107,6 +1117,7 @@ fn dispatch_op(
     edges: &mut Vec<EdgePart>,
     graphics: &mut Vec<GraphicPart>,
     visiting: &mut HashSet<(u32, u16)>,
+    font_memo: &mut HashMap<String, Arc<LoadedFont>>,
     text_sink: Option<&mut TextSink>,
 ) {
     match op {
@@ -1246,7 +1257,16 @@ fn dispatch_op(
             if let Some(sz) = take_nums::<1>(stack) {
                 if let Some(name) = take_name(stack) {
                     text.font_size = sz[0];
-                    text.font = Some(lookup_font(resources, &name, ctx.data, ctx.xref));
+                    let font = match font_memo.get(&name) {
+                        Some(f) => Arc::clone(f),
+                        None => {
+                            let f = lookup_font(resources, &name, ctx.data, ctx.xref);
+                            font_memo.insert(name.clone(), Arc::clone(&f));
+                            f
+                        }
+                    };
+                    text.font = Some(font);
+                    text.font_name = name;
                 }
             }
         }
@@ -1418,7 +1438,9 @@ fn show_text_bytes(
     let (view_left, view_top) = (view[0], view[3]);
     let ascent = font.ascent();
     let descent = font.descent();
-    let font_idx = text_sink.as_mut().map(|s| s.font_index(&font));
+    let font_idx = text_sink
+        .as_mut()
+        .map(|s| s.font_index(&font, &text.font_name));
     let collect_glyphs = text_sink.is_none();
 
     // 列内で不変: TRM 線形成分と派生量（平行移動のみ変わる）
@@ -1563,7 +1585,9 @@ fn show_text_bytes_vertical(
     let (view_left, view_top) = (view[0], view[3]);
     let ascent = font.ascent();
     let descent = font.descent();
-    let font_idx = text_sink.as_mut().map(|s| s.font_index(font));
+    let font_idx = text_sink
+        .as_mut()
+        .map(|s| s.font_index(font, &text.font_name));
     let collect_glyphs = text_sink.is_none();
 
     // 列内で不変: TRM 線形成分と派生量（平行移動のみ変わる）
@@ -2883,5 +2907,87 @@ Q
             glyphs[0].top,
             glyphs[1].top
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // フォント表の決定性・インライン辞書の重複解消
+    // -----------------------------------------------------------------------
+
+    /// 直接辞書の /Font で同じ名前の Tf を複数回 → fonts 表は1エントリ
+    #[test]
+    fn extract_text_inline_font_same_name_dedup() {
+        let mut type1 = Dict::new();
+        type1.set("Subtype", Object::Name("Type1".into()));
+        type1.set("BaseFont", Object::Name("Helvetica".into()));
+        let mut fonts_dict = Dict::new();
+        fonts_dict.set("F1", Object::Dict(type1));
+        let mut res = Dict::new();
+        res.set("Font", Object::Dict(fonts_dict));
+
+        let contents =
+            b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (A) Tj /F1 12 Tf 1 0 0 1 20 50 Tm (B) Tj ET";
+        let (_, _, fonts, chars) = text_of_res(contents, &res, default_view());
+        assert_eq!(fonts.len(), 1, "fonts={fonts:?}");
+        assert_eq!(fonts[0].name, "Helvetica");
+        assert_eq!(chars.len(), 2);
+        assert_eq!(chars[0].font, 0);
+        assert_eq!(chars[1].font, 0);
+    }
+
+    /// BaseFont 無しの同一フォントを別名で参照 → TextFont.name は最初のリソース名
+    #[test]
+    fn extract_text_font_name_first_resource_when_no_basefont() {
+        let data = build_pdf_font_no_basefont();
+        let xref = XRef::parse(&data).expect("parse");
+        let mut fonts_dict = Dict::new();
+        fonts_dict.set("F1", Object::Ref(Ref::new(3, 0)));
+        fonts_dict.set("F2", Object::Ref(Ref::new(3, 0)));
+        let mut res = Dict::new();
+        res.set("Font", Object::Dict(fonts_dict));
+
+        let contents =
+            b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (A) Tj /F2 12 Tf 1 0 0 1 20 50 Tm (B) Tj ET";
+        let (_, _, fonts, chars) = extract_text(
+            contents,
+            &res,
+            default_view(),
+            ContentCtx {
+                data: &data,
+                xref: Some(&xref),
+            },
+            0,
+        );
+        assert_eq!(fonts.len(), 1, "fonts={fonts:?}");
+        assert_eq!(fonts[0].name, "F1");
+        assert_eq!(chars.len(), 2);
+        assert_eq!(chars[0].font, 0);
+        assert_eq!(chars[1].font, 0);
+    }
+
+    /// BaseFont 無しの Type1 フォントオブジェクトを1つ持つ最小 PDF
+    fn build_pdf_font_no_basefont() -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"%PDF-1.4\n");
+
+        let o1 = body.len();
+        body.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+        let o2 = body.len();
+        body.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+
+        let o3 = body.len();
+        body.extend_from_slice(
+            b"3 0 obj\n<< /Type /Font /Subtype /Type1 >>\nendobj\n",
+        );
+
+        let xref_off = body.len();
+        body.extend_from_slice(b"xref\n0 4\n");
+        body.extend_from_slice(format!("{:010} 65535 f \n", 0).as_bytes());
+        body.extend_from_slice(format!("{o1:010} 00000 n \n").as_bytes());
+        body.extend_from_slice(format!("{o2:010} 00000 n \n").as_bytes());
+        body.extend_from_slice(format!("{o3:010} 00000 n \n").as_bytes());
+        body.extend_from_slice(b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n");
+        body.extend_from_slice(format!("{xref_off}\n%%EOF\n").as_bytes());
+        body
     }
 }

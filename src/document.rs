@@ -13,9 +13,7 @@ use crate::text::{
 
 /// 段落併合の行送り上限（代表 font_size 比）
 const PARA_LEADING_FACTOR: f64 = 1.8;
-/// 段落併合の代表 font_size 比の下限
-const PARA_FS_RATIO_MIN: f64 = 0.75;
-/// 段落併合の代表 font_size 比の上限
+/// 段落併合の代表 font_size 比の上限（大きい方 / 小さい方）
 const PARA_FS_RATIO_MAX: f64 = 1.33;
 /// 見出し level 1 の本文代表サイズ比（§4-5）
 const HEADING_L1_FACTOR: f64 = 1.8;
@@ -125,21 +123,19 @@ pub fn document_to_markdown(doc: &DocDoc) -> String {
     parts.join("\n\n")
 }
 
-/// 1ブロックを Markdown 断片へ変換する。空表は None
+/// 1ブロックを Markdown 断片へ変換する。空表・空白のみ本文は None
 fn block_to_markdown(block: &DocBlock) -> Option<String> {
     match block {
         DocBlock::Text(tb) => {
             let text = sanitize_md_text(&tb.text);
-            let s = match &tb.kind {
+            if text.trim().is_empty() {
+                return None;
+            }
+            match &tb.kind {
                 TextBlockKind::Heading { level } => {
-                    format!("{} {}", "#".repeat(*level as usize), text)
+                    Some(format!("{} {}", "#".repeat(*level as usize), text))
                 }
-                TextBlockKind::Paragraph => text,
-            };
-            if s.is_empty() {
-                None
-            } else {
-                Some(s)
+                TextBlockKind::Paragraph => Some(text),
             }
         }
         DocBlock::Table(table) => table_to_markdown(table),
@@ -238,7 +234,7 @@ pub fn extract_document_from_bytes(
         .zip(text_doc.pages.into_iter())
         .enumerate()
     {
-        let blocks = build_blocks(&text_page, &page.tables);
+        let blocks = build_blocks_owned(&text_page, page.tables);
         pages.push(DocPage {
             page_number: i + 1,
             width: text_page.width,
@@ -303,7 +299,12 @@ fn block_rep_font_size(chars: &[TextChar], tb: &TextBlock) -> Option<f64> {
 
 /// ページの行と表から読み順付きブロック列を構築する
 pub fn build_blocks(page: &TextPage, tables: &[Table]) -> Vec<DocBlock> {
-    let valid_cells = collect_valid_cells(tables);
+    build_blocks_owned(page, tables.to_vec())
+}
+
+/// 表を所有権ごと受け取りブロック列を構築する
+fn build_blocks_owned(page: &TextPage, tables: Vec<Table>) -> Vec<DocBlock> {
+    let valid_cells = collect_valid_cells(&tables);
     let raw_lines = build_text_lines(page);
     let body_lines: Vec<TextLine> = raw_lines
         .into_iter()
@@ -312,16 +313,15 @@ pub fn build_blocks(page: &TextPage, tables: &[Table]) -> Vec<DocBlock> {
 
     let text_blocks = build_text_blocks(page, body_lines);
 
-    let mut keyed: Vec<(f64, f64, usize, DocBlock)> = Vec::with_capacity(tables.len() + text_blocks.len());
-    for (i, table) in tables.iter().enumerate() {
-        keyed.push((
-            table.bbox.top,
-            table.bbox.x0,
-            i,
-            DocBlock::Table(table.clone()),
-        ));
+    let n_tables = tables.len();
+    let mut keyed: Vec<(f64, f64, usize, DocBlock)> =
+        Vec::with_capacity(n_tables + text_blocks.len());
+    for (i, table) in tables.into_iter().enumerate() {
+        let top = table.bbox.top;
+        let left = table.bbox.x0;
+        keyed.push((top, left, i, DocBlock::Table(table)));
     }
-    let mut gen_no = tables.len();
+    let mut gen_no = n_tables;
     for tb in text_blocks {
         let top = tb.top;
         let left = tb.left;
@@ -366,11 +366,13 @@ fn filter_table_owned_line(
 
     let mut any_owned = false;
     let mut any_free_non_ws = false;
+    let mut owned_idx = std::collections::HashSet::new();
     for &idx in &line.chars {
         let ch = &page.chars[idx as usize];
         let owned = glyph_table_owned(ch, cells);
         if owned {
             any_owned = true;
+            owned_idx.insert(idx);
         } else if !is_whitespace_str(&ch.text) {
             any_free_non_ws = true;
         }
@@ -385,7 +387,7 @@ fn filter_table_owned_line(
     let new_chars: Vec<u32> = line
         .chars
         .into_iter()
-        .filter(|&idx| !glyph_table_owned(&page.chars[idx as usize], cells))
+        .filter(|idx| !owned_idx.contains(idx))
         .collect();
 
     let mut new_words = Vec::new();
@@ -393,7 +395,7 @@ fn filter_table_owned_line(
         let wchars: Vec<u32> = word
             .chars
             .into_iter()
-            .filter(|&idx| !glyph_table_owned(&page.chars[idx as usize], cells))
+            .filter(|idx| !owned_idx.contains(idx))
             .collect();
         if let Some(w) = remake_word(page, &wchars) {
             new_words.push(w);
@@ -418,13 +420,9 @@ fn filter_table_owned_line(
 
 /// グリフ中心が有効セルに含まれるか
 fn glyph_table_owned(ch: &TextChar, cells: &[BBox]) -> bool {
-    let bb = BBox {
-        x0: ch.left,
-        top: ch.top,
-        x1: ch.right,
-        bottom: ch.bottom,
-    };
-    cells.iter().any(|c| c.contains_center(&bb))
+    let cx = (ch.left + ch.right) / 2.0;
+    let cy = (ch.top + ch.bottom) / 2.0;
+    cells.iter().any(|c| c.contains_point(cx, cy))
 }
 
 /// 残存グリフから単語を再構成する
@@ -490,6 +488,14 @@ fn non_ws_union_bbox(page: &TextPage, chars: &[u32]) -> Option<(f64, f64, f64, f
     }
 }
 
+/// 行の代表値（ソート・併合で使い回す）
+struct LineRep {
+    baseline: f64,
+    font_size: Option<f64>,
+    progress: (f64, f64),
+    stream_index: u32,
+}
+
 /// 本文行から段落ブロックを生成する
 fn build_text_blocks(page: &TextPage, lines: Vec<TextLine>) -> Vec<TextBlock> {
     if lines.is_empty() {
@@ -498,23 +504,29 @@ fn build_text_blocks(page: &TextPage, lines: Vec<TextLine>) -> Vec<TextBlock> {
 
     // 書字方向グループ (dir, rot) ごとに最小 chars インデックスを求める
     let mut group_keys: Vec<(String, i32)> = Vec::new();
-    let mut group_lines: Vec<Vec<TextLine>> = Vec::new();
+    let mut group_lines: Vec<Vec<(LineRep, TextLine)>> = Vec::new();
     let mut group_min: Vec<u32> = Vec::new();
     let mut key_pos: std::collections::HashMap<(String, i32), usize> =
         std::collections::HashMap::new();
 
     for line in lines {
         let key = (line.dir.clone(), line.rot);
-        let min_idx = line_stream_index(&line);
+        let rep = LineRep {
+            baseline: line_rep_baseline(page, &line),
+            font_size: line_rep_font_size(&page.chars, &line),
+            progress: line_progress_interval(page, &line),
+            stream_index: line_stream_index(&line),
+        };
+        let min_idx = rep.stream_index;
         if let Some(&pos) = key_pos.get(&key) {
             group_min[pos] = group_min[pos].min(min_idx);
-            group_lines[pos].push(line);
+            group_lines[pos].push((rep, line));
         } else {
             let pos = group_keys.len();
             key_pos.insert(key.clone(), pos);
             group_keys.push(key);
             group_min.push(min_idx);
-            group_lines.push(vec![line]);
+            group_lines.push(vec![(rep, line)]);
         }
     }
 
@@ -529,24 +541,27 @@ fn build_text_blocks(page: &TextPage, lines: Vec<TextLine>) -> Vec<TextBlock> {
     for gi in order {
         let mut glines = std::mem::take(&mut group_lines[gi]);
         glines.sort_by(|a, b| {
-            let ba = line_rep_baseline(page, a);
-            let bb = line_rep_baseline(page, b);
-            ba.total_cmp(&bb)
-                .then_with(|| line_stream_index(a).cmp(&line_stream_index(b)))
+            a.0.baseline
+                .total_cmp(&b.0.baseline)
+                .then_with(|| a.0.stream_index.cmp(&b.0.stream_index))
         });
 
         let mut para: Vec<TextLine> = Vec::new();
-        for line in glines {
+        let mut prev_rep: Option<LineRep> = None;
+        for (rep, line) in glines {
             if para.is_empty() {
                 para.push(line);
+                prev_rep = Some(rep);
                 continue;
             }
-            let prev = para.last().unwrap();
-            if can_merge_lines(page, prev, &line) {
+            let prev = prev_rep.as_ref().unwrap();
+            if can_merge_line_reps(prev, &rep) {
                 para.push(line);
+                prev_rep = Some(rep);
             } else {
                 blocks.push(make_text_block(std::mem::take(&mut para)));
                 para.push(line);
+                prev_rep = Some(rep);
             }
         }
         if !para.is_empty() {
@@ -557,20 +572,18 @@ fn build_text_blocks(page: &TextPage, lines: Vec<TextLine>) -> Vec<TextBlock> {
 }
 
 /// 隣接2行を1段落に併合できるか
-fn can_merge_lines(page: &TextPage, a: &TextLine, b: &TextLine) -> bool {
-    let Some(fs_a) = line_rep_font_size(&page.chars, a) else {
+fn can_merge_line_reps(a: &LineRep, b: &LineRep) -> bool {
+    let Some(fs_a) = a.font_size else {
         return false;
     };
-    let Some(fs_b) = line_rep_font_size(&page.chars, b) else {
+    let Some(fs_b) = b.font_size else {
         return false;
     };
-    let gap = (line_rep_baseline(page, b) - line_rep_baseline(page, a)).abs();
+    let gap = (b.baseline - a.baseline).abs();
     if gap > fs_a.max(fs_b) * PARA_LEADING_FACTOR {
         return false;
     }
-    let ia = line_progress_interval(page, a);
-    let ib = line_progress_interval(page, b);
-    if !intervals_overlap(ia, ib) {
+    if !intervals_overlap(a.progress, b.progress) {
         return false;
     }
     let lo = fs_a.min(fs_b);
@@ -579,7 +592,7 @@ fn can_merge_lines(page: &TextPage, a: &TextLine, b: &TextLine) -> bool {
         return false;
     }
     let ratio = hi / lo;
-    ratio <= PARA_FS_RATIO_MAX && (lo / hi) >= PARA_FS_RATIO_MIN
+    ratio <= PARA_FS_RATIO_MAX
 }
 
 /// 行群から TextBlock を組み立てる
@@ -1979,6 +1992,19 @@ mod tests {
             DocBlock::Table(zero_rows),
             text_block(TextBlockKind::Paragraph, "keep"),
             DocBlock::Table(zero_cols),
+        ]);
+        assert_eq!(document_to_markdown(&doc), "keep");
+    }
+
+    /// 制御文字・空白のみの見出し・段落は Markdown に出さない
+    #[test]
+    fn markdown_skips_whitespace_only_text_blocks() {
+        let doc = doc_with_blocks(vec![
+            text_block(TextBlockKind::Heading { level: 1 }, "\t\n\u{0001}"),
+            text_block(TextBlockKind::Paragraph, "\r\n  \t"),
+            text_block(TextBlockKind::Paragraph, "keep"),
+            text_block(TextBlockKind::Heading { level: 2 }, "   "),
+            text_block(TextBlockKind::Paragraph, "\u{2028}\u{2029}"),
         ]);
         assert_eq!(document_to_markdown(&doc), "keep");
     }

@@ -76,12 +76,25 @@ impl LoadedFont {
         }
     }
 
-    /// 公開用フォント名（BaseFont 優先、なければリソース名）
+    /// 公開用フォント名（BaseFont 優先、なければロード時のリソース名）
     pub fn display_name(&self) -> &str {
         if self.base_font.is_empty() {
             &self.name
         } else {
             &self.base_font
+        }
+    }
+
+    /// TextFont.name 用。BaseFont 優先、なければ参照時のリソース名
+    pub fn text_font_name<'a>(&'a self, resource_name: &'a str) -> &'a str {
+        if self.base_font.is_empty() {
+            if resource_name.is_empty() {
+                self.display_name()
+            } else {
+                resource_name
+            }
+        } else {
+            self.display_name()
         }
     }
 
@@ -236,15 +249,21 @@ pub(crate) fn lookup_font(
     };
 
     // 間接参照は文書内でキャッシュする
+    // 読み込み中はロックを保持しない（読み込みが再帰的にキャッシュへ入る可能性があるため）
     if let (Object::Ref(r), Some(xref)) = (entry, xref) {
+        let key = (r.num, r.generation);
         if let Ok(guard) = xref.font_cache.lock() {
-            if let Some(cached) = guard.get(&r.num) {
+            if let Some(cached) = guard.get(&key) {
                 return Arc::clone(cached);
             }
         }
         let loaded = Arc::new(load_font_object(entry, name, data, Some(xref)));
         if let Ok(mut guard) = xref.font_cache.lock() {
-            guard.insert(r.num, Arc::clone(&loaded));
+            // 読み込み中に他スレッドが挿入済みなら既存を返す
+            if let Some(cached) = guard.get(&key) {
+                return Arc::clone(cached);
+            }
+            guard.insert(key, Arc::clone(&loaded));
         }
         return loaded;
     }
