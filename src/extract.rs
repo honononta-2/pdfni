@@ -87,6 +87,8 @@ pub struct ExtractOptions {
     pub lattice: LatticeSettings,
     pub hybrid: HybridSettings,
     pub text: TextSettings,
+    /// ヘッダ・フッタ検出（既定は無効）
+    pub detect_header_footer: bool,
 }
 
 fn is_cjk(c: char) -> bool {

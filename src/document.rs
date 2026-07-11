@@ -5,6 +5,7 @@ use serde::Serialize;
 use crate::columns::{Participant, ParticipantKind, split_regions};
 use crate::error::{Error, Result};
 use crate::extract::ExtractOptions;
+use crate::furniture;
 use crate::model::{BBox, Cell, Table};
 use crate::reader::{extract_from_bytes, extract_text_from_bytes};
 use crate::text::{
@@ -57,6 +58,8 @@ pub enum DocBlock {
 pub struct TextBlock {
     #[serde(flatten)]
     pub kind: TextBlockKind,
+    #[serde(default, skip_serializing_if = "TextBlockRole::is_body")]
+    pub role: TextBlockRole,
     pub text: String,
     pub left: f64,
     pub right: f64,
@@ -77,6 +80,27 @@ pub enum TextBlockKind {
     Heading { level: u8 },
 }
 
+/// 本文ブロックの役割（ヘッダ・フッタ検出）
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextBlockRole {
+    #[default]
+    Body,
+    Header,
+    Footer,
+}
+
+impl TextBlockRole {
+    fn is_body(&self) -> bool {
+        *self == TextBlockRole::Body
+    }
+}
+
+/// 文書単位でヘッダ・フッタの役割を付ける
+pub fn assign_header_footer(doc: &mut DocDoc) {
+    furniture::assign_header_footer(doc);
+}
+
 /// 文書単位で見出しを推定する（§4-5）
 pub fn assign_headings(doc: &mut DocDoc) {
     let Some(body_fs) = body_rep_font_size(doc) else {
@@ -88,6 +112,9 @@ pub fn assign_headings(doc: &mut DocDoc) {
             let DocBlock::Text(tb) = block else {
                 continue;
             };
+            if tb.role != TextBlockRole::Body {
+                continue;
+            }
             if tb.kind != TextBlockKind::Paragraph {
                 continue;
             }
@@ -128,6 +155,9 @@ pub fn document_to_markdown(doc: &DocDoc) -> String {
 fn block_to_markdown(block: &DocBlock) -> Option<String> {
     match block {
         DocBlock::Text(tb) => {
+            if tb.role != TextBlockRole::Body {
+                return None;
+            }
             let text = sanitize_md_text(&tb.text);
             if text.trim().is_empty() {
                 return None;
@@ -195,7 +225,7 @@ fn escape_cell_text(text: &str) -> String {
 }
 
 /// 改行・タブ・C0 制御文字を U+0020 へ置換する（§6-4）
-fn sanitize_md_text(text: &str) -> String {
+pub(crate) fn sanitize_md_text(text: &str) -> String {
     text.chars()
         .map(|c| {
             if is_md_control_char(c) {
@@ -247,6 +277,9 @@ pub fn extract_document_from_bytes(
     }
 
     let mut doc = DocDoc { pages };
+    if options.detect_header_footer {
+        assign_header_footer(&mut doc);
+    }
     assign_headings(&mut doc);
     Ok(doc)
 }
@@ -259,6 +292,9 @@ fn body_rep_font_size(doc: &DocDoc) -> Option<f64> {
             let DocBlock::Text(tb) = block else {
                 continue;
             };
+            if tb.role != TextBlockRole::Body {
+                continue;
+            }
             for line in &tb.lines {
                 for &idx in &line.chars {
                     let ch = &page.chars[idx as usize];
@@ -289,7 +325,7 @@ fn body_rep_font_size(doc: &DocDoc) -> Option<f64> {
 }
 
 /// ブロック構成行の代表 font_size の中央値
-fn block_rep_font_size(chars: &[TextChar], tb: &TextBlock) -> Option<f64> {
+pub(crate) fn block_rep_font_size(chars: &[TextChar], tb: &TextBlock) -> Option<f64> {
     let mut vals = Vec::with_capacity(tb.lines.len());
     for line in &tb.lines {
         let fs = line_rep_font_size(chars, line)?;
@@ -884,6 +920,7 @@ fn make_text_block(lines: Vec<TextLine>) -> TextBlock {
     }
     TextBlock {
         kind: TextBlockKind::Paragraph,
+        role: TextBlockRole::Body,
         text,
         left,
         right,
@@ -1722,6 +1759,7 @@ mod tests {
     fn json_heading_shape_for_type() {
         let tb = TextBlock {
             kind: TextBlockKind::Heading { level: 2 },
+            role: TextBlockRole::Body,
             text: "Title".into(),
             left: 0.0,
             right: 10.0,
@@ -1977,6 +2015,7 @@ mod tests {
     fn text_block(kind: TextBlockKind, text: &str) -> DocBlock {
         DocBlock::Text(TextBlock {
             kind,
+            role: TextBlockRole::Body,
             text: text.into(),
             left: 0.0,
             right: 10.0,
@@ -2540,4 +2579,549 @@ mod tests {
         assert_eq!(title.1, TextBlockKind::Heading { level: 1 });
         assert!(md.starts_with("# T") || md.contains("# T"));
     }
+
+    // --- specs/13 ヘッダ・フッタ ---
+
+    /// 1行・代表 font_size 付きの本文ブロックを作る
+    fn furniture_block(
+        text: &str,
+        left: f64,
+        top: f64,
+        right: f64,
+        bottom: f64,
+        fs: f64,
+        chars: &mut Vec<TextChar>,
+    ) -> TextBlock {
+        let mut indices = Vec::new();
+        let mut x = left;
+        for ch_c in text.chars() {
+            let s = ch_c.to_string();
+            let idx = chars.len() as u32;
+            chars.push(TextChar {
+                text: s.clone(),
+                left: x,
+                right: x + 1.0,
+                top,
+                bottom,
+                transform: [fs, 0.0, 0.0, -fs, x, top],
+                advance: [1.0, 0.0],
+                font: 0,
+                font_size: fs,
+                rot: 0,
+                upright: true,
+                synthetic: false,
+            });
+            indices.push(idx);
+            x += 1.0;
+        }
+        let word = TextWord {
+            text: text.into(),
+            left,
+            right,
+            top,
+            bottom,
+            chars: indices.clone(),
+        };
+        let line = TextLine {
+            left,
+            right,
+            top,
+            bottom,
+            dir: "ltr".into(),
+            rot: 0,
+            words: vec![word],
+            chars: indices,
+        };
+        TextBlock {
+            kind: TextBlockKind::Paragraph,
+            role: TextBlockRole::Body,
+            text: text.into(),
+            left,
+            right,
+            top,
+            bottom,
+            dir: "ltr".into(),
+            rot: 0,
+            lines: vec![line],
+        }
+    }
+
+    fn furniture_page(
+        page_number: usize,
+        width: f64,
+        height: f64,
+        blocks: Vec<TextBlock>,
+        chars: Vec<TextChar>,
+    ) -> DocPage {
+        DocPage {
+            page_number,
+            width,
+            height,
+            fonts: vec![],
+            chars,
+            blocks: blocks.into_iter().map(DocBlock::Text).collect(),
+        }
+    }
+
+    fn roles_of(doc: &DocDoc) -> Vec<Vec<TextBlockRole>> {
+        doc.pages
+            .iter()
+            .map(|p| {
+                p.blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        DocBlock::Text(t) => Some(t.role),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn extract_options_detect_header_footer_default_false() {
+        assert!(!ExtractOptions::default().detect_header_footer);
+    }
+
+    #[test]
+    fn furniture_band_boundary_exactly_one_sixth() {
+        // height=600 → 1/6=100, 5/6=500。bottom ちょうど 100 は header 候補
+        let h = 600.0;
+        let mut ca = Vec::new();
+        let mut cb = Vec::new();
+        let h1 = furniture_block("HDR", 10.0, 80.0, 50.0, 100.0, 10.0, &mut ca);
+        let bd1 = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut ca);
+        let h2 = furniture_block("HDR", 10.0, 80.0, 50.0, 100.0, 10.0, &mut cb);
+        let bd2 = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut cb);
+        let mut doc = DocDoc {
+            pages: vec![
+                furniture_page(1, 400.0, h, vec![h1, bd1], ca),
+                furniture_page(2, 400.0, h, vec![h2, bd2], cb),
+            ],
+        };
+        assign_header_footer(&mut doc);
+        assert_eq!(
+            roles_of(&doc),
+            vec![
+                vec![TextBlockRole::Header, TextBlockRole::Body],
+                vec![TextBlockRole::Header, TextBlockRole::Body],
+            ]
+        );
+
+        // footer: top ちょうど 500
+        let mut ca = Vec::new();
+        let mut cb = Vec::new();
+        let f1 = furniture_block("FTR", 10.0, 500.0, 50.0, 520.0, 10.0, &mut ca);
+        let bd1 = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut ca);
+        let f2 = furniture_block("FTR", 10.0, 500.0, 50.0, 520.0, 10.0, &mut cb);
+        let bd2 = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut cb);
+        let mut doc = DocDoc {
+            pages: vec![
+                furniture_page(1, 400.0, h, vec![bd1, f1], ca),
+                furniture_page(2, 400.0, h, vec![bd2, f2], cb),
+            ],
+        };
+        assign_header_footer(&mut doc);
+        let roles = roles_of(&doc);
+        assert!(roles[0].contains(&TextBlockRole::Footer));
+        assert!(roles[1].contains(&TextBlockRole::Footer));
+    }
+
+    #[test]
+    fn furniture_edge_gap_exactly_30() {
+        let h = 600.0;
+        // 2要素ヘッダ: 1つ目 bottom=20, 2つ目 top=50 → gap=30
+        let mut pages = Vec::new();
+        for pi in 0..2 {
+            let mut chars = Vec::new();
+            let a = furniture_block("A", 10.0, 5.0, 40.0, 20.0, 10.0, &mut chars);
+            let b = furniture_block("B", 10.0, 50.0, 40.0, 65.0, 10.0, &mut chars);
+            let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
+            pages.push(furniture_page(pi + 1, 400.0, h, vec![a, b, body], chars));
+        }
+        let mut doc = DocDoc { pages };
+        assign_header_footer(&mut doc);
+        for page in &doc.pages {
+            let roles: Vec<_> = page
+                .blocks
+                .iter()
+                .filter_map(|b| match b {
+                    DocBlock::Text(t) => Some((t.text.as_str(), t.role)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(roles[0], ("A", TextBlockRole::Header));
+            assert_eq!(roles[1], ("B", TextBlockRole::Header));
+            assert_eq!(roles[2], ("body", TextBlockRole::Body));
+        }
+
+        // gap 30 超（31）で2要素目は不成立
+        let mut pages = Vec::new();
+        for pi in 0..2 {
+            let mut chars = Vec::new();
+            let a = furniture_block("A", 10.0, 5.0, 40.0, 20.0, 10.0, &mut chars);
+            let b = furniture_block("B", 10.0, 51.0, 40.0, 66.0, 10.0, &mut chars);
+            let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
+            pages.push(furniture_page(pi + 1, 400.0, h, vec![a, b, body], chars));
+        }
+        let mut doc = DocDoc { pages };
+        assign_header_footer(&mut doc);
+        for page in &doc.pages {
+            let roles: Vec<_> = page
+                .blocks
+                .iter()
+                .filter_map(|b| match b {
+                    DocBlock::Text(t) => Some((t.text.as_str(), t.role)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(roles[0], ("A", TextBlockRole::Header));
+            assert_eq!(roles[1], ("B", TextBlockRole::Body));
+        }
+    }
+
+    #[test]
+    fn furniture_font_ratio_exactly_1_05() {
+        let h = 600.0;
+        let mut ca = Vec::new();
+        let mut cb = Vec::new();
+        let a = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.0, &mut ca);
+        let ba = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut ca);
+        let b = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.5, &mut cb);
+        let bb = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut cb);
+        let mut doc = DocDoc {
+            pages: vec![
+                furniture_page(1, 400.0, h, vec![a, ba], ca),
+                furniture_page(2, 400.0, h, vec![b, bb], cb),
+            ],
+        };
+        assign_header_footer(&mut doc);
+        assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Header);
+        assert_eq!(roles_of(&doc)[1][0], TextBlockRole::Header);
+
+        // 1.05 超
+        let mut ca = Vec::new();
+        let mut cb = Vec::new();
+        let a = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.0, &mut ca);
+        let ba = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut ca);
+        let b = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.51, &mut cb);
+        let bb = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut cb);
+        let mut doc = DocDoc {
+            pages: vec![
+                furniture_page(1, 400.0, h, vec![a, ba], ca),
+                furniture_page(2, 400.0, h, vec![b, bb], cb),
+            ],
+        };
+        assign_header_footer(&mut doc);
+        assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Body);
+        assert_eq!(roles_of(&doc)[1][0], TextBlockRole::Body);
+    }
+
+    #[test]
+    fn furniture_bbox_touch_only_no_match() {
+        let h = 600.0;
+        let mut ca = Vec::new();
+        let mut cb = Vec::new();
+        // 接するだけ: a.right == b.left
+        let a = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.0, &mut ca);
+        let ba = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut ca);
+        let b = furniture_block("HDR", 50.0, 10.0, 90.0, 25.0, 10.0, &mut cb);
+        let bb = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut cb);
+        let mut doc = DocDoc {
+            pages: vec![
+                furniture_page(1, 400.0, h, vec![a, ba], ca),
+                furniture_page(2, 400.0, h, vec![b, bb], cb),
+            ],
+        };
+        assign_header_footer(&mut doc);
+        assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Body);
+        assert_eq!(roles_of(&doc)[1][0], TextBlockRole::Body);
+    }
+
+    #[test]
+    fn furniture_same_top_tiebreak_by_block_index() {
+        let h = 600.0;
+        // 同一 top の2候補: 添字昇順で C_p が並ぶ。各ページ同じ text 列で一致
+        let mut pages = Vec::new();
+        for pi in 0..2 {
+            let mut chars = Vec::new();
+            let a = furniture_block("A", 10.0, 10.0, 40.0, 25.0, 10.0, &mut chars);
+            let b = furniture_block("B", 50.0, 10.0, 80.0, 25.0, 10.0, &mut chars);
+            let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
+            pages.push(furniture_page(pi + 1, 400.0, h, vec![a, b, body], chars));
+        }
+        let mut doc = DocDoc { pages };
+        assign_header_footer(&mut doc);
+        // k=0 で A どうし一致、k=1 で B どうし（隣接 gap=10-25 負=重なり相当で OK）
+        // top same: A bottom 25, B top 10 → gap = 10-25 = -15 ≤ 30
+        for page in &doc.pages {
+            let roles: Vec<_> = page
+                .blocks
+                .iter()
+                .filter_map(|b| match b {
+                    DocBlock::Text(t) => Some((t.text.as_str(), t.role)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(roles[0].1, TextBlockRole::Header);
+            assert_eq!(roles[1].1, TextBlockRole::Header);
+        }
+    }
+
+    #[test]
+    fn furniture_empty_doc_and_empty_pages() {
+        let mut empty = DocDoc { pages: vec![] };
+        assign_header_footer(&mut empty);
+        assert!(empty.pages.is_empty());
+
+        let mut pages = DocDoc {
+            pages: vec![
+                furniture_page(1, 400.0, 600.0, vec![], vec![]),
+                furniture_page(2, 400.0, 600.0, vec![], vec![]),
+            ],
+        };
+        assign_header_footer(&mut pages);
+        assert!(roles_of(&pages).iter().all(|r| r.is_empty()));
+    }
+
+    #[test]
+    fn furniture_single_page_no_role() {
+        let mut chars = Vec::new();
+        let h = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.0, &mut chars);
+        let mut doc = DocDoc {
+            pages: vec![furniture_page(1, 400.0, 600.0, vec![h], chars)],
+        };
+        assign_header_footer(&mut doc);
+        assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Body);
+    }
+
+    #[test]
+    fn furniture_non_positive_page_height() {
+        let mut ca = Vec::new();
+        let mut cb = Vec::new();
+        let a = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.0, &mut ca);
+        let b = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.0, &mut cb);
+        let mut doc = DocDoc {
+            pages: vec![
+                furniture_page(1, 400.0, 0.0, vec![a], ca),
+                furniture_page(2, 400.0, f64::NAN, vec![b], cb),
+            ],
+        };
+        assign_header_footer(&mut doc);
+        assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Body);
+        assert_eq!(roles_of(&doc)[1][0], TextBlockRole::Body);
+    }
+
+    #[test]
+    fn furniture_mirror_d2_and_rescue() {
+        // 3ページ鏡映フッタ: 全幅で bbox 交差する "N  Author" / "Author  N" は骨格不一致
+        // d=2 で 1 と 3 が一致、中央は救済
+        // 簡約: 全ページ "Page N" 同位置（d=1 で足りる）ではなく、
+        // 鏡映は骨格不一致なので d=1 では落ち、d=2 で "Page 1" vs "Page 3" は d=2 で一致
+        let h = 600.0;
+        let mut pages = Vec::new();
+        for (pi, n) in [(0usize, 1u32), (1, 2), (2, 3)] {
+            let mut chars = Vec::new();
+            let text = format!("Page {n}");
+            // 奇偶で x を少しずらすが交差は残す
+            let left = if pi % 2 == 0 { 100.0 } else { 120.0 };
+            let f = furniture_block(&text, left, 520.0, left + 80.0, 540.0, 10.0, &mut chars);
+            let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
+            pages.push(furniture_page(pi + 1, 400.0, h, vec![body, f], chars));
+        }
+        let mut doc = DocDoc { pages };
+        assign_header_footer(&mut doc);
+        for page in &doc.pages {
+            let footer = page.blocks.iter().find_map(|b| match b {
+                DocBlock::Text(t) if t.text.starts_with("Page") => Some(t.role),
+                _ => None,
+            });
+            assert_eq!(footer, Some(TextBlockRole::Footer));
+        }
+
+        // 3ページで中央のみ骨格が鏡映（数字位置が違う）: "X 1" / "2 X" / "X 3"
+        // residual は "X" で一致、値 1,2,3
+        let mut pages = Vec::new();
+        let texts = ["X 1", "2 X", "X 3"];
+        for (pi, text) in texts.iter().enumerate() {
+            let mut chars = Vec::new();
+            let f = furniture_block(text, 50.0, 520.0, 150.0, 540.0, 10.0, &mut chars);
+            let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
+            pages.push(furniture_page(pi + 1, 400.0, h, vec![body, f], chars));
+        }
+        let mut doc = DocDoc { pages };
+        assign_header_footer(&mut doc);
+        // d=1: 骨格不一致で不成立。d=2: "X 1" vs "X 3" は骨格一致・値+2 で成立
+        // 中央 "2 X" は救済（鏡映一致 + 値連続）
+        for page in &doc.pages {
+            let role = page.blocks.iter().find_map(|b| match b {
+                DocBlock::Text(t) if t.text != "body" => Some(t.role),
+                _ => None,
+            });
+            assert_eq!(role, Some(TextBlockRole::Footer), "page {}", page.page_number);
+        }
+    }
+
+    #[test]
+    fn furniture_idempotent_reapply() {
+        let h = 600.0;
+        let mut pages = Vec::new();
+        for pi in 0..2 {
+            let mut chars = Vec::new();
+            let hd = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.0, &mut chars);
+            let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
+            pages.push(furniture_page(pi + 1, 400.0, h, vec![hd, body], chars));
+        }
+        let mut doc = DocDoc { pages };
+        assign_header_footer(&mut doc);
+        let once = roles_of(&doc);
+        assign_header_footer(&mut doc);
+        assert_eq!(roles_of(&doc), once);
+        // 既に Header が付いた状態から再適用しても同じ
+        assert_eq!(once[0][0], TextBlockRole::Header);
+    }
+
+    #[test]
+    fn furniture_assign_headings_excludes_non_body() {
+        // 大きい font のヘッダが母集団に入ると mode がずれる構成
+        let h = 600.0;
+        let mut pages = Vec::new();
+        for pi in 0..2 {
+            let mut chars = Vec::new();
+            // ヘッダを多数の大きいグリフで
+            let hd = furniture_block("HHHHHH", 10.0, 10.0, 80.0, 30.0, 20.0, &mut chars);
+            // 本文
+            let body = furniture_block("bbbbbb", 10.0, 200.0, 80.0, 220.0, 10.0, &mut chars);
+            // 見出し候補（本文の 1.8 倍 = 18）
+            let title = furniture_block("Title", 10.0, 100.0, 80.0, 120.0, 18.0, &mut chars);
+            pages.push(furniture_page(
+                pi + 1,
+                400.0,
+                h,
+                vec![hd, title, body],
+                chars,
+            ));
+        }
+        let mut doc = DocDoc { pages };
+        assign_header_footer(&mut doc);
+        assign_headings(&mut doc);
+        // ヘッダ除外後の mode は 10 → Title 18 は level 1
+        for page in &doc.pages {
+            for b in &page.blocks {
+                if let DocBlock::Text(t) = b {
+                    if t.text == "Title" {
+                        assert_eq!(t.kind, TextBlockKind::Heading { level: 1 });
+                    }
+                    if t.text == "HHHHHH" {
+                        assert_eq!(t.role, TextBlockRole::Header);
+                        assert_eq!(t.kind, TextBlockKind::Paragraph);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn furniture_markdown_skips_non_body() {
+        let doc = doc_with_blocks(vec![
+            DocBlock::Text(TextBlock {
+                kind: TextBlockKind::Paragraph,
+                role: TextBlockRole::Header,
+                text: "header".into(),
+                left: 0.0,
+                right: 10.0,
+                top: 0.0,
+                bottom: 10.0,
+                dir: "ltr".into(),
+                rot: 0,
+                lines: vec![],
+            }),
+            text_block(TextBlockKind::Paragraph, "body"),
+            DocBlock::Text(TextBlock {
+                kind: TextBlockKind::Paragraph,
+                role: TextBlockRole::Footer,
+                text: "footer".into(),
+                left: 0.0,
+                right: 10.0,
+                top: 0.0,
+                bottom: 10.0,
+                dir: "ltr".into(),
+                rot: 0,
+                lines: vec![],
+            }),
+        ]);
+        assert_eq!(document_to_markdown(&doc), "body");
+    }
+
+    #[test]
+    fn furniture_json_body_role_preserves_paragraph_and_heading_shapes() {
+        let tb = TextBlock {
+            kind: TextBlockKind::Paragraph,
+            role: TextBlockRole::Body,
+            text: "x".into(),
+            left: 0.0,
+            right: 1.0,
+            top: 2.0,
+            bottom: 3.0,
+            dir: "ltr".into(),
+            rot: 0,
+            lines: vec![],
+        };
+        let json = serde_json::to_string(&DocBlock::Text(tb)).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"text","kind":"paragraph","text":"x","left":0.0,"right":1.0,"top":2.0,"bottom":3.0,"dir":"ltr","rot":0,"lines":[]}"#
+        );
+
+        let tb = TextBlock {
+            kind: TextBlockKind::Heading { level: 2 },
+            role: TextBlockRole::Body,
+            text: "Title".into(),
+            left: 10.0,
+            right: 20.0,
+            top: 30.0,
+            bottom: 40.0,
+            dir: "ttb".into(),
+            rot: 90,
+            lines: vec![],
+        };
+        let json = serde_json::to_string(&DocBlock::Text(tb)).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"text","kind":"heading","level":2,"text":"Title","left":10.0,"right":20.0,"top":30.0,"bottom":40.0,"dir":"ttb","rot":90,"lines":[]}"#
+        );
+
+        let tb = TextBlock {
+            kind: TextBlockKind::Paragraph,
+            role: TextBlockRole::Header,
+            text: "x".into(),
+            left: 0.0,
+            right: 1.0,
+            top: 0.0,
+            bottom: 1.0,
+            dir: "ltr".into(),
+            rot: 0,
+            lines: vec![],
+        };
+        let json = serde_json::to_string(&DocBlock::Text(tb)).unwrap();
+        assert!(json.contains(r#""role":"header""#));
+    }
+
+    #[test]
+    fn furniture_static_header_two_pages() {
+        let h = 600.0;
+        let mut pages = Vec::new();
+        for pi in 0..2 {
+            let mut chars = Vec::new();
+            let hd = furniture_block("Company", 10.0, 10.0, 80.0, 25.0, 10.0, &mut chars);
+            let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
+            pages.push(furniture_page(pi + 1, 400.0, h, vec![hd, body], chars));
+        }
+        let mut doc = DocDoc { pages };
+        assign_header_footer(&mut doc);
+        assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Header);
+        assert_eq!(roles_of(&doc)[1][0], TextBlockRole::Header);
+        assert_eq!(document_to_markdown(&doc), "body\n\nbody");
+    }
+
 }

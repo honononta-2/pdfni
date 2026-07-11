@@ -13,6 +13,8 @@ mod columns;
 #[cfg(feature = "reader")]
 mod document;
 #[cfg(feature = "reader")]
+mod furniture;
+#[cfg(feature = "reader")]
 mod reader;
 #[cfg(feature = "reader")]
 mod text;
@@ -29,8 +31,8 @@ pub use extract::{
 pub use model::{BBox, Cell, Document, Orientation, Page, Table};
 #[cfg(feature = "reader")]
 pub use document::{
-    DocBlock, DocDoc, DocPage, TextBlock, TextBlockKind, assign_headings, build_blocks,
-    document_to_markdown, extract_document_from_bytes,
+    DocBlock, DocDoc, DocPage, TextBlock, TextBlockKind, TextBlockRole, assign_header_footer,
+    assign_headings, build_blocks, document_to_markdown, extract_document_from_bytes,
 };
 #[cfg(feature = "reader")]
 pub use reader::{extract_from_bytes, extract_text_from_bytes, read_pages};

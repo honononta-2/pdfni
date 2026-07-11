@@ -8,7 +8,9 @@ use reticella::{
 fn main() {
     let mut args = std::env::args().skip(1);
     let input = args.next().unwrap_or_else(|| {
-        eprintln!("usage: text_probe <input.pdf> [lines|items|doc|md] [output.json] [password]");
+        eprintln!(
+            "usage: text_probe <input.pdf> [lines|items|doc|md|dochf|mdhf] [output.json] [password]"
+        );
         std::process::exit(2);
     });
 
@@ -29,12 +31,22 @@ fn main() {
                 password = args.next();
             }
             "doc" => {
-                mode = Mode::Doc;
+                mode = Mode::Doc { detect_hf: false };
                 out_path = args.next();
                 password = args.next();
             }
             "md" => {
-                mode = Mode::Md;
+                mode = Mode::Md { detect_hf: false };
+                out_path = args.next();
+                password = args.next();
+            }
+            "dochf" => {
+                mode = Mode::Doc { detect_hf: true };
+                out_path = args.next();
+                password = args.next();
+            }
+            "mdhf" => {
+                mode = Mode::Md { detect_hf: true };
                 out_path = args.next();
                 password = args.next();
             }
@@ -53,13 +65,17 @@ fn main() {
         }
     };
 
-    // doc / md は文書モデル入口、それ以外は座標付き文字入口
-    if matches!(mode, Mode::Doc | Mode::Md) {
-        let doc = match extract_document_from_bytes(
-            &bytes,
-            password.as_deref(),
-            &ExtractOptions::default(),
-        ) {
+    // doc / md / dochf / mdhf は文書モデル入口、それ以外は座標付き文字入口
+    if matches!(mode, Mode::Doc { .. } | Mode::Md { .. }) {
+        let detect_hf = match mode {
+            Mode::Doc { detect_hf } | Mode::Md { detect_hf } => detect_hf,
+            _ => false,
+        };
+        let options = ExtractOptions {
+            detect_header_footer: detect_hf,
+            ..ExtractOptions::default()
+        };
+        let doc = match extract_document_from_bytes(&bytes, password.as_deref(), &options) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("extract failed: {e}");
@@ -68,14 +84,14 @@ fn main() {
         };
 
         let output = match mode {
-            Mode::Doc => match serde_json::to_string_pretty(&doc) {
+            Mode::Doc { .. } => match serde_json::to_string_pretty(&doc) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("serialize failed: {e}");
                     std::process::exit(1);
                 }
             },
-            Mode::Md => document_to_markdown(&doc),
+            Mode::Md { .. } => document_to_markdown(&doc),
             _ => unreachable!(),
         };
 
@@ -90,18 +106,7 @@ fn main() {
         }
 
         match mode {
-            Mode::Doc => {
-                for (i, pg) in doc.pages.iter().enumerate() {
-                    eprintln!(
-                        "  page {i} {:.0}x{:.0} fonts={} blocks={}",
-                        pg.width,
-                        pg.height,
-                        pg.fonts.len(),
-                        pg.blocks.len()
-                    );
-                }
-            }
-            Mode::Md => {
+            Mode::Doc { .. } | Mode::Md { .. } => {
                 for (i, pg) in doc.pages.iter().enumerate() {
                     eprintln!(
                         "  page {i} {:.0}x{:.0} fonts={} blocks={}",
@@ -156,7 +161,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Mode::Doc | Mode::Md => unreachable!(),
+        Mode::Doc { .. } | Mode::Md { .. } => unreachable!(),
     };
 
     if let Some(path) = out_path {
@@ -205,7 +210,7 @@ fn main() {
                 );
             }
         }
-        Mode::Doc | Mode::Md => unreachable!(),
+        Mode::Doc { .. } | Mode::Md { .. } => unreachable!(),
     }
 }
 
@@ -213,6 +218,6 @@ enum Mode {
     Chars,
     Items,
     Lines,
-    Doc,
-    Md,
+    Doc { detect_hf: bool },
+    Md { detect_hf: bool },
 }
