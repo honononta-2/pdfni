@@ -52,7 +52,7 @@ struct PendingTextChar {
 }
 
 /// 進行方向の量子化回転
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum RotQ {
     R0,
     R90,
@@ -237,6 +237,7 @@ pub(crate) fn extract_text(
     .interpret(contents, resources, IDENTITY_MAT);
 
     let (mut w, mut h) = (view[2] - view[0], view[3] - view[1]);
+    dedup_overlaid_glyphs(&mut sink.chars);
     synth_word_spaces_text(&mut sink.chars);
 
     let page_rot = (page_rotate.rem_euclid(360) / 90) as u8;
@@ -517,6 +518,64 @@ fn synth_word_spaces(glyphs: &[GlyphPart]) -> Vec<GlyphPart> {
         }
     }
     spaces
+}
+
+/// 重複グリフ除去の完全一致キー（specs/14 §2）
+///
+/// 浮動小数13値は -0.0 を +0.0 へ正規化したビット表現で持つ
+#[derive(PartialEq, Eq, Hash)]
+struct GlyphDedupKey {
+    text: String,
+    font: u32,
+    rot_q: RotQ,
+    upright: bool,
+    bits: [u64; 13],
+}
+
+/// -0.0 を +0.0 へ正規化したビット表現
+fn norm_f64_bits(v: f64) -> u64 {
+    if v == 0.0 { 0.0f64.to_bits() } else { v.to_bits() }
+}
+
+/// 重ね印字の重複グリフ除去（specs/14）
+///
+/// 完全一致の再描画をストリーム先勝ちで1つに畳む。合成空白の生成前に呼ぶ
+fn dedup_overlaid_glyphs(chars: &mut Vec<PendingTextChar>) {
+    let mut seen = HashSet::new();
+    chars.retain(|c| {
+        if c.synthetic || c.text.is_empty() {
+            return true;
+        }
+        let vals = [
+            c.font_size,
+            c.left,
+            c.right,
+            c.top,
+            c.bottom,
+            c.transform[0],
+            c.transform[1],
+            c.transform[2],
+            c.transform[3],
+            c.transform[4],
+            c.transform[5],
+            c.advance[0],
+            c.advance[1],
+        ];
+        if vals.iter().any(|v| !v.is_finite()) {
+            return true;
+        }
+        let mut bits = [0u64; 13];
+        for (b, v) in bits.iter_mut().zip(vals) {
+            *b = norm_f64_bits(v);
+        }
+        seen.insert(GlyphDedupKey {
+            text: c.text.clone(),
+            font: c.font,
+            rot_q: c.rot_q,
+            upright: c.upright,
+            bits,
+        })
+    });
 }
 
 /// 語間ギャップに合成空白をストリーム位置へ挿入する
@@ -3078,5 +3137,209 @@ Q
         body.extend_from_slice(b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n");
         body.extend_from_slice(format!("{xref_off}\n%%EOF\n").as_bytes());
         body
+    }
+
+    // -----------------------------------------------------------------------
+    // 重複グリフ除去（dedup_overlaid_glyphs、specs/14）
+    // -----------------------------------------------------------------------
+
+    /// 除去テスト用の基準グリフ
+    fn dedup_glyph(text: &str, x: f64) -> PendingTextChar {
+        PendingTextChar {
+            text: text.to_string(),
+            left: x,
+            right: x + 5.0,
+            top: 10.0,
+            bottom: 20.0,
+            transform: [10.0, 0.0, 0.0, -10.0, x, 30.0],
+            advance: [5.0, 0.0],
+            font: 0,
+            font_size: 10.0,
+            rot_q: RotQ::R0,
+            upright: true,
+            synthetic: false,
+        }
+    }
+
+    fn dedup_texts(chars: &mut Vec<PendingTextChar>) -> Vec<String> {
+        dedup_overlaid_glyphs(chars);
+        chars.iter().map(|c| c.text.clone()).collect()
+    }
+
+    /// 完全一致2個は先頭のみ残り順序が保たれる
+    #[test]
+    fn dedup_exact_pair_keeps_first() {
+        let mut v = vec![
+            dedup_glyph("A", 0.0),
+            dedup_glyph("B", 5.0),
+            dedup_glyph("A", 0.0),
+        ];
+        assert_eq!(dedup_texts(&mut v), vec!["A", "B"]);
+    }
+
+    /// 3個以上の完全一致も先頭の1個のみ残る
+    #[test]
+    fn dedup_triple_keeps_first() {
+        let mut v = vec![
+            dedup_glyph("A", 0.0),
+            dedup_glyph("A", 0.0),
+            dedup_glyph("A", 0.0),
+        ];
+        assert_eq!(dedup_texts(&mut v), vec!["A"]);
+    }
+
+    /// キーのいずれか1箇所だけが違う組は両方残る
+    #[test]
+    fn dedup_single_field_difference_keeps_both() {
+        let variants: Vec<(&str, Box<dyn Fn(&mut PendingTextChar)>)> = vec![
+            ("text", Box::new(|c| c.text = "B".into())),
+            ("font", Box::new(|c| c.font = 1)),
+            ("font_size", Box::new(|c| c.font_size = 11.0)),
+            ("left", Box::new(|c| c.left += 0.5)),
+            ("right", Box::new(|c| c.right += 0.5)),
+            ("top", Box::new(|c| c.top += 0.5)),
+            ("bottom", Box::new(|c| c.bottom += 0.5)),
+            ("transform_a", Box::new(|c| c.transform[0] += 0.5)),
+            ("origin_x", Box::new(|c| c.transform[4] += 0.001)),
+            ("advance_x", Box::new(|c| c.advance[0] += 0.001)),
+            ("rot_q", Box::new(|c| c.rot_q = RotQ::R180)),
+            ("upright", Box::new(|c| c.upright = false)),
+        ];
+        for (name, mutate) in variants {
+            let mut b = dedup_glyph("A", 0.0);
+            mutate(&mut b);
+            let mut v = vec![dedup_glyph("A", 0.0), b];
+            dedup_overlaid_glyphs(&mut v);
+            assert_eq!(v.len(), 2, "field {name}");
+        }
+    }
+
+    /// 合字は文字列全体で比較する（完全一致は1個、分解列とは別）
+    #[test]
+    fn dedup_ligature_string() {
+        let mut v = vec![dedup_glyph("fi", 0.0), dedup_glyph("fi", 0.0)];
+        assert_eq!(dedup_texts(&mut v), vec!["fi"]);
+        let mut v = vec![
+            dedup_glyph("fi", 0.0),
+            dedup_glyph("f", 0.0),
+            dedup_glyph("i", 0.0),
+        ];
+        assert_eq!(dedup_texts(&mut v), vec!["fi", "f", "i"]);
+    }
+
+    /// 実空白の完全一致は先頭のみ残る（3連も同様）
+    #[test]
+    fn dedup_real_space() {
+        let mut v = vec![
+            dedup_glyph(" ", 0.0),
+            dedup_glyph(" ", 0.0),
+            dedup_glyph(" ", 0.0),
+        ];
+        assert_eq!(dedup_texts(&mut v), vec![" "]);
+    }
+
+    /// synthetic と空 text は判定に参加せず常に残る
+    #[test]
+    fn dedup_skips_synthetic_and_empty() {
+        let mut a = dedup_glyph(" ", 0.0);
+        a.synthetic = true;
+        let mut b = dedup_glyph(" ", 0.0);
+        b.synthetic = true;
+        let mut v = vec![a, b];
+        dedup_overlaid_glyphs(&mut v);
+        assert_eq!(v.len(), 2);
+
+        let mut v = vec![dedup_glyph("", 0.0), dedup_glyph("", 0.0)];
+        dedup_overlaid_glyphs(&mut v);
+        assert_eq!(v.len(), 2);
+    }
+
+    /// 非有限値を含むグリフは残る（font_size・bbox・transform・advance の各群）
+    #[test]
+    fn dedup_keeps_nonfinite() {
+        let muts: Vec<Box<dyn Fn(&mut PendingTextChar)>> = vec![
+            Box::new(|c| c.font_size = f64::NAN),
+            Box::new(|c| c.top = f64::INFINITY),
+            Box::new(|c| c.transform[2] = f64::NAN),
+            Box::new(|c| c.advance[1] = f64::NEG_INFINITY),
+        ];
+        for (i, m) in muts.into_iter().enumerate() {
+            let mut a = dedup_glyph("A", 0.0);
+            m(&mut a);
+            let mut b = dedup_glyph("A", 0.0);
+            m(&mut b);
+            let mut v = vec![a, b];
+            dedup_overlaid_glyphs(&mut v);
+            assert_eq!(v.len(), 2, "case {i}");
+        }
+    }
+
+    /// +0.0 と -0.0 は同一視する
+    #[test]
+    fn dedup_zero_sign_normalized() {
+        let mut a = dedup_glyph("A", 0.0);
+        a.advance[1] = 0.0;
+        let mut b = dedup_glyph("A", 0.0);
+        b.advance[1] = -0.0;
+        let mut v = vec![a, b];
+        dedup_overlaid_glyphs(&mut v);
+        assert_eq!(v.len(), 1);
+    }
+
+    /// 回転グリフの完全一致も1個になる
+    #[test]
+    fn dedup_rotated_pair() {
+        let mut a = dedup_glyph("A", 0.0);
+        a.rot_q = RotQ::R90;
+        a.upright = false;
+        let mut b = dedup_glyph("A", 0.0);
+        b.rot_q = RotQ::R90;
+        b.upright = false;
+        let mut v = vec![a, b];
+        dedup_overlaid_glyphs(&mut v);
+        assert_eq!(v.len(), 1);
+    }
+
+    /// ページを跨ぐ同一キーは除去しない（走査はページ単位）
+    #[test]
+    fn dedup_per_page_scope() {
+        let mut p1 = vec![dedup_glyph("A", 0.0)];
+        let mut p2 = vec![dedup_glyph("A", 0.0)];
+        dedup_overlaid_glyphs(&mut p1);
+        dedup_overlaid_glyphs(&mut p2);
+        assert_eq!(p1.len() + p2.len(), 2);
+    }
+
+    /// 重複なしの入力は順序・内容とも不変
+    #[test]
+    fn dedup_identity_without_duplicates() {
+        let mut v = vec![
+            dedup_glyph("A", 0.0),
+            dedup_glyph("B", 5.0),
+            dedup_glyph("C", 10.0),
+        ];
+        assert_eq!(dedup_texts(&mut v), vec!["A", "B", "C"]);
+    }
+
+    /// 縦書きフォントの二重描画も先頭の1回分だけ残る（extract_text 経由）
+    #[test]
+    fn extract_text_vertical_dedup_double_draw() {
+        let contents =
+            b"BT /F1 10 Tf 1 0 0 1 50 150 Tm <00410042> Tj 1 0 0 1 50 150 Tm <00410042> Tj ET";
+        let res = vertical_resources(false);
+        let (_, _, fonts, chars) = text_of_res(contents, &res, default_view());
+        assert!(fonts[0].vertical);
+        assert_eq!(chars.len(), 2, "chars={}", chars.len());
+        assert!(chars.iter().all(|c| !c.synthetic));
+    }
+
+    /// 同一テキストの二重描画が合成空白の生成前に畳まれる（extract_text 経由）
+    #[test]
+    fn extract_text_dedup_double_draw() {
+        let contents = b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (AB) Tj 1 0 0 1 0 50 Tm (AB) Tj 1 0 0 1 13 50 Tm (CD) Tj ET";
+        let (_, _, _, chars) = text_of(contents, default_view());
+        let texts: Vec<&str> = chars.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["A", "B", " ", "C", "D"], "got {texts:?}");
+        assert!(chars[2].synthetic);
     }
 }
