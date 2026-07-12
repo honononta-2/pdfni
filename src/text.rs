@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::bidi::apply_bidi;
+
 /// 文書全体の座標付き文字
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextDoc {
@@ -109,6 +111,11 @@ const LINE_PROGRESS_GAP_FACTOR: f64 = 2.0;
 
 /// TextPage から pdf.js 相当の TextItem 列を構築する
 pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
+    build_text_items_with(page, false)
+}
+
+/// TextPage から TextItem 列を構築する（`bidi` で RTL 並べ替え）
+pub fn build_text_items_with(page: &TextPage, bidi: bool) -> Vec<TextItem> {
     let mut items: Vec<TextItem> = Vec::new();
     let mut chunk: Option<ChunkState> = None;
     // 直前2文字（空白合成判定用）。初期値は空白
@@ -368,11 +375,26 @@ pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
     }
 
     flush_chunk(&mut items, &mut chunk);
+    if bidi {
+        for item in &mut items {
+            if item.dir == "ttb" {
+                continue;
+            }
+            let r = apply_bidi(&item.r#str, false);
+            item.r#str = r.str;
+            item.dir = r.dir;
+        }
+    }
     items
 }
 
 /// TextPage から行・単語ビューを構築する
 pub fn build_text_lines(page: &TextPage) -> Vec<TextLine> {
+    build_text_lines_with(page, false)
+}
+
+/// TextPage から行・単語ビューを構築する（`bidi` で RTL 並べ替え）
+pub fn build_text_lines_with(page: &TextPage, bidi: bool) -> Vec<TextLine> {
     let mut group_order: Vec<(bool, i32)> = Vec::new();
     let mut group_indices: Vec<Vec<usize>> = Vec::new();
     // 挿入順は group_order。位置引きだけ HashMap
@@ -401,7 +423,7 @@ pub fn build_text_lines(page: &TextPage) -> Vec<TextLine> {
     let mut lines: Vec<TextLine> = Vec::new();
     for (key, indices) in group_order.into_iter().zip(group_indices) {
         let (vertical, rot) = key;
-        lines.extend(lines_for_group(page, &indices, vertical, rot));
+        lines.extend(lines_for_group(page, &indices, vertical, rot, bidi));
     }
 
     lines.sort_by_cached_key(|line| line.chars.iter().copied().min().unwrap_or(u32::MAX));
@@ -418,7 +440,13 @@ struct GlyphPos {
 }
 
 /// 書字方向グループから行を構築する
-fn lines_for_group(page: &TextPage, indices: &[usize], vertical: bool, rot: i32) -> Vec<TextLine> {
+fn lines_for_group(
+    page: &TextPage,
+    indices: &[usize],
+    vertical: bool,
+    rot: i32,
+    bidi: bool,
+) -> Vec<TextLine> {
     if indices.is_empty() {
         return Vec::new();
     }
@@ -498,6 +526,7 @@ fn lines_for_group(page: &TextPage, indices: &[usize], vertical: bool, rot: i32)
                     rot,
                     &dir,
                     progress_gap_thresh,
+                    bidi,
                     &mut out,
                 );
                 cluster.clear();
@@ -516,6 +545,7 @@ fn lines_for_group(page: &TextPage, indices: &[usize], vertical: bool, rot: i32)
         rot,
         &dir,
         progress_gap_thresh,
+        bidi,
         &mut out,
     );
     out
@@ -529,13 +559,14 @@ fn emit_cluster_lines(
     rot: i32,
     dir: &str,
     progress_gap_thresh: f64,
+    bidi: bool,
     out: &mut Vec<TextLine>,
 ) {
     if cluster.is_empty() {
         return;
     }
     for mut part in split_cluster_by_progress(page, cluster, vertical, rot, progress_gap_thresh) {
-        if let Some(line) = line_from_cluster(page, &mut part, vertical, rot, dir) {
+        if let Some(line) = line_from_cluster(page, &mut part, vertical, rot, dir, bidi) {
             out.push(line);
         }
     }
@@ -617,6 +648,7 @@ fn line_from_cluster(
     vertical: bool,
     rot: i32,
     dir: &str,
+    bidi: bool,
 ) -> Option<TextLine> {
     if cluster.iter().all(|g| g.is_ws) {
         return None;
@@ -651,13 +683,21 @@ fn line_from_cluster(
         return None;
     }
 
-    let words = words_for_line(page, &char_indices, vertical, rot);
+    let words = words_for_line(page, &char_indices, vertical, rot, bidi);
+    let mut dir = dir.to_string();
+    if bidi && !vertical {
+        let visual: String = char_indices
+            .iter()
+            .map(|&i| page.chars[i as usize].text.as_str())
+            .collect();
+        dir = apply_bidi(&visual, false).dir;
+    }
     Some(TextLine {
         left,
         right,
         top,
         bottom,
-        dir: dir.to_string(),
+        dir,
         rot,
         words,
         chars: char_indices,
@@ -722,7 +762,13 @@ fn whitespace_between_touching_solids(
 }
 
 /// 行内の単語を構築する
-fn words_for_line(page: &TextPage, order: &[u32], vertical: bool, rot: i32) -> Vec<TextWord> {
+fn words_for_line(
+    page: &TextPage,
+    order: &[u32],
+    vertical: bool,
+    rot: i32,
+    bidi: bool,
+) -> Vec<TextWord> {
     let mut words: Vec<TextWord> = Vec::new();
     let mut cur: Vec<u32> = Vec::new();
     let mut prev_non_ws: Option<usize> = None;
@@ -736,7 +782,7 @@ fn words_for_line(page: &TextPage, order: &[u32], vertical: bool, rot: i32) -> V
                 continue;
             }
             if !cur.is_empty() {
-                if let Some(w) = make_word(page, &cur) {
+                if let Some(w) = make_word(page, &cur, bidi) {
                     words.push(w);
                 }
                 cur.clear();
@@ -755,7 +801,7 @@ fn words_for_line(page: &TextPage, order: &[u32], vertical: bool, rot: i32) -> V
                 gap > TRACKING_SPACE_FACTOR * fs || gap < NEGATIVE_SPACE_FACTOR * fs
             }) {
                 if !cur.is_empty() {
-                    if let Some(w) = make_word(page, &cur) {
+                    if let Some(w) = make_word(page, &cur, bidi) {
                         words.push(w);
                     }
                     cur.clear();
@@ -768,7 +814,7 @@ fn words_for_line(page: &TextPage, order: &[u32], vertical: bool, rot: i32) -> V
     }
 
     if !cur.is_empty() {
-        if let Some(w) = make_word(page, &cur) {
+        if let Some(w) = make_word(page, &cur, bidi) {
             words.push(w);
         }
     }
@@ -776,7 +822,7 @@ fn words_for_line(page: &TextPage, order: &[u32], vertical: bool, rot: i32) -> V
 }
 
 /// 単語ビューの組み立て
-fn make_word(page: &TextPage, chars: &[u32]) -> Option<TextWord> {
+fn make_word(page: &TextPage, chars: &[u32], bidi: bool) -> Option<TextWord> {
     if chars.is_empty() {
         return None;
     }
@@ -802,6 +848,9 @@ fn make_word(page: &TextPage, chars: &[u32]) -> Option<TextWord> {
     }
     if !any {
         return None;
+    }
+    if bidi {
+        text = apply_bidi(&text, false).str;
     }
     Some(TextWord {
         text,

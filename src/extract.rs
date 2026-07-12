@@ -1,5 +1,6 @@
 //! 抽出のオーケストレーション
 
+use crate::bidi::apply_bidi;
 use crate::detect_hybrid::{self, HybridSettings};
 use crate::detect_lattice::{self, LatticeSettings};
 use crate::detect_text::{self, Seg, TextSettings};
@@ -95,6 +96,9 @@ pub struct ExtractOptions {
     /// 見出し・段落の Markdown 本文エスケープ（既定は有効）
     #[serde(default = "default_escape_markdown")]
     pub escape_markdown: bool,
+    /// RTL 文書の bidi 並べ替え（既定は無効）
+    #[serde(default)]
+    pub bidi: bool,
 }
 
 fn default_detect_lists() -> bool {
@@ -115,6 +119,7 @@ impl Default for ExtractOptions {
             detect_header_footer: false,
             detect_lists: true,
             escape_markdown: true,
+            bidi: false,
         }
     }
 }
@@ -225,7 +230,7 @@ fn join_line_glyphs(line: &[(usize, &Glyph)]) -> String {
 }
 
 /// セル内テキストの組み立て
-fn cell_text(chars: &[Glyph], index: &CharIndex, cell: &BBox) -> String {
+fn cell_text(chars: &[Glyph], index: &CharIndex, cell: &BBox, bidi: bool) -> String {
     let mut hits: Vec<(usize, &Glyph)> = index
         .in_box(chars, cell)
         .into_iter()
@@ -264,7 +269,12 @@ fn cell_text(chars: &[Glyph], index: &CharIndex, cell: &BBox) -> String {
         let mut idxs: Vec<usize> = lines.iter().flatten().map(|&(i, _)| i).collect();
         idxs.sort_unstable();
         let s: String = idxs.iter().map(|&i| chars[i].ch).collect();
-        return strip_cjk_spaces(s.trim());
+        let s = strip_cjk_spaces(s.trim());
+        return if bidi {
+            apply_bidi(&s, false).str
+        } else {
+            s
+        };
     }
 
     let mut out = Vec::with_capacity(lines.len());
@@ -273,7 +283,12 @@ fn cell_text(chars: &[Glyph], index: &CharIndex, cell: &BBox) -> String {
         let s = join_line_glyphs(&line);
         let s = s.trim();
         if !s.is_empty() {
-            out.push(s.to_string());
+            let s = if bidi {
+                apply_bidi(s, false).str
+            } else {
+                s.to_string()
+            };
+            out.push(s);
         }
     }
     strip_cjk_spaces(&out.join("\n"))
@@ -562,7 +577,13 @@ fn col_split_allowed(gs: &[&Glyph], x: f64, gap_min: f64) -> bool {
 }
 
 /// 疎罫線で複数列にまたがるセルを格子の列軸で細分する
-fn refine_lattice_cols(t: &mut Table, chars: &[Glyph], index: &CharIndex, scale: Option<f64>) {
+fn refine_lattice_cols(
+    t: &mut Table,
+    chars: &[Glyph],
+    index: &CharIndex,
+    scale: Option<f64>,
+    bidi: bool,
+) {
     if t.n_cols < 2 {
         return;
     }
@@ -620,7 +641,7 @@ fn refine_lattice_cols(t: &mut Table, chars: &[Glyph], index: &CharIndex, scale:
                     bottom,
                 };
                 row[slot] = Cell {
-                    text: cell_text(chars, index, &bb),
+                    text: cell_text(chars, index, &bb, bidi),
                     bbox: bb,
                 };
                 slot = b;
@@ -631,7 +652,13 @@ fn refine_lattice_cols(t: &mut Table, chars: &[Glyph], index: &CharIndex, scale:
 }
 
 /// 疎罫線の罫線行内をテキスト行で細分する
-fn refine_lattice_rows(t: &mut Table, chars: &[Glyph], index: &CharIndex, scale: Option<f64>) {
+fn refine_lattice_rows(
+    t: &mut Table,
+    chars: &[Glyph],
+    index: &CharIndex,
+    scale: Option<f64>,
+    bidi: bool,
+) {
     let mut new_data: Vec<Vec<Cell>> = Vec::with_capacity(t.data.len());
     let mut changed = false;
     for row in &t.data {
@@ -668,7 +695,7 @@ fn refine_lattice_rows(t: &mut Table, chars: &[Glyph], index: &CharIndex, scale:
                         bottom,
                     };
                     new_row.push(Cell {
-                        text: cell_text(chars, index, &bb),
+                        text: cell_text(chars, index, &bb, bidi),
                         bbox: bb,
                     });
                 } else {
@@ -1143,7 +1170,8 @@ fn detect_tables(
     scale: Option<f64>,
 ) -> Vec<Table> {
     let index = CharIndex::new(chars);
-    let fill = |b: &BBox| cell_text(chars, &index, b);
+    let bidi = options.bidi;
+    let fill = |b: &BBox| cell_text(chars, &index, b, bidi);
     let use_lattice = options.mode != DetectMode::Borderless;
     let use_hybrid = options.mode == DetectMode::Auto;
     let use_text = options.mode != DetectMode::Ruled;
@@ -1160,12 +1188,12 @@ fn detect_tables(
     }
     if options.lattice.refine_cols {
         for t in &mut tables {
-            refine_lattice_cols(t, chars, &index, scale);
+            refine_lattice_cols(t, chars, &index, scale, bidi);
         }
     }
     if options.lattice.refine_rows {
         for t in &mut tables {
-            refine_lattice_rows(t, chars, &index, scale);
+            refine_lattice_rows(t, chars, &index, scale, bidi);
         }
     }
     for t in &mut tables {
@@ -1359,7 +1387,7 @@ mod tests {
             glyph('a', 5.0, 10.0, 12.0, 18.0),
             glyph('b', 55.0, 60.0, 12.0, 18.0),
         ];
-        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None);
+        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None, false);
         assert_eq!(t.data[1][0].text, "a");
         assert_eq!(t.data[1][1].text, "b");
         assert_eq!(t.data[1][0].bbox.x1, 50.0);
@@ -1373,7 +1401,7 @@ mod tests {
             glyph('a', 5.0, 10.0, 12.0, 18.0),
             glyph('c', 45.0, 55.0, 12.0, 18.0),
         ];
-        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None);
+        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None, false);
         assert_eq!(t.data[1][0].bbox.x1, 100.0);
         assert_eq!(t.data[1][1].bbox.width(), 0.0);
     }
@@ -1385,7 +1413,7 @@ mod tests {
             glyph('a', 5.0, 49.0, 12.0, 18.0),
             glyph('b', 51.0, 95.0, 12.0, 18.0),
         ];
-        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None);
+        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None, false);
         assert_eq!(t.data[1][0].bbox.x1, 100.0);
     }
 
@@ -1425,7 +1453,7 @@ mod tests {
         let mut chars = Vec::new();
         two_lines(&mut chars, 0, "ab", "cd");
         two_lines(&mut chars, 1, "1E5", "2E6");
-        refine_lattice_rows(&mut t, &chars, &CharIndex::new(&chars), None);
+        refine_lattice_rows(&mut t, &chars, &CharIndex::new(&chars), None, false);
         assert_eq!(t.n_rows, 2);
         assert_eq!(t.data[0][1].text, "1E5");
         assert_eq!(t.data[1][1].text, "2E6");
@@ -1440,7 +1468,7 @@ mod tests {
             for j in 0..n_cells {
                 two_lines(&mut chars, j, "ab", "cd");
             }
-            refine_lattice_rows(&mut t, &chars, &CharIndex::new(&chars), None);
+            refine_lattice_rows(&mut t, &chars, &CharIndex::new(&chars), None, false);
             assert_eq!(t.n_rows, 1);
         }
     }
@@ -1457,7 +1485,7 @@ mod tests {
                 chars.push(glyph(ch, x, x + 3.0, 7.0, 13.0));
             }
         }
-        refine_lattice_rows(&mut t, &chars, &CharIndex::new(&chars), None);
+        refine_lattice_rows(&mut t, &chars, &CharIndex::new(&chars), None, false);
         assert_eq!(t.n_rows, 1);
         assert_eq!(t.n_cols, 4);
     }
@@ -1529,7 +1557,7 @@ mod tests {
             glyph('b', 95.0, 99.0, 12.0, 18.0),
             glyph('c', 101.0, 110.0, 12.0, 18.0),
         ];
-        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None);
+        refine_lattice_cols(&mut t, &chars, &CharIndex::new(&chars), None, false);
         assert_eq!(t.data[1][0].text, "a");
         assert_eq!(t.data[1][0].bbox.x1, 50.0);
         assert_eq!(t.data[1][1].text, "bc");

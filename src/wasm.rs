@@ -53,6 +53,8 @@ pub fn extract_text_from_pdf(
 }
 
 /// PDF バイト列から TextItem 互換ビューを抽出しページごとの items の JSON を返す
+///
+/// bidi は既定オフ。有効化は Rust の `build_text_items_with` か文書入口の options を使う
 #[cfg(feature = "reader")]
 #[wasm_bindgen]
 pub fn extract_text_items_from_pdf(
@@ -70,6 +72,8 @@ pub fn extract_text_items_from_pdf(
 }
 
 /// PDF バイト列から行・単語ビューを抽出しページごとの lines の JSON を返す
+///
+/// bidi は既定オフ。有効化は Rust の `build_text_lines_with` か文書入口の options を使う
 #[cfg(feature = "reader")]
 #[wasm_bindgen]
 pub fn extract_text_lines_from_pdf(

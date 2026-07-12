@@ -9,7 +9,7 @@ use crate::furniture;
 use crate::model::{BBox, Cell, Table};
 use crate::reader::{extract_from_bytes, extract_text_from_bytes};
 use crate::text::{
-    TextChar, TextFont, TextLine, TextPage, TextWord, build_text_lines, derotate_xy,
+    TextChar, TextFont, TextLine, TextPage, TextWord, build_text_lines_with, derotate_xy,
     is_whitespace_str,
 };
 
@@ -692,7 +692,7 @@ pub fn extract_document_from_bytes(
         .zip(text_doc.pages.into_iter())
         .enumerate()
     {
-        let blocks = build_blocks_owned(&text_page, page.tables);
+        let blocks = build_blocks_owned(&text_page, page.tables, options.bidi);
         pages.push(DocPage {
             page_number: i + 1,
             width: text_page.width,
@@ -766,13 +766,13 @@ pub(crate) fn block_rep_font_size(chars: &[TextChar], tb: &TextBlock) -> Option<
 
 /// ページの行と表から読み順付きブロック列を構築する
 pub fn build_blocks(page: &TextPage, tables: &[Table]) -> Vec<DocBlock> {
-    build_blocks_owned(page, tables.to_vec())
+    build_blocks_owned(page, tables.to_vec(), false)
 }
 
 /// 表を所有権ごと受け取りブロック列を構築する
-fn build_blocks_owned(page: &TextPage, tables: Vec<Table>) -> Vec<DocBlock> {
+fn build_blocks_owned(page: &TextPage, tables: Vec<Table>, bidi: bool) -> Vec<DocBlock> {
     let valid_cells = collect_valid_cells(&tables);
-    let raw_lines = build_text_lines(page);
+    let raw_lines = build_text_lines_with(page, bidi);
     let body_lines: Vec<TextLine> = raw_lines
         .into_iter()
         .filter_map(|line| filter_table_owned_line(page, line, &valid_cells))
@@ -3911,6 +3911,15 @@ mod tests {
         assert!(parsed.detect_lists);
         let off: ExtractOptions = serde_json::from_str(r#"{"detect_lists":false}"#).unwrap();
         assert!(!off.detect_lists);
+    }
+
+    #[test]
+    fn extract_options_bidi_default_false() {
+        assert!(!ExtractOptions::default().bidi);
+        let parsed: ExtractOptions = serde_json::from_str("{}").unwrap();
+        assert!(!parsed.bidi);
+        let on: ExtractOptions = serde_json::from_str(r#"{"bidi":true}"#).unwrap();
+        assert!(on.bidi);
     }
 
     #[test]

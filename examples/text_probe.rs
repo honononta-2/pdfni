@@ -1,8 +1,8 @@
 //! 座標付き文字を JSON で出力する
 
 use reticella::{
-    build_text_items, build_text_lines, document_to_markdown, extract_document_from_bytes,
-    extract_text_from_bytes, ExtractOptions,
+    build_text_items_with, build_text_lines_with, document_to_markdown,
+    extract_document_from_bytes, extract_text_from_bytes, ExtractOptions,
 };
 
 fn main() {
@@ -91,9 +91,11 @@ fn main() {
             } => escape_markdown,
             _ => true,
         };
+        let bidi = std::env::var_os("RETICELLA_BIDI").is_some();
         let options = ExtractOptions {
             detect_header_footer: detect_hf,
             escape_markdown,
+            bidi,
             ..ExtractOptions::default()
         };
         let doc = match extract_document_from_bytes(&bytes, password.as_deref(), &options) {
@@ -153,15 +155,26 @@ fn main() {
         }
     };
 
+    let bidi = std::env::var_os("RETICELLA_BIDI").is_some();
+
     // lines は JSON と件数表示で使い回す
     let lines_pages = match mode {
-        Mode::Lines => Some(doc.pages.iter().map(build_text_lines).collect::<Vec<_>>()),
+        Mode::Lines => Some(
+            doc.pages
+                .iter()
+                .map(|pg| build_text_lines_with(pg, bidi))
+                .collect::<Vec<_>>(),
+        ),
         _ => None,
     };
 
     let json = match mode {
         Mode::Items => {
-            let pages: Vec<_> = doc.pages.iter().map(build_text_items).collect();
+            let pages: Vec<_> = doc
+                .pages
+                .iter()
+                .map(|pg| build_text_items_with(pg, bidi))
+                .collect();
             match serde_json::to_string_pretty(&pages) {
                 Ok(s) => s,
                 Err(e) => {
@@ -200,7 +213,7 @@ fn main() {
     match mode {
         Mode::Items => {
             for (i, pg) in doc.pages.iter().enumerate() {
-                let n = build_text_items(pg).len();
+                let n = build_text_items_with(pg, bidi).len();
                 eprintln!(
                     "  page {i} {:.0}x{:.0} fonts={} items={}",
                     pg.width,

@@ -1,5 +1,6 @@
 //! テキスト埋め込みPDFから純粋な表を抽出しJSON可能な構造で返すライブラリ
 
+mod bidi;
 #[cfg(feature = "reader")]
 mod columns;
 mod detect_hybrid;
@@ -21,6 +22,7 @@ mod text;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
+pub use bidi::{BidiText, apply_bidi, bidi};
 pub use detect_hybrid::HybridSettings;
 pub use detect_lattice::LatticeSettings;
 pub use detect_text::TextSettings;
@@ -39,5 +41,5 @@ pub use reader::{extract_from_bytes, extract_text_from_bytes, read_pages};
 #[cfg(feature = "reader")]
 pub use text::{
     TextChar, TextDoc, TextFont, TextItem, TextLine, TextPage, TextWord, build_text_items,
-    build_text_lines,
+    build_text_items_with, build_text_lines, build_text_lines_with,
 };
