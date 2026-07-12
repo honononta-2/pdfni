@@ -157,6 +157,42 @@ impl CharIndex {
     }
 }
 
+/// x ソート済み行で、空白の直前・直後の非空白が接触しているか
+fn ws_between_touching_solids_x(line: &[(usize, &Glyph)], ws_pos: usize) -> bool {
+    let mut prev_end = None;
+    for i in (0..ws_pos).rev() {
+        let g = line[i].1;
+        if !g.ch.is_whitespace() {
+            prev_end = Some(g.bbox.x0.max(g.bbox.x1));
+            break;
+        }
+    }
+    let mut next_start = None;
+    for i in (ws_pos + 1)..line.len() {
+        let g = line[i].1;
+        if !g.ch.is_whitespace() {
+            next_start = Some(g.bbox.x0.min(g.bbox.x1));
+            break;
+        }
+    }
+    match (prev_end, next_start) {
+        (Some(l1), Some(r0)) => l1 >= r0 - 0.01,
+        _ => false,
+    }
+}
+
+/// 行グリフを x 順に連結（接触する非空白の間の空白は除く）
+fn join_line_glyphs(line: &[(usize, &Glyph)]) -> String {
+    let mut s = String::new();
+    for (i, (_, g)) in line.iter().enumerate() {
+        if g.ch.is_whitespace() && ws_between_touching_solids_x(line, i) {
+            continue;
+        }
+        s.push(g.ch);
+    }
+    s
+}
+
 /// セル内テキストの組み立て
 fn cell_text(chars: &[Glyph], index: &CharIndex, cell: &BBox) -> String {
     let mut hits: Vec<(usize, &Glyph)> = index
@@ -203,7 +239,7 @@ fn cell_text(chars: &[Glyph], index: &CharIndex, cell: &BBox) -> String {
     let mut out = Vec::with_capacity(lines.len());
     for mut line in lines {
         line.sort_by(|a, b| a.1.bbox.x0.total_cmp(&b.1.bbox.x0));
-        let s: String = line.iter().map(|(_, g)| g.ch).collect();
+        let s = join_line_glyphs(&line);
         let s = s.trim();
         if !s.is_empty() {
             out.push(s.to_string());
@@ -279,16 +315,22 @@ fn build_segments(chars: &[Glyph], scale: Option<f64>) -> Vec<Seg> {
         let mut text = String::new();
         let mut bb: Option<BBox> = None;
         let mut last_x1 = f64::NEG_INFINITY;
+        let line_refs: Vec<(usize, &Glyph)> =
+            line.iter().map(|&i| (i, &chars[i])).collect();
         for &i in &line {
             let g = &chars[i];
             if bb.is_some() && g.bbox.x0 - last_x1 > seg_gap {
                 push_seg(&mut segs, &mut text, &mut bb);
             }
-            if !g.ch.is_whitespace() || bb.is_some() {
+            if g.ch.is_whitespace() {
+                // 接触する非空白の間の空白は文字にしない
+                let pos = line_refs.iter().position(|(j, _)| *j == i);
+                let intrusive = pos.is_some_and(|p| ws_between_touching_solids_x(&line_refs, p));
+                if !intrusive && bb.is_some() {
+                    text.push(g.ch);
+                }
+            } else {
                 text.push(g.ch);
-            }
-            // 空白を除いた bbox の拡張
-            if !g.ch.is_whitespace() {
                 bb = Some(match bb {
                     Some(b) => BBox {
                         x0: b.x0.min(g.bbox.x0),

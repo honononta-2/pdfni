@@ -661,6 +661,63 @@ fn line_from_cluster(
     })
 }
 
+/// 進行軸上の区間 [lo, hi]
+fn progress_span(ch: &TextChar, vertical: bool) -> (f64, f64) {
+    if vertical {
+        let (a, b) = (ch.top, ch.bottom);
+        (a.min(b), a.max(b))
+    } else {
+        let (a, b) = (ch.left, ch.right);
+        (a.min(b), a.max(b))
+    }
+}
+
+/// 進行軸ソートで空白の直前・直後の非空白が接触しているか
+///
+/// 語間に実ギャップがある通常スペースは false。接する数字の間に載った
+/// レイアウト用スペースが true
+fn whitespace_between_touching_solids(
+    page: &TextPage,
+    ws_idx: usize,
+    order: &[u32],
+    vertical: bool,
+) -> bool {
+    let mut solids: Vec<(f64, f64, f64)> = Vec::new();
+    let mut ws_prog = None;
+    for &i in order {
+        let idx = i as usize;
+        let ch = &page.chars[idx];
+        let (s0, s1) = progress_span(ch, vertical);
+        let key = s0;
+        if idx == ws_idx {
+            ws_prog = Some(key);
+            continue;
+        }
+        if is_whitespace_str(&ch.text) {
+            continue;
+        }
+        solids.push((key, s0, s1));
+    }
+    let Some(wp) = ws_prog else {
+        return false;
+    };
+    solids.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut prev_end = None;
+    let mut next_start = None;
+    for &(key, s0, s1) in &solids {
+        if key <= wp {
+            prev_end = Some(s1);
+        } else {
+            next_start = Some(s0);
+            break;
+        }
+    }
+    match (prev_end, next_start) {
+        (Some(l1), Some(r0)) => l1 >= r0 - 0.01,
+        _ => false,
+    }
+}
+
 /// 行内の単語を構築する
 fn words_for_line(
     page: &TextPage,
@@ -676,6 +733,10 @@ fn words_for_line(
         let idx = idx_u32 as usize;
         let ch = &page.chars[idx];
         if is_whitespace_str(&ch.text) {
+            // 接触する非空白の間に載った空白は語境界にしない
+            if whitespace_between_touching_solids(page, idx, order, vertical) {
+                continue;
+            }
             if !cur.is_empty() {
                 if let Some(w) = make_word(page, &cur) {
                     words.push(w);
@@ -1679,6 +1740,26 @@ mod tests {
         // 空白は単語に含めない
         assert_eq!(lines[0].words[0].chars, vec![0]);
         assert_eq!(lines[0].words[1].chars, vec![2]);
+    }
+
+    /// 接する数字の間に載った空白は語境界にしない
+    #[test]
+    fn lines_overlapping_whitespace_does_not_split_word() {
+        let fs = 10.0;
+        // "1" "4" が接し、空白が間に載る（x 順は 1, space, 4）
+        let mut one = ch("1", 0.0, 100.0, 5.0, 0.0, fs, false);
+        one.right = 5.0;
+        let mut sp = ch(" ", 1.0, 100.0, 2.0, 0.0, fs, false);
+        sp.left = 1.0;
+        sp.right = 3.0;
+        let mut four = ch("4", 5.0, 100.0, 5.0, 0.0, fs, false);
+        four.left = 5.0;
+        four.right = 10.0;
+        let p = page(vec![one, sp, four]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].words.len(), 1);
+        assert_eq!(lines[0].words[0].text, "14");
     }
 
     #[test]
