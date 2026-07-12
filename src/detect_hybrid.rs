@@ -272,6 +272,9 @@ fn band_bounds(segs: &[Seg], members: &[usize], lo: f64, hi: f64, s: &HybridSett
 }
 
 /// 罫線間の行帯を文字行で細分した区切り座標列
+///
+/// 複列クラスタを論理行の核とし 単列クラスタは最近傍の核へ帰属させる
+/// ラベル折返し断片が直前行へ誤結合するのを避ける
 fn refine_row_bounds(
     segs: &[Seg],
     members: &[usize],
@@ -313,17 +316,50 @@ fn refine_row_bounds(
             top[rid] = top[rid].min(b.top);
             bot[rid] = bot[rid].max(b.bottom);
         }
-        // 細分する帯の条件
-        if cols.iter().filter(|c| c.len() >= 2).count() < 2 {
+        let anchors: Vec<usize> = (0..n).filter(|&i| cols[i].len() >= 2).collect();
+        if anchors.len() < 2 {
             continue;
         }
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by(|&a, &b| top[a].total_cmp(&top[b]));
-        // 折り返し行の連結
-        for ww in order.windows(2) {
-            if cols[ww[1]].len() >= 2 {
-                out.push((bot[ww[0]] + top[ww[1]]) / 2.0);
+        let anchors: Vec<usize> = order
+            .iter()
+            .copied()
+            .filter(|&i| cols[i].len() >= 2)
+            .collect();
+
+        let mut owner = vec![0usize; n];
+        for &a in &anchors {
+            owner[a] = a;
+        }
+        for &cid in &order {
+            if cols[cid].len() >= 2 {
+                continue;
             }
+            let cy = (top[cid] + bot[cid]) * 0.5;
+            let mut best = anchors[0];
+            let mut best_d = f64::INFINITY;
+            for &a in &anchors {
+                let ay = (top[a] + bot[a]) * 0.5;
+                let d = (cy - ay).abs();
+                if d < best_d {
+                    best_d = d;
+                    best = a;
+                }
+            }
+            owner[cid] = best;
+        }
+
+        for aw in anchors.windows(2) {
+            let g0_bot = (0..n)
+                .filter(|&i| owner[i] == aw[0])
+                .map(|i| bot[i])
+                .fold(f64::NEG_INFINITY, f64::max);
+            let g1_top = (0..n)
+                .filter(|&i| owner[i] == aw[1])
+                .map(|i| top[i])
+                .fold(f64::INFINITY, f64::min);
+            out.push((g0_bot + g1_top) * 0.5);
         }
     }
     out.push(*bounds.last().unwrap());

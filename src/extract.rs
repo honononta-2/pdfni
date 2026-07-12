@@ -500,15 +500,16 @@ fn row_split_boundaries(
         bot[rid] = bot[rid].max(marks[k].bot);
         typed_any[rid] |= marks[k].typed_evidence;
     }
-    // 数値型の裏づけがある行クラスタだけを行境界とする
-    // 文字だけの行クラスタは折返しと区別できないため証拠にしない
-    let splits = |i: usize| cols[i].len() >= 2 && typed_any[i];
+    // 両側とも複列かつ下側に数値型の裏づけがあるときだけ切る
+    // 片側だけの複列はラベル折返し＋数値の中間配置と区別できない
+    let multi = |i: usize| cols[i].len() >= 2;
+    let splits = |i: usize| multi(i) && typed_any[i];
 
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| top[a].total_cmp(&top[b]));
     let mut out = Vec::new();
     for w in order.windows(2) {
-        if splits(w[1]) {
+        if multi(w[0]) && splits(w[1]) {
             out.push((bot[w[0]] + top[w[1]]) / 2.0);
         }
     }
@@ -676,6 +677,126 @@ fn overlaps_any(b: &BBox, tables: &[Table]) -> bool {
         let barea = b.width() * b.height();
         barea > 0.0 && oarea / barea > 0.3
     })
+}
+
+/// 折返し断片の孤児行を隣接する本行へ吸収する
+///
+/// 非空が1列だけの連続行を 複列行の空セルへ上下まとめて結合する
+fn absorb_wrap_orphan_rows(t: &mut Table) {
+    let filled = |row: &[Cell]| -> Vec<usize> {
+        row.iter()
+            .enumerate()
+            .filter(|(_, c)| !c.text.trim().is_empty())
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let cell_empty = |row: &[Cell], c: usize| {
+        row.get(c)
+            .map(|cell| cell.text.trim().is_empty())
+            .unwrap_or(true)
+    };
+
+    loop {
+        let n = t.data.len();
+        if n < 2 {
+            return;
+        }
+        // (本行, 上側孤児インデックス上から下, 下側孤児インデックス上から下, 列)
+        let mut job: Option<(usize, Vec<usize>, Vec<usize>, usize)> = None;
+        for j in 0..n {
+            if filled(&t.data[j]).len() < 2 {
+                continue;
+            }
+            let mut above: Vec<usize> = Vec::new();
+            let mut col: Option<usize> = None;
+            let mut i = j;
+            while i > 0 {
+                i -= 1;
+                let cols = filled(&t.data[i]);
+                if cols.len() != 1 {
+                    break;
+                }
+                let c = cols[0];
+                if let Some(pc) = col {
+                    if pc != c {
+                        break;
+                    }
+                } else if !cell_empty(&t.data[j], c) {
+                    break;
+                }
+                col = Some(c);
+                above.push(i);
+            }
+            above.reverse();
+            let mut below: Vec<usize> = Vec::new();
+            i = j;
+            while i + 1 < n {
+                i += 1;
+                let cols = filled(&t.data[i]);
+                if cols.len() != 1 {
+                    break;
+                }
+                let c = cols[0];
+                if let Some(pc) = col {
+                    if pc != c {
+                        break;
+                    }
+                } else if !cell_empty(&t.data[j], c) {
+                    break;
+                }
+                col = Some(c);
+                below.push(i);
+            }
+            if let Some(c) = col {
+                if !above.is_empty() || !below.is_empty() {
+                    job = Some((j, above, below, c));
+                    break;
+                }
+            }
+        }
+        let Some((ti, above, below, c)) = job else {
+            return;
+        };
+        let mut parts: Vec<(String, BBox)> = Vec::new();
+        for &oi in above.iter().chain(below.iter()) {
+            parts.push((t.data[oi][c].text.clone(), t.data[oi][c].bbox));
+        }
+        let existing = t.data[ti][c].text.trim();
+        let mut texts: Vec<String> = above
+            .iter()
+            .map(|&oi| t.data[oi][c].text.clone())
+            .collect();
+        if !existing.is_empty() {
+            texts.push(existing.to_string());
+        }
+        texts.extend(below.iter().map(|&oi| t.data[oi][c].text.clone()));
+        let merged = texts.join("\n");
+        let mut bb = t.data[ti][c].bbox;
+        for (_, ob) in &parts {
+            if ob.width() <= 0.0 || ob.height() <= 0.0 {
+                continue;
+            }
+            if bb.width() <= 0.0 || bb.height() <= 0.0 {
+                bb = *ob;
+            } else {
+                bb = BBox {
+                    x0: bb.x0.min(ob.x0),
+                    top: bb.top.min(ob.top),
+                    x1: bb.x1.max(ob.x1),
+                    bottom: bb.bottom.max(ob.bottom),
+                };
+            }
+        }
+        t.data[ti][c].text = merged;
+        t.data[ti][c].bbox = bb;
+        let mut drop: Vec<usize> = above.into_iter().chain(below.into_iter()).collect();
+        drop.sort_unstable();
+        drop.dedup();
+        for oi in drop.into_iter().rev() {
+            t.data.remove(oi);
+        }
+        t.n_rows = t.data.len();
+    }
 }
 
 /// 全行が空の列と全列が空の行を落とす
@@ -1021,6 +1142,7 @@ fn detect_tables(
         }
     }
     for t in &mut tables {
+        absorb_wrap_orphan_rows(t);
         prune_empty(t);
     }
     tables.retain(|t| t.n_rows >= options.lattice.min_rows && t.n_cols >= options.lattice.min_cols);
@@ -1037,6 +1159,7 @@ fn detect_tables(
         Vec::new()
     };
     for t in &mut hybrid_tables {
+        absorb_wrap_orphan_rows(t);
         prune_empty(t);
     }
     for t in hybrid_tables {
@@ -1059,6 +1182,7 @@ fn detect_tables(
         Vec::new()
     };
     for t in &mut text_tables {
+        absorb_wrap_orphan_rows(t);
         prune_empty(t);
     }
     for t in text_tables {
@@ -1289,6 +1413,60 @@ mod tests {
             refine_lattice_rows(&mut t, &chars, &CharIndex::new(&chars), None);
             assert_eq!(t.n_rows, 1);
         }
+    }
+
+    #[test]
+    fn refine_rows_keeps_single_column_wrap_with_mid_numbers() {
+        // 先頭列だけ2行折返し・他列は中間高さの1行数値 → 1論理行のまま
+        let mut t = one_band_table(4);
+        let mut chars = Vec::new();
+        two_lines(&mut chars, 0, "ab", "cd");
+        for (j, s) in [(1usize, "12"), (2, "34"), (3, "56")] {
+            for (i, ch) in s.chars().enumerate() {
+                let x = 50.0 * j as f64 + 5.0 + 4.0 * i as f64;
+                chars.push(glyph(ch, x, x + 3.0, 7.0, 13.0));
+            }
+        }
+        refine_lattice_rows(&mut t, &chars, &CharIndex::new(&chars), None);
+        assert_eq!(t.n_rows, 1);
+        assert_eq!(t.n_cols, 4);
+    }
+
+    #[test]
+    fn absorb_orphan_merges_wrap_fragments_into_value_row() {
+        let mut t = Table {
+            extraction_method: "text",
+            bbox: BBox {
+                x0: 0.0,
+                top: 0.0,
+                x1: 120.0,
+                bottom: 30.0,
+            },
+            n_rows: 3,
+            n_cols: 3,
+            data: vec![
+                vec![
+                    cell(0.0, 0.0, 40.0, 10.0, "みか"),
+                    empty_cell(),
+                    empty_cell(),
+                ],
+                vec![
+                    empty_cell(),
+                    cell(40.0, 10.0, 80.0, 20.0, "85"),
+                    cell(80.0, 10.0, 120.0, 20.0, "980"),
+                ],
+                vec![
+                    cell(0.0, 20.0, 40.0, 30.0, "ん"),
+                    empty_cell(),
+                    empty_cell(),
+                ],
+            ],
+        };
+        absorb_wrap_orphan_rows(&mut t);
+        assert_eq!(t.n_rows, 1);
+        assert_eq!(t.data[0][0].text, "みか\nん");
+        assert_eq!(t.data[0][1].text, "85");
+        assert_eq!(t.data[0][2].text, "980");
     }
 
     #[test]
