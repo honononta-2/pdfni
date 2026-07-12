@@ -345,7 +345,7 @@ fn load_font_dict(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> 
         })
         .unwrap_or_default();
 
-    match subtype.as_str() {
+    match subtype.as_ref() {
         "Type0" => load_type0(dict, name, data, xref),
         "Type3" => load_type3(dict, name, data, xref),
         // Type1 / TrueType / MMType1 / CIDFontType* 等は単純として扱う
@@ -581,7 +581,7 @@ fn font_descriptor(dict: &Dict, data: &[u8], xref: Option<&XRef>) -> Dict {
 fn base_font_name(dict: &Dict, data: &[u8], xref: Option<&XRef>) -> String {
     match dict.get("BaseFont") {
         Some(o) => match resolve_obj(o, data, xref) {
-            Object::Name(n) => n,
+            Object::Name(n) => n.into_owned(),
             // BaseFont が文字列 → Name 化（救済 #7）
             Object::Str(s) => String::from_utf8_lossy(&s).into_owned(),
             _ => String::new(),
@@ -656,13 +656,7 @@ fn style_name_key(name: &str) -> String {
         }
     }
     // 前後の区切りを落とす
-    while out.starts_with('-') {
-        out.remove(0);
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    out
+    out.trim_matches('-').to_owned()
 }
 
 /// PDF サブセット接頭辞（6英大字 + `+`）を除く
@@ -996,7 +990,7 @@ fn read_cid_system_info(
 
 fn pdf_string_or_name(obj: &Object, data: &[u8], xref: Option<&XRef>) -> Option<String> {
     match resolve_obj(obj, data, xref) {
-        Object::Name(n) => Some(n),
+        Object::Name(n) => Some(n.into_owned()),
         Object::Str(s) => Some(String::from_utf8_lossy(&s).into_owned()),
         _ => None,
     }
@@ -1150,17 +1144,17 @@ fn resolve_simple_encoding(
             Object::Name(n) => {
                 // 名前付きは MacRoman / MacExpert / WinAnsi のみ有効（救済 #8）
                 if matches!(
-                    n.as_str(),
+                    n.as_ref(),
                     "MacRomanEncoding" | "MacExpertEncoding" | "WinAnsiEncoding"
                 ) {
-                    base_encoding_name = Some(n);
+                    base_encoding_name = Some(n.into_owned());
                 }
             }
             Object::Dict(enc_dict) => {
                 if let Some(be) = enc_dict.get("BaseEncoding") {
                     if let Object::Name(n) = resolve_obj(be, data, xref) {
                         if matches!(
-                            n.as_str(),
+                            n.as_ref(),
                             "MacRomanEncoding"
                                 | "MacExpertEncoding"
                                 | "WinAnsiEncoding"
@@ -1169,7 +1163,7 @@ fn resolve_simple_encoding(
                                 | "SymbolSetEncoding"
                                 | "ZapfDingbatsEncoding"
                         ) {
-                            base_encoding_name = Some(n);
+                            base_encoding_name = Some(n.into_owned());
                         }
                     }
                 }
@@ -1181,7 +1175,7 @@ fn resolve_simple_encoding(
                                 Object::Int(n) => code = n,
                                 Object::Name(n) => {
                                     if code >= 0 && code <= 255 {
-                                        differences.insert(code as u32, n);
+                                        differences.insert(code as u32, n.into_owned());
                                     }
                                     code += 1;
                                 }
@@ -1418,7 +1412,9 @@ fn unicode_from_uni_name(name: &str) -> Option<u32> {
 
 fn ligature_fallback(glyph_name: &str) -> Option<String> {
     match glyph_name {
-        "f_h" | "f_t" | "T_h" => Some(glyph_name.replace('_', "")),
+        "f_h" => Some("fh".into()),
+        "f_t" => Some("ft".into()),
+        "T_h" => Some("Th".into()),
         _ => None,
     }
 }
@@ -2222,7 +2218,7 @@ endcmap
         }
         let mut type0 = Dict::new();
         type0.set("Subtype", Object::Name("Type0".into()));
-        type0.set("Encoding", Object::Name(encoding.into()));
+        type0.set("Encoding", Object::Name(encoding.to_string().into()));
         type0.set("DescendantFonts", Object::Array(vec![Object::Dict(cid)]));
         type0
     }

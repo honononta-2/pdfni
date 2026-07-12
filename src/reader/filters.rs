@@ -12,6 +12,31 @@ use super::crypto::CipherFactory;
 use super::object::{Dict, Object, Stream};
 use super::parser::Resolver;
 
+/// PDF ストリームフィルタの種類
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum FilterKind {
+    Flate,
+    Lzw,
+    AsciiHex,
+    Ascii85,
+    RunLength,
+    Crypt,
+}
+
+impl FilterKind {
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "Fl" | "FlateDecode" => FilterKind::Flate,
+            "LZW" | "LZWDecode" => FilterKind::Lzw,
+            "AHx" | "ASCIIHexDecode" => FilterKind::AsciiHex,
+            "A85" | "ASCII85Decode" => FilterKind::Ascii85,
+            "RL" | "RunLengthDecode" => FilterKind::RunLength,
+            "Crypt" => FilterKind::Crypt,
+            _ => return None,
+        })
+    }
+}
+
 /// Stream の /Filter 連鎖を適用して復号済みバイト列を返す
 ///
 /// 暗号化がある場合はフィルタ適用前にストリーム本文を復号する。
@@ -63,28 +88,26 @@ pub(crate) fn decode_stream(
         return Ok(decoded);
     };
 
-    match filter_obj {
+    let stages: Vec<(FilterKind, Option<Dict>)> = match filter_obj {
         Object::Name(name) => {
+            let kind = FilterKind::from_name(&name)
+                .ok_or_else(|| Error::Reader(format!("unsupported filter: \"{name}\"")))?;
             let params = match params_root {
                 Some(Object::Dict(d)) => Some(d),
-                Some(Object::Null) | None => None,
                 // Name のとき Array の DecodeParms は無視（pdf.js は警告のみ）
                 _ => None,
             };
-            decoded = apply_filter(
-                &decoded,
-                &name,
-                params.as_ref(),
-                cipher,
-                stream.crypto_ref,
-            )?;
+            vec![(kind, params)]
         }
         Object::Array(filters) => {
+            let mut stages = Vec::with_capacity(filters.len());
             for (i, f) in filters.iter().enumerate() {
                 let f = resolve_owned(f, resolver)?;
                 let Object::Name(name) = f else {
                     return Err(Error::Reader(format!("Bad filter name: {f:?}")));
                 };
+                let kind = FilterKind::from_name(&name)
+                    .ok_or_else(|| Error::Reader(format!("unsupported filter: \"{name}\"")))?;
                 let params = match &params_root {
                     Some(Object::Array(arr)) => {
                         arr.get(i).map(|p| resolve_owned(p, resolver)).transpose()?
@@ -96,28 +119,29 @@ pub(crate) fn decode_stream(
                     Some(Object::Dict(d)) => Some(d),
                     _ => None,
                 };
-                decoded = apply_filter(
-                    &decoded,
-                    &name,
-                    params_dict.as_ref(),
-                    cipher,
-                    stream.crypto_ref,
-                )?;
+                stages.push((kind, params_dict));
             }
+            stages
         }
-        Object::Null => {}
+        Object::Null => Vec::new(),
         other => {
             return Err(Error::Reader(format!("invalid /Filter value: {other:?}")));
         }
+    };
+
+    for (kind, params) in &stages {
+        decoded = apply_filter(&decoded, *kind, params.as_ref(), cipher, stream.crypto_ref)?;
     }
 
     Ok(decoded)
 }
 
 fn filter_list_has_crypt(filter_obj: Option<&Object>) -> bool {
+    let is_crypt =
+        |o: &Object| matches!(o, Object::Name(n) if FilterKind::from_name(n) == Some(FilterKind::Crypt));
     match filter_obj {
-        Some(Object::Name(n)) => n == "Crypt",
-        Some(Object::Array(arr)) => arr.iter().any(|o| matches!(o, Object::Name(n) if n == "Crypt")),
+        Some(Object::Name(n)) => FilterKind::from_name(n) == Some(FilterKind::Crypt),
+        Some(Object::Array(arr)) => arr.iter().any(is_crypt),
         _ => false,
     }
 }
@@ -145,17 +169,17 @@ fn resolve_owned(obj: &Object, resolver: &dyn Resolver) -> Result<Object> {
 
 fn apply_filter(
     data: &[u8],
-    name: &str,
+    kind: FilterKind,
     params: Option<&Dict>,
     cipher: Option<&CipherFactory>,
     crypto_ref: Option<super::object::Ref>,
 ) -> Result<Vec<u8>> {
-    match name {
-        "Fl" | "FlateDecode" => {
+    match kind {
+        FilterKind::Flate => {
             let decoded = decode_flate(data);
             apply_predictor_if_needed(decoded, params)
         }
-        "LZW" | "LZWDecode" => {
+        FilterKind::Lzw => {
             let early_change = params
                 .and_then(|d| d.get("EarlyChange"))
                 .and_then(as_i64)
@@ -163,10 +187,10 @@ fn apply_filter(
             let decoded = decode_lzw(data, early_change)?;
             apply_predictor_if_needed(decoded, params)
         }
-        "AHx" | "ASCIIHexDecode" => Ok(decode_ascii_hex(data)),
-        "A85" | "ASCII85Decode" => Ok(decode_ascii85(data)),
-        "RL" | "RunLengthDecode" => Ok(decode_run_length(data)),
-        "Crypt" => {
+        FilterKind::AsciiHex => Ok(decode_ascii_hex(data)),
+        FilterKind::Ascii85 => Ok(decode_ascii85(data)),
+        FilterKind::RunLength => Ok(decode_run_length(data)),
+        FilterKind::Crypt => {
             // 明示 /Crypt: 既定 StmF を先に掛けていない経路でここで復号
             let Some(factory) = cipher else {
                 return Ok(data.to_vec());
@@ -177,14 +201,11 @@ fn apply_filter(
             let filter_name = params
                 .and_then(|d| d.get("Name"))
                 .and_then(|o| match o {
-                    Object::Name(n) => Some(n.as_str()),
+                    Object::Name(n) => Some(n.as_ref()),
                     _ => None,
                 });
             factory.decrypt_stream(data, r.num, r.generation, filter_name)
         }
-        other => Err(Error::Reader(format!(
-            "unsupported filter: \"{other}\""
-        ))),
     }
 }
 
@@ -250,9 +271,9 @@ fn decode_lzw(data: &[u8], early_change: i64) -> Result<Vec<u8>> {
     const CLEAR: u32 = 256;
     const EOD: u32 = 257;
 
-    let mut dictionary_values = vec![0u8; MAX_DICT];
-    let mut dictionary_lengths = vec![0u16; MAX_DICT];
-    let mut dictionary_prev_codes = vec![0u16; MAX_DICT];
+    let mut dictionary_values: Box<[u8; MAX_DICT]> = Box::new([0u8; MAX_DICT]);
+    let mut dictionary_lengths: Box<[u16; MAX_DICT]> = Box::new([0u16; MAX_DICT]);
+    let mut dictionary_prev_codes: Box<[u16; MAX_DICT]> = Box::new([0u16; MAX_DICT]);
     for i in 0..256 {
         dictionary_values[i] = i as u8;
         dictionary_lengths[i] = 1;
@@ -260,7 +281,7 @@ fn decode_lzw(data: &[u8], early_change: i64) -> Result<Vec<u8>> {
 
     let mut code_length: u32 = 9;
     let mut next_code: u32 = 258;
-    let mut current_sequence = vec![0u8; MAX_DICT];
+    let mut current_sequence: Box<[u8; MAX_DICT]> = Box::new([0u8; MAX_DICT]);
     let mut current_sequence_length: usize = 0;
     let mut prev_code: u32 = 0;
 
@@ -448,7 +469,7 @@ fn decode_ascii85(data: &[u8]) -> Vec<u8> {
     out
 }
 
-fn is_pdf_whitespace(b: u8) -> bool {
+pub(super) fn is_pdf_whitespace(b: u8) -> bool {
     matches!(b, 0x00 | 0x09 | 0x0a | 0x0c | 0x0d | 0x20)
 }
 
@@ -659,7 +680,7 @@ mod tests {
 
     fn dict_filter(name: &str) -> Dict {
         let mut d = Dict::new();
-        d.set("Filter", Object::Name(name.into()));
+        d.set("Filter", Object::Name(name.to_string().into()));
         d
     }
 

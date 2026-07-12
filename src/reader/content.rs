@@ -527,10 +527,11 @@ fn synth_word_spaces(glyphs: &[GlyphPart]) -> Vec<GlyphPart> {
 
 /// 重複グリフ除去の完全一致キー（specs/14 §2）
 ///
-/// 浮動小数13値は -0.0 を +0.0 へ正規化したビット表現で持つ
+/// 浮動小数13値は -0.0 を +0.0 へ正規化したビット表現で持つ。
+/// text は SipHash 値のみ保持し文字列の所有・複製を避ける
 #[derive(PartialEq, Eq, Hash)]
 struct GlyphDedupKey {
-    text: String,
+    text_hash: u64,
     font: u32,
     rot_q: RotQ,
     upright: bool,
@@ -544,6 +545,14 @@ fn norm_f64_bits(v: f64) -> u64 {
     } else {
         v.to_bits()
     }
+}
+
+/// 文字列を u64 に畳む（HashSet 標準の SipHash-1-3 と同一）
+fn hash_str(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
 }
 
 /// 重ね印字の重複グリフ除去（specs/14）
@@ -573,12 +582,9 @@ fn dedup_overlaid_glyphs(chars: &mut Vec<PendingTextChar>) {
         if vals.iter().any(|v| !v.is_finite()) {
             return true;
         }
-        let mut bits = [0u64; 13];
-        for (b, v) in bits.iter_mut().zip(vals) {
-            *b = norm_f64_bits(v);
-        }
+        let bits: [u64; 13] = vals.map(norm_f64_bits);
         seen.insert(GlyphDedupKey {
-            text: c.text.clone(),
+            text_hash: hash_str(&c.text),
             font: c.font,
             rot_q: c.rot_q,
             upright: c.upright,
@@ -1061,7 +1067,7 @@ fn take_nums<const N: usize>(stack: &mut Vec<Object>) -> Option<[f64; N]> {
 
 fn take_name(stack: &mut Vec<Object>) -> Option<String> {
     match stack.pop() {
-        Some(Object::Name(n)) => Some(n),
+        Some(Object::Name(n)) => Some(n.into_owned()),
         Some(other) => {
             stack.push(other);
             None
@@ -1219,9 +1225,30 @@ struct Frame<'r> {
     /// この resources スコープ内の Tf 名前 → フォント
     font_memo: HashMap<String, Arc<LoadedFont>>,
     resources: &'r Dict,
+    /// パス構築・ペイントを edges/graphics に反映するか（text_sink 経路では捨てる）
+    collect_paths: bool,
 }
 
 impl Evaluator<'_, '_> {
+    /// ペイント系 op の共通処理（`collect_paths` オフではパスを捨てる）
+    fn paint_or_drop(
+        &mut self,
+        path: &mut PathBuilder,
+        ctm: [f64; 6],
+        fill: bool,
+        close: bool,
+        collect_paths: bool,
+    ) {
+        if !collect_paths {
+            path.clear();
+            return;
+        }
+        if close {
+            path.close();
+        }
+        finalize_path(path, fill, ctm, self.view, self.edges, self.graphics);
+    }
+
     /// ストリーム本文を解釈して glyphs / edges に追記する
     fn interpret(&mut self, contents: &[u8], resources: &Dict, ctm0: [f64; 6]) {
         let mut lexer = Lexer::new(contents);
@@ -1233,6 +1260,7 @@ impl Evaluator<'_, '_> {
             text: TextState::new(),
             font_memo: HashMap::new(),
             resources,
+            collect_paths: self.text_sink.is_none(),
         };
 
         loop {
@@ -1291,6 +1319,7 @@ impl Evaluator<'_, '_> {
             text,
             font_memo,
             resources,
+            collect_paths,
         } = frame;
         match op {
             // グラフィックス状態（テキスト状態も保存・復元する。アンダーフローは無視）
@@ -1310,90 +1339,54 @@ impl Evaluator<'_, '_> {
 
             // パス構築（text_sink 経路では edges/graphics を捨てるため構築しない）
             Op::LowerM => {
-                if self.text_sink.is_none() {
-                    if let Some(n) = take_nums::<2>(stack) {
-                        path.move_to(n[0], n[1]);
-                    }
+                if *collect_paths
+                    && let Some(n) = take_nums::<2>(stack)
+                {
+                    path.move_to(n[0], n[1]);
                 }
             }
             Op::LowerL => {
-                if self.text_sink.is_none() {
-                    if let Some(n) = take_nums::<2>(stack) {
-                        path.line_to(n[0], n[1]);
-                    }
+                if *collect_paths
+                    && let Some(n) = take_nums::<2>(stack)
+                {
+                    path.line_to(n[0], n[1]);
                 }
             }
             Op::LowerC => {
-                if self.text_sink.is_none() {
-                    if let Some(n) = take_nums::<6>(stack) {
-                        path.curve_to(n[4], n[5]);
-                    }
+                if *collect_paths
+                    && let Some(n) = take_nums::<6>(stack)
+                {
+                    path.curve_to(n[4], n[5]);
                 }
             }
-            Op::LowerV => {
-                if self.text_sink.is_none() {
-                    if let Some(n) = take_nums::<4>(stack) {
-                        path.curve_to(n[2], n[3]);
-                    }
-                }
-            }
-            Op::LowerY => {
-                if self.text_sink.is_none() {
-                    if let Some(n) = take_nums::<4>(stack) {
-                        path.curve_to(n[2], n[3]);
-                    }
+            Op::LowerV | Op::LowerY => {
+                if *collect_paths
+                    && let Some(n) = take_nums::<4>(stack)
+                {
+                    path.curve_to(n[2], n[3]);
                 }
             }
             Op::LowerH => {
-                if self.text_sink.is_none() {
+                if *collect_paths {
                     path.close();
                 }
             }
             Op::Re => {
-                if self.text_sink.is_none() {
-                    if let Some(n) = take_nums::<4>(stack) {
-                        path.rect(n[0], n[1], n[2], n[3]);
-                    }
+                if *collect_paths
+                    && let Some(n) = take_nums::<4>(stack)
+                {
+                    path.rect(n[0], n[1], n[2], n[3]);
                 }
             }
 
             // ペイント（close 系は確定前に閉じを追加。text_sink 経路は捨てる）
-            Op::S => {
-                if self.text_sink.is_none() {
-                    finalize_path(path, false, *ctm, self.view, self.edges, self.graphics);
-                } else {
-                    path.clear();
-                }
-            }
-            Op::LowerS => {
-                if self.text_sink.is_none() {
-                    path.close();
-                    finalize_path(path, false, *ctm, self.view, self.edges, self.graphics);
-                } else {
-                    path.clear();
-                }
-            }
-            Op::LowerF | Op::F | Op::LowerFStar => {
-                if self.text_sink.is_none() {
-                    finalize_path(path, true, *ctm, self.view, self.edges, self.graphics);
-                } else {
-                    path.clear();
-                }
-            }
-            Op::B | Op::BStar => {
-                if self.text_sink.is_none() {
-                    finalize_path(path, true, *ctm, self.view, self.edges, self.graphics);
-                } else {
-                    path.clear();
-                }
+            Op::S => self.paint_or_drop(path, *ctm, false, false, *collect_paths),
+            Op::LowerS => self.paint_or_drop(path, *ctm, false, true, *collect_paths),
+            Op::LowerF | Op::F | Op::LowerFStar | Op::B | Op::BStar => {
+                self.paint_or_drop(path, *ctm, true, false, *collect_paths)
             }
             Op::LowerB | Op::LowerBStar => {
-                if self.text_sink.is_none() {
-                    path.close();
-                    finalize_path(path, true, *ctm, self.view, self.edges, self.graphics);
-                } else {
-                    path.clear();
-                }
+                self.paint_or_drop(path, *ctm, true, true, *collect_paths)
             }
             Op::LowerN => path.clear(),
 

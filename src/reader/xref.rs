@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 use super::cmap::CMap;
 use super::crypto::{decrypt_object_tree, CipherFactory};
 use super::file::{find_pdf_header_offset, find_startxref};
-use super::filters::decode_stream;
+use super::filters::{decode_stream, is_pdf_whitespace};
 use super::font::LoadedFont;
 use super::lexer::{Cmd, Lexer, Op, Token};
 use super::object::{Dict, Object, Ref, Stream};
@@ -245,7 +245,7 @@ impl XRef {
         while position < body.len() {
             let ch = body[position];
             // 空白
-            if matches!(ch, 0x00 | 0x09 | 0x0a | 0x0c | 0x0d | 0x20) {
+            if is_pdf_whitespace(ch) {
                 position += 1;
                 continue;
             }
@@ -1114,10 +1114,10 @@ fn parse_obj_header_token(token: &[u8]) -> Option<(u32, u16, usize)> {
         i += 1;
     }
     let num: u32 = std::str::from_utf8(&token[num_start..i]).ok()?.parse().ok()?;
-    if i >= token.len() || !matches!(token[i], 0x00 | 0x09 | 0x0a | 0x0c | 0x0d | 0x20) {
+    if i >= token.len() || !is_pdf_whitespace(token[i]) {
         return None;
     }
-    while i < token.len() && matches!(token[i], 0x00 | 0x09 | 0x0a | 0x0c | 0x0d | 0x20) {
+    while i < token.len() && is_pdf_whitespace(token[i]) {
         i += 1;
     }
     if i >= token.len() || !token[i].is_ascii_digit() {
@@ -1128,10 +1128,10 @@ fn parse_obj_header_token(token: &[u8]) -> Option<(u32, u16, usize)> {
         i += 1;
     }
     let generation: u16 = std::str::from_utf8(&token[gen_start..i]).ok()?.parse().ok()?;
-    if i >= token.len() || !matches!(token[i], 0x00 | 0x09 | 0x0a | 0x0c | 0x0d | 0x20) {
+    if i >= token.len() || !is_pdf_whitespace(token[i]) {
         return None;
     }
-    while i < token.len() && matches!(token[i], 0x00 | 0x09 | 0x0a | 0x0c | 0x0d | 0x20) {
+    while i < token.len() && is_pdf_whitespace(token[i]) {
         i += 1;
     }
     let rest = &token[i..];
@@ -1171,17 +1171,13 @@ fn find_obj_content_end(body: &[u8], start: usize) -> usize {
         }
         if body[i..].starts_with(b"xref") {
             let after = i + 4;
-            if after >= body.len()
-                || matches!(body[after], 0x00 | 0x09 | 0x0a | 0x0c | 0x0d | 0x20)
-            {
+            if after >= body.len() || is_pdf_whitespace(body[after]) {
                 return i;
             }
         }
         if body[i..].starts_with(b"trailer") {
             let after = i + 7;
-            if after >= body.len()
-                || matches!(body[after], 0x00 | 0x09 | 0x0a | 0x0c | 0x0d | 0x20 | b'<')
-            {
+            if after >= body.len() || is_pdf_whitespace(body[after]) || body[after] == b'<' {
                 return i;
             }
         }

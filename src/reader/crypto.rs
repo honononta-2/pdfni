@@ -61,7 +61,7 @@ impl CipherFactory {
         password: Option<&str>,
     ) -> Result<Self> {
         let filter = match encrypt.get("Filter") {
-            Some(Object::Name(n)) => n.as_str(),
+            Some(Object::Name(n)) => n.as_ref(),
             _ => {
                 return Err(Error::Reader(
                     "unknown encryption method: missing /Filter".into(),
@@ -83,14 +83,11 @@ impl CipherFactory {
             )));
         }
 
-        let revision = dict_int(encrypt, "R").unwrap_or(if algorithm <= 1 {
-            2
-        } else if algorithm == 2 {
-            3
-        } else if algorithm == 4 {
-            4
-        } else {
-            5
+        let revision = dict_int(encrypt, "R").unwrap_or(match algorithm {
+            ..=1 => 2,
+            2 => 3,
+            4 => 4,
+            _ => 5,
         });
 
         let mut key_length_bits = dict_int(encrypt, "Length").unwrap_or(0);
@@ -99,7 +96,7 @@ impl CipherFactory {
                 key_length_bits = 40;
             } else if let Some(Object::Dict(cf_dict)) = encrypt.get("CF") {
                 let stm_name = match encrypt.get("StmF") {
-                    Some(Object::Name(n)) => n.as_str(),
+                    Some(Object::Name(n)) => n.as_ref(),
                     _ => "Identity",
                 };
                 if let Some(Object::Dict(handler)) = cf_dict.get(stm_name) {
@@ -263,20 +260,20 @@ fn parse_crypt_filters(encrypt: &Dict, algorithm: i64) -> Result<CryptFilters> {
     }
 
     let stmf_name = match encrypt.get("StmF") {
-        Some(Object::Name(n)) => n.as_str(),
+        Some(Object::Name(n)) => n.as_ref(),
         _ => "Identity",
     };
     let strf_name = match encrypt.get("StrF") {
-        Some(Object::Name(n)) => n.as_str(),
+        Some(Object::Name(n)) => n.as_ref(),
         _ => "Identity",
     };
 
-    let mut cf = HashMap::new();
+    let mut cf: HashMap<String, CryptMethod> = HashMap::new();
     if let Some(Object::Dict(cf_dict)) = encrypt.get("CF") {
         for key in cf_dict.keys() {
             if let Some(Object::Dict(handler)) = cf_dict.get(key) {
                 let method = cfm_to_method(handler, algorithm)?;
-                cf.insert(key.clone(), method);
+                cf.insert(key.to_string(), method);
             }
         }
     }
@@ -301,7 +298,7 @@ fn parse_crypt_filters(encrypt: &Dict, algorithm: i64) -> Result<CryptFilters> {
 
 fn cfm_to_method(handler: &Dict, algorithm: i64) -> Result<CryptMethod> {
     let cfm = match handler.get("CFM") {
-        Some(Object::Name(n)) => n.as_str(),
+        Some(Object::Name(n)) => n.as_ref(),
         None => return Ok(CryptMethod::None),
         _ => {
             return Err(Error::Reader("invalid /CFM value".into()));

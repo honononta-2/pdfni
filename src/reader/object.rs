@@ -1,5 +1,6 @@
 //! PDFオブジェクトモデル
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// PDFオブジェクト参照
@@ -19,7 +20,7 @@ pub(crate) enum Object {
     Int(i64),
     Real(f64),
     Str(Vec<u8>),
-    Name(String),
+    Name(Cow<'static, str>),
     Array(Vec<Object>),
     Dict(Dict),
     Stream(Stream),
@@ -30,7 +31,7 @@ pub(crate) enum Object {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[allow(dead_code)]
 pub(crate) struct Dict {
-    map: HashMap<String, Object>,
+    map: HashMap<Cow<'static, str>, Object>,
 }
 
 /// ストリーム。生データはバッファ上の範囲として保持しデコードは別単位で行う
@@ -61,7 +62,7 @@ impl Dict {
         }
     }
 
-    pub fn set(&mut self, key: impl Into<String>, value: Object) {
+    pub fn set(&mut self, key: impl Into<Cow<'static, str>>, value: Object) {
         self.map.insert(key.into(), value);
     }
 
@@ -92,8 +93,8 @@ impl Dict {
         self.map.is_empty()
     }
 
-    pub fn keys(&self) -> impl Iterator<Item = &String> {
-        self.map.keys()
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.map.keys().map(|k| k.as_ref())
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Object> {

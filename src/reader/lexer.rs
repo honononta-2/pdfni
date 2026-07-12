@@ -2,6 +2,8 @@
 //!
 //! 準拠: pdf.js `parser.js` の Lexer（specialChars 表と救済挙動を含む）
 
+use std::borrow::Cow;
+
 /// 空白=1、区切り=2、通常=0（256要素、pdf.js specialChars 相当）
 static SPECIAL_CHARS: [u8; 256] = {
     let mut t = [0u8; 256];
@@ -156,7 +158,7 @@ pub(crate) enum Token {
     Real(f64),
     /// リテラル文字列または16進文字列の生バイト
     Str(Vec<u8>),
-    Name(String),
+    Name(Cow<'static, str>),
     ArrayStart,
     ArrayEnd,
     DictStart,
@@ -519,7 +521,7 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
-        Token::Name(bytes_to_latin1(&buf))
+        Token::Name(intern_name(&bytes_to_latin1(&buf)))
     }
 
     fn get_hex_string(&mut self) -> Token {
@@ -591,6 +593,56 @@ fn to_hex_digit(b: u8) -> Option<u8> {
 
 fn bytes_to_latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| b as char).collect()
+}
+
+/// 頻出 PDF Name を `&'static str` に丸めて割り当てを避ける。未知は所有文字列
+fn intern_name(s: &str) -> Cow<'static, str> {
+    macro_rules! k { ($($name:literal),* $(,)?) => {
+        match s { $($name => return Cow::Borrowed($name),)* _ => {} }
+    }; }
+    k!(
+        // 構造・xref・trailer
+        "Type", "Subtype", "Root", "Info", "ID", "Prev", "Size", "N", "W",
+        "Index", "XRefStm", "Catalog", "Pages", "Page", "Count", "Kids",
+        "Parent", "Contents", "MediaBox", "CropBox", "Resources", "Rotate",
+        "XRef", "ObjStm", "Metadata", "StructTreeRoot", "Annots", "Annot",
+        "Rect", "A", "Name", "F",
+        // ストリーム
+        "Filter", "FlateDecode", "LZWDecode", "ASCIIHexDecode", "ASCII85Decode",
+        "RunLengthDecode", "Crypt", "DecodeParms", "DP", "EarlyChange",
+        "BitsPerComponent", "BPC", "Columns", "Predictor", "Length",
+        // フォント
+        "Font", "FontDescriptor", "BaseFont", "Encoding", "ToUnicode",
+        "FirstChar", "LastChar", "Widths", "W2", "DW", "DW2", "FontFile",
+        "FontFile2", "FontFile3", "FontMatrix", "FontBBox", "CIDSystemInfo",
+        "DescendantFonts", "CIDToGIDMap", "CIDFontType0", "CIDFontType2",
+        "TrueType", "Type0", "Type1", "Type3", "MMType1", "Differences",
+        "BaseEncoding", "Registry", "Ordering", "Supplement", "Style",
+        // FontDescriptor
+        "Ascent", "Descent", "CapHeight", "XHeight", "Flags", "FontName",
+        "ItalicAngle", "StemV", "StemH", "AvgWidth", "MaxWidth", "MissingWidth",
+        "Leading", "FontStretch", "FontWeight", "FontFamily",
+        // ストリーム長・ProcSet
+        "Length1", "Length2", "Length3", "ProcSet", "PDF", "Text",
+        "ImageB", "ImageC", "ImageI",
+        // Tf フォント参照名（F0..F31）
+        "F0", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9",
+        "F10", "F11", "F12", "F13", "F14", "F15", "F16", "F17", "F18", "F19",
+        "F20", "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F29",
+        "F30", "F31",
+        // Adobe 系リソース名（T1_N・R0..R9・GS0..GS9）
+        "T1_0", "T1_1", "T1_2", "T1_3", "T1_4", "T1_5", "T1_6", "T1_7",
+        "T1_8", "T1_9",
+        "R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9",
+        "GS0", "GS1", "GS2", "GS3", "GS4", "GS5", "GS6", "GS7", "GS8", "GS9",
+        // XObject
+        "XObject", "Form", "Image", "BBox", "Matrix",
+        // 暗号化
+        "Encrypt", "StmF", "StrF", "EFF", "R", "V", "O", "U", "OE", "UE",
+        "Perms", "CFM", "AuthEvent", "EncryptMetadata", "CF", "StdCF",
+        "Identity", "AESV2", "AESV3", "V2",
+    );
+    Cow::Owned(s.to_string())
 }
 
 /// 既知演算子バイト列を Op に対応付け、未知は Latin-1 所有文字列にする
