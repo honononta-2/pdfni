@@ -40,6 +40,9 @@ pub struct TextChar {
     pub transform: [f64; 6],
     /// 符号付き前進ベクトル（表示座標）
     pub advance: [f64; 2],
+    /// 公称字送り長（Tc・Tw・TJ なしの進行軸方向長さ）。未設定時は bbox から復元
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph_width: Option<f64>,
     pub font: u32,
     pub font_size: f64,
     pub rot: i32,
@@ -1020,7 +1023,11 @@ fn progress_component(advance: [f64; 2], vertical: bool, transform: &[f64; 6]) -
     }
 }
 
-/// bbox から TJ 数値を含まない表示座標の字送りを得る
+/// 字送り判定用の前進ベクトルを得る
+///
+/// 横書きは占有幅（bbox 射影。Tc 込み）と実前進（advance 射影。TJ 込み）の
+/// 小さい方を使う。詰め配置（負の TJ）と字間トラッキング（Tc のみ）を両立する。
+/// 縦書き・軸外は advance をそのまま使う
 fn glyph_advance(ch: &TextChar, vertical: bool) -> [f64; 2] {
     if vertical {
         return ch.advance;
@@ -1047,7 +1054,14 @@ fn glyph_advance(ch: &TextChar, vertical: bool) -> [f64; 2] {
     ]
     .into_iter()
     .fold(f64::NEG_INFINITY, f64::max);
-    let length = (end - origin).max(0.0);
+    let occ_len = (end - origin).max(0.0);
+    // 上付きなど advance≈0 で幅だけあるグリフは占有幅を使う
+    let adv_len = ch.advance[0] * ux + ch.advance[1] * uy;
+    let length = if adv_len.is_finite() && adv_len > 1e-9 {
+        occ_len.min(adv_len)
+    } else {
+        occ_len
+    };
     [ux * length, uy * length]
 }
 
@@ -1155,6 +1169,7 @@ mod tests {
             bottom: y + font_size,
             transform: [font_size, 0.0, 0.0, -font_size, x, y],
             advance: [adv_x, adv_y],
+            glyph_width: None,
             font: 0,
             font_size,
             rot: 0,
@@ -1191,6 +1206,7 @@ mod tests {
             },
             transform,
             advance: [adv_x, adv_y],
+            glyph_width: None,
             font: font_idx,
             font_size,
             rot: 0,
@@ -1507,6 +1523,7 @@ mod tests {
             bottom,
             transform,
             advance: glyph_advance,
+            glyph_width: None,
             font: 0,
             font_size,
             rot,
@@ -1553,6 +1570,68 @@ mod tests {
         assert_eq!(lines[0].words[0].text, "A");
         assert_eq!(lines[0].words[1].text, "B");
         assert_eq!(lines[0].chars, vec![0, 1]);
+    }
+
+    /// 詰め配置（bbox>advance）でも min により同一単語に保つ
+    #[test]
+    fn lines_min_width_keeps_tight_tc_pack() {
+        let fs = 10.0;
+        let pure = 5.0;
+        let tc = 3.0;
+        // 原点間隔 = pure（TJ で Tc を打ち消し）、bbox 幅 = pure+Tc
+        let mut a = ch("A", 0.0, 100.0, pure + tc, 0.0, fs, false);
+        a.right = pure + tc;
+        a.advance = [pure, 0.0];
+        let mut b = ch("B", pure, 100.0, pure + tc, 0.0, fs, false);
+        b.right = pure + pure + tc;
+        b.left = pure;
+        b.advance = [pure, 0.0];
+        let p = page(vec![a, b]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].words.len(), 1);
+        assert_eq!(lines[0].words[0].text, "AB");
+        let items = build_text_items(&p);
+        assert_eq!(items[0].r#str, "AB");
+    }
+
+    /// Tc トラッキング（bbox≈advance>pure）でも同一単語に保つ
+    #[test]
+    fn lines_min_width_keeps_tc_tracking() {
+        let fs = 10.0;
+        let pure = 5.0;
+        let tc = 3.0;
+        let step = pure + tc;
+        let mut a = ch("A", 0.0, 100.0, step, 0.0, fs, false);
+        a.right = step;
+        a.advance = [step, 0.0];
+        a.glyph_width = Some(pure);
+        let mut b = ch("B", step, 100.0, step, 0.0, fs, false);
+        b.left = step;
+        b.right = step + step;
+        b.advance = [step, 0.0];
+        b.glyph_width = Some(pure);
+        let p = page(vec![a, b]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines[0].words.len(), 1);
+        assert_eq!(lines[0].words[0].text, "AB");
+    }
+
+    /// advance≈0 の上付きは占有幅で次と結合する
+    #[test]
+    fn lines_zero_advance_superscript_stays_in_word() {
+        let fs = 10.0;
+        let mut three = ch("3", 0.0, 100.0, 5.0, 0.0, fs, false);
+        three.right = 5.0;
+        three.advance = [0.0, 0.0];
+        let mut r = ch("r", 5.0, 100.0, 3.0, 0.0, 7.0, false);
+        r.left = 5.0;
+        r.right = 8.0;
+        r.advance = [3.0, 0.0];
+        let p = page(vec![three, r]);
+        let lines = build_text_lines(&p);
+        assert_eq!(lines[0].words.len(), 1);
+        assert_eq!(lines[0].words[0].text, "3r");
     }
 
     #[test]

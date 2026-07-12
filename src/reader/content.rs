@@ -44,6 +44,8 @@ struct PendingTextChar {
     bottom: f64,
     transform: [f64; 6],
     advance: [f64; 2],
+    /// 公称字送り長（Tc・Tw・TJ なし）
+    glyph_width: Option<f64>,
     font: u32,
     font_size: f64,
     rot_q: RotQ,
@@ -263,6 +265,7 @@ pub(crate) fn extract_text(
             bottom: c.bottom,
             transform: c.transform,
             advance: c.advance,
+            glyph_width: c.glyph_width,
             font: c.font,
             font_size: c.font_size,
             rot: c.rot_q.degrees(),
@@ -673,6 +676,7 @@ fn synth_word_spaces_text(chars: &mut Vec<PendingTextChar>) {
                             bottom: prev.bottom,
                             transform,
                             advance,
+                            glyph_width: None,
                             font: prev.font,
                             font_size: prev.font_size,
                             rot_q: prev.rot_q,
@@ -1629,6 +1633,11 @@ impl Evaluator<'_, '_> {
             let end_trm = mat_mul(ctm, mat_mul(end_tm, tsm));
             let (ex, ey) = (end_trm[4], end_trm[5]);
             let device_w = (ex - ox) * ux + (ey - oy) * uy;
+            // 公称字送り（Tc・Tw・TJ なし）のデバイス長
+            let pure_end_tm = translate_mat(text.text_matrix, scaled_dim, 0.0);
+            let pure_end_trm = mat_mul(ctm, mat_mul(pure_end_tm, tsm));
+            let pure_device_w =
+                (pure_end_trm[4] - ox) * ux + (pure_end_trm[5] - oy) * uy;
 
             // 表経路: コードポイントごとに分割し幅を等分
             if collect_glyphs {
@@ -1683,6 +1692,7 @@ impl Evaluator<'_, '_> {
                             view_top - trm[5],
                         ],
                         advance: [fx - ox, -(fy - oy)],
+                        glyph_width: Some(pure_device_w.max(0.0)),
                         font: fi,
                         font_size: font_size_dev,
                         rot_q: rot,
@@ -1835,6 +1845,7 @@ impl Evaluator<'_, '_> {
                             view_top - wy,
                         ],
                         advance: [fx - wx, -(fy - wy)],
+                        glyph_width: None,
                         font: fi,
                         font_size: font_size_dev,
                         rot_q: rot,
@@ -2498,6 +2509,13 @@ Q
         assert!(approx(g[1].left, 7.0));
         assert!(approx(g[1].right, 14.0));
 
+        // 表経路の bbox は Tc 込みのまま（公称幅分離の前提）
+        let (_, _, _, chars) = text_of(contents, default_view());
+        assert_eq!(chars.len(), 2);
+        assert!(approx(chars[0].glyph_width.unwrap_or(-1.0), 5.0));
+        assert!(approx(chars[0].right - chars[0].left, 7.0));
+        assert!(approx(chars[1].glyph_width.unwrap_or(-1.0), 5.0));
+
         // Tz 50% → hScale=0.5, scaledDim = 0.5*10*0.5 = 2.5, Tc=0
         let contents = b"BT /F1 10 Tf 50 Tz 1 0 0 1 0 50 Tm (A) Tj ET";
         let g = glyphs_of(contents, default_view());
@@ -2803,6 +2821,29 @@ Q
         assert!(approx(chars[0].advance[0], 3.0), "adv0={:?}", chars[0].advance);
         assert!(approx(chars[1].left, 3.0));
         assert!(approx(chars[1].advance[0], 5.0));
+        // 公称幅は TJ・Tc を含まない
+        assert!(approx(chars[0].glyph_width.unwrap_or(-1.0), 5.0));
+        assert!(approx(chars[1].glyph_width.unwrap_or(-1.0), 5.0));
+    }
+
+    /// Tc で広げ TJ で戻す詰め配置でも公称幅は pure、bbox は Tc 込み
+    #[test]
+    fn extract_text_tc_pack_nominal_width() {
+        // stub 幅 500 → pure=5。Tc=3、TJ 300（extra=-3）→ 原点間隔 5、bbox 幅 8
+        let contents = b"BT /F1 10 Tf 3 Tc 1 0 0 1 0 50 Tm [(A) 300 (B)] TJ ET";
+        let (_, _, _, chars) = text_of(contents, default_view());
+        let solids: Vec<_> = chars.iter().filter(|c| !c.synthetic).collect();
+        assert_eq!(solids.len(), 2, "chars={chars:?}");
+        assert!(approx(solids[0].left, 0.0));
+        assert!(approx(solids[0].right, 8.0), "right={}", solids[0].right);
+        assert!(approx(solids[0].glyph_width.unwrap_or(-1.0), 5.0));
+        assert!(approx(solids[1].left, 5.0), "B left={}", solids[1].left);
+        assert!(approx(solids[1].glyph_width.unwrap_or(-1.0), 5.0));
+        // 表グリフも占有幅のまま
+        let g = glyphs_of(contents, default_view());
+        assert_eq!(g.len(), 2);
+        assert!(approx(g[0].right - g[0].left, 8.0));
+        assert!(approx(g[1].left, 5.0));
     }
 
     /// ページ /Rotate 90 で width/height と座標が入れ替わる
@@ -3153,6 +3194,7 @@ Q
             bottom: 20.0,
             transform: [10.0, 0.0, 0.0, -10.0, x, 30.0],
             advance: [5.0, 0.0],
+            glyph_width: Some(5.0),
             font: 0,
             font_size: 10.0,
             rot_q: RotQ::R0,
