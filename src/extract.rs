@@ -89,9 +89,16 @@ pub struct ExtractOptions {
     pub text: TextSettings,
     /// ヘッダ・フッタ検出（既定は無効）
     pub detect_header_footer: bool,
+    /// リスト検出（既定は有効）
+    #[serde(default = "default_detect_lists")]
+    pub detect_lists: bool,
     /// 見出し・段落の Markdown 本文エスケープ（既定は有効）
     #[serde(default = "default_escape_markdown")]
     pub escape_markdown: bool,
+}
+
+fn default_detect_lists() -> bool {
+    true
 }
 
 fn default_escape_markdown() -> bool {
@@ -106,6 +113,7 @@ impl Default for ExtractOptions {
             hybrid: HybridSettings::default(),
             text: TextSettings::default(),
             detect_header_footer: false,
+            detect_lists: true,
             escape_markdown: true,
         }
     }
@@ -133,7 +141,10 @@ fn strip_cjk_spaces(s: &str) -> String {
     for i in 0..chars.len() {
         if is_inline_space(chars[i]) {
             let prev = out.chars().last();
-            let next = chars[i + 1..].iter().find(|&&x| !is_inline_space(x)).copied();
+            let next = chars[i + 1..]
+                .iter()
+                .find(|&&x| !is_inline_space(x))
+                .copied();
             if let (Some(p), Some(n)) = (prev, next) {
                 if is_cjk(p) && is_cjk(n) {
                     continue;
@@ -283,12 +294,7 @@ fn build_segments(chars: &[Glyph], scale: Option<f64>) -> Vec<Seg> {
     let seg_gap = (med_h).max(1.0);
 
     let mut order = solid;
-    order.sort_by(|&a, &b| {
-        chars[a]
-            .bbox
-            .bottom
-            .total_cmp(&chars[b].bbox.bottom)
-    });
+    order.sort_by(|&a, &b| chars[a].bbox.bottom.total_cmp(&chars[b].bbox.bottom));
 
     let mut lines: Vec<Vec<usize>> = Vec::new();
     let mut cur: Vec<usize> = Vec::new();
@@ -335,8 +341,7 @@ fn build_segments(chars: &[Glyph], scale: Option<f64>) -> Vec<Seg> {
         let mut text = String::new();
         let mut bb: Option<BBox> = None;
         let mut last_x1 = f64::NEG_INFINITY;
-        let line_refs: Vec<(usize, &Glyph)> =
-            line.iter().map(|&i| (i, &chars[i])).collect();
+        let line_refs: Vec<(usize, &Glyph)> = line.iter().map(|&i| (i, &chars[i])).collect();
         for &i in &line {
             let g = &chars[i];
             if bb.is_some() && g.bbox.x0 - last_x1 > seg_gap {
@@ -494,7 +499,10 @@ fn row_split_boundaries(
             marks.push(LineMark {
                 col: c,
                 top: l.iter().map(|g| g.bbox.top).fold(f64::INFINITY, f64::min),
-                bot: l.iter().map(|g| g.bbox.bottom).fold(f64::NEG_INFINITY, f64::max),
+                bot: l
+                    .iter()
+                    .map(|g| g.bbox.bottom)
+                    .fold(f64::NEG_INFINITY, f64::max),
                 typed_evidence: typed[k] && typed_majority,
             });
         }
@@ -782,10 +790,7 @@ fn absorb_wrap_orphan_rows(t: &mut Table) {
             parts.push((t.data[oi][c].text.clone(), t.data[oi][c].bbox));
         }
         let existing = t.data[ti][c].text.trim();
-        let mut texts: Vec<String> = above
-            .iter()
-            .map(|&oi| t.data[oi][c].text.clone())
-            .collect();
+        let mut texts: Vec<String> = above.iter().map(|&oi| t.data[oi][c].text.clone()).collect();
         if !existing.is_empty() {
             texts.push(existing.to_string());
         }
@@ -928,7 +933,12 @@ fn detect_page(pi: usize, part: PagePart, options: &ExtractOptions) -> Page {
             bottom: g.top.max(g.bottom),
         },
     };
-    let chars: Vec<Glyph> = part.glyphs.iter().filter(|g| g.upright).map(to_glyph).collect();
+    let chars: Vec<Glyph> = part
+        .glyphs
+        .iter()
+        .filter(|g| g.upright)
+        .map(to_glyph)
+        .collect();
     let mut edges: Vec<Edge> = part
         .edges
         .iter()
@@ -954,9 +964,7 @@ fn detect_page(pi: usize, part: PagePart, options: &ExtractOptions) -> Page {
             .iter()
             .filter(|g| !g.upright && g.rot == rot)
             .collect();
-        if group.iter().filter(|g| !g.ch.is_whitespace()).count()
-            < options.text.min_table_segs
-        {
+        if group.iter().filter(|g| !g.ch.is_whitespace()).count() < options.text.min_table_segs {
             continue;
         }
         let (w, h) = (part.width, part.height);
@@ -1027,8 +1035,7 @@ fn detect_page(pi: usize, part: PagePart, options: &ExtractOptions) -> Page {
             t.bbox = denorm_box(&t.bbox, part.norm_rotate, part.width, part.height);
             for cell in t.data.iter_mut().flatten() {
                 if cell.bbox.width() > 0.0 || cell.bbox.height() > 0.0 {
-                    cell.bbox =
-                        denorm_box(&cell.bbox, part.norm_rotate, part.width, part.height);
+                    cell.bbox = denorm_box(&cell.bbox, part.norm_rotate, part.width, part.height);
                 }
             }
         }
@@ -1269,7 +1276,10 @@ mod tests {
             n_rows: 2,
             n_cols: 2,
             data: vec![
-                vec![cell(0.0, 0.0, 50.0, 10.0, "h1"), cell(50.0, 0.0, 100.0, 10.0, "h2")],
+                vec![
+                    cell(0.0, 0.0, 50.0, 10.0, "h1"),
+                    cell(50.0, 0.0, 100.0, 10.0, "h2"),
+                ],
                 vec![cell(0.0, 10.0, 100.0, 20.0, "a b"), empty_cell()],
             ],
         }

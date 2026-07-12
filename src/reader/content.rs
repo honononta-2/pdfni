@@ -10,7 +10,7 @@ use crate::model::Orientation;
 use crate::text::{TextChar, TextFont};
 
 use super::filters::decode_stream;
-use super::font::{lookup_font, LoadedFont};
+use super::font::{LoadedFont, lookup_font};
 use super::lexer::{Cmd, Lexer, Op, Token};
 use super::object::{Dict, Object, Ref, Stream};
 use super::parser::Resolver;
@@ -123,6 +123,8 @@ impl TextSink {
             ascent: font.ascent(),
             descent: font.descent(),
             vertical: font.vertical(),
+            bold: font.bold(),
+            italic: font.italic(),
         });
         self.font_ids.insert(key, i);
         i
@@ -537,7 +539,11 @@ struct GlyphDedupKey {
 
 /// -0.0 を +0.0 へ正規化したビット表現
 fn norm_f64_bits(v: f64) -> u64 {
-    if v == 0.0 { 0.0f64.to_bits() } else { v.to_bits() }
+    if v == 0.0 {
+        0.0f64.to_bits()
+    } else {
+        v.to_bits()
+    }
 }
 
 /// 重ね印字の重複グリフ除去（specs/14）
@@ -659,10 +665,7 @@ fn synth_word_spaces_text(chars: &mut Vec<PendingTextChar>) {
                         + prev.advance[1] * prev.advance[1])
                         .sqrt();
                     let advance = if alen > 1e-9 {
-                        [
-                            prev.advance[0] / alen * gap,
-                            prev.advance[1] / alen * gap,
-                        ]
+                        [prev.advance[0] / alen * gap, prev.advance[1] / alen * gap]
                     } else {
                         [gap, 0.0]
                     };
@@ -1636,8 +1639,7 @@ impl Evaluator<'_, '_> {
             // 公称字送り（Tc・Tw・TJ なし）のデバイス長
             let pure_end_tm = translate_mat(text.text_matrix, scaled_dim, 0.0);
             let pure_end_trm = mat_mul(ctm, mat_mul(pure_end_tm, tsm));
-            let pure_device_w =
-                (pure_end_trm[4] - ox) * ux + (pure_end_trm[5] - oy) * uy;
+            let pure_device_w = (pure_end_trm[4] - ox) * ux + (pure_end_trm[5] - oy) * uy;
 
             // 表経路: コードポイントごとに分割し幅を等分
             if collect_glyphs {
@@ -1647,8 +1649,16 @@ impl Evaluator<'_, '_> {
                     if ch == '\n' || ch == '\r' || ch == '\t' {
                         continue;
                     }
-                    let (x0, x1, y0, y1) =
-                        glyph_box(ox, oy, ux, uy, per_w * k as f64, per_w * (k as f64 + 1.0), a_off, d_off);
+                    let (x0, x1, y0, y1) = glyph_box(
+                        ox,
+                        oy,
+                        ux,
+                        uy,
+                        per_w * k as f64,
+                        per_w * (k as f64 + 1.0),
+                        a_off,
+                        d_off,
+                    );
                     glyphs.push((
                         GlyphPart {
                             ch,
@@ -1671,8 +1681,7 @@ impl Evaluator<'_, '_> {
                     .filter(|&ch| ch != '\n' && ch != '\r' && ch != '\t')
                     .collect();
                 if !text_str.is_empty() {
-                    let (x0, x1, y0, y1) =
-                        glyph_box(ox, oy, ux, uy, 0.0, device_w, a_off, d_off);
+                    let (x0, x1, y0, y1) = glyph_box(ox, oy, ux, uy, 0.0, device_w, a_off, d_off);
                     // 前進ベクトル（TJ 含む、表示座標）
                     let end_tm_full = translate_mat(text.text_matrix, advance, 0.0);
                     let end_trm_full = mat_mul(ctm, mat_mul(end_tm_full, tsm));
@@ -1801,8 +1810,16 @@ impl Evaluator<'_, '_> {
                     if ch == '\n' || ch == '\r' || ch == '\t' {
                         continue;
                     }
-                    let (x0, x1, y0, y1) =
-                        glyph_box(ox, oy, ux, uy, per_w * k as f64, per_w * (k as f64 + 1.0), a_off, d_off);
+                    let (x0, x1, y0, y1) = glyph_box(
+                        ox,
+                        oy,
+                        ux,
+                        uy,
+                        per_w * k as f64,
+                        per_w * (k as f64 + 1.0),
+                        a_off,
+                        d_off,
+                    );
                     glyphs.push((
                         GlyphPart {
                             ch,
@@ -1825,8 +1842,7 @@ impl Evaluator<'_, '_> {
                     .filter(|&ch| ch != '\n' && ch != '\r' && ch != '\t')
                     .collect();
                 if !text_str.is_empty() {
-                    let (x0, x1, y0, y1) =
-                        glyph_box(ox, oy, ux, uy, 0.0, device_w, a_off, d_off);
+                    let (x0, x1, y0, y1) = glyph_box(ox, oy, ux, uy, 0.0, device_w, a_off, d_off);
                     let end_tm_full = translate_mat(text.text_matrix, 0.0, advance_y);
                     let end_trm_full = mat_mul(ctm, mat_mul(end_tm_full, tsm));
                     let (fx, fy) = (end_trm_full[4], end_trm_full[5]);
@@ -1958,7 +1974,10 @@ impl Evaluator<'_, '_> {
         let form_mat = parse_matrix(stream.dict.get("Matrix"), self.ctx).unwrap_or_else(identity);
 
         // /Resources（無ければ親を継承）
-        let resolved_res = stream.dict.get("Resources").map(|o| resolve_obj(o, self.ctx));
+        let resolved_res = stream
+            .dict
+            .get("Resources")
+            .map(|o| resolve_obj(o, self.ctx));
         let form_res: &Dict = match resolved_res.as_deref() {
             Some(Object::Dict(d)) => d,
             _ => resources,
@@ -2153,7 +2172,14 @@ mod tests {
         );
         assert_eq!(edges.len(), 4);
         // 元の下辺 (10..60, y_pdf=20 -> td180) が x=20 の縦線 y=[10..60] になる
-        assert!(find_edge(&edges, Orientation::Vertical, 20.0, 20.0, 10.0, 60.0));
+        assert!(find_edge(
+            &edges,
+            Orientation::Vertical,
+            20.0,
+            20.0,
+            10.0,
+            60.0
+        ));
     }
 
     /// re + S で4辺
@@ -2563,8 +2589,7 @@ Q
     #[test]
     fn text_state_restored_by_grestore() {
         // q 内で Tw=100 を設定し Q で復元 → 以降の空白に Tw が効かない
-        let contents =
-            b"q BT /F1 10 Tf 100 Tw ET Q BT /F1 10 Tf 1 0 0 1 0 50 Tm (A B) Tj ET";
+        let contents = b"q BT /F1 10 Tf 100 Tw ET Q BT /F1 10 Tf 1 0 0 1 0 50 Tm (A B) Tj ET";
         let g = glyphs_of(contents, default_view());
         assert_eq!(g.len(), 3, "got {g:?}");
         assert_eq!(g[1].ch, ' ');
@@ -2732,7 +2757,11 @@ Q
         assert!(approx(c.left, 30.0));
         assert!(approx(c.right, 30.0 + stub_advance(10.0)));
         assert!(approx(c.font_size, 10.0));
-        assert!(approx(c.advance[0], stub_advance(10.0)), "adv={:?}", c.advance);
+        assert!(
+            approx(c.advance[0], stub_advance(10.0)),
+            "adv={:?}",
+            c.advance
+        );
         assert!(approx(c.advance[1], 0.0));
         // TRM 表示: e=30, f=200-40=160、縦軸長=10
         assert!(approx(c.transform[4], 30.0), "e={}", c.transform[4]);
@@ -2818,7 +2847,11 @@ Q
         let (_, _, _, chars) = text_of(contents, default_view());
         assert_eq!(chars.len(), 2);
         // A: bbox_advance=5, extra=-2 → advance=3
-        assert!(approx(chars[0].advance[0], 3.0), "adv0={:?}", chars[0].advance);
+        assert!(
+            approx(chars[0].advance[0], 3.0),
+            "adv0={:?}",
+            chars[0].advance
+        );
         assert!(approx(chars[1].left, 3.0));
         assert!(approx(chars[1].advance[0], 5.0));
         // 公称幅は TJ・Tc を含まない
@@ -2897,10 +2930,7 @@ Q
         let mut type0 = Dict::new();
         type0.set("Subtype", Object::Name("Type0".into()));
         type0.set("Encoding", Object::Name("Identity-V".into()));
-        type0.set(
-            "DescendantFonts",
-            Object::Array(vec![Object::Dict(cid)]),
-        );
+        type0.set("DescendantFonts", Object::Array(vec![Object::Dict(cid)]));
         let mut fonts = Dict::new();
         fonts.set("F1", Object::Dict(type0));
         let mut res = Dict::new();
@@ -2913,17 +2943,10 @@ Q
         let w2 = with_w2.then(|| {
             vec![
                 Object::Int(0x41),
-                Object::Array(vec![
-                    Object::Int(-500),
-                    Object::Int(500),
-                    Object::Int(880),
-                ]),
+                Object::Array(vec![Object::Int(-500), Object::Int(500), Object::Int(880)]),
             ]
         });
-        vertical_resources_with_metrics(
-            Some(vec![Object::Int(880), Object::Int(-1000)]),
-            w2,
-        )
+        vertical_resources_with_metrics(Some(vec![Object::Int(880), Object::Int(-1000)]), w2)
     }
 
     fn text_of_res(
@@ -2957,7 +2980,11 @@ Q
         assert_eq!(chars.len(), 2);
 
         // advance は表示座標で下向き（+y）
-        assert!(approx(chars[0].advance[0], 0.0), "adv0={:?}", chars[0].advance);
+        assert!(
+            approx(chars[0].advance[0], 0.0),
+            "adv0={:?}",
+            chars[0].advance
+        );
         assert!(
             approx(chars[0].advance[1], 10.0),
             "adv0 y={:?}",
@@ -3032,8 +3059,7 @@ Q
     /// 縦書きの Tc・2バイト空白への Tw・TJ 数値を前進量へ反映する
     #[test]
     fn extract_text_vertical_tc_tw_and_tj_advance() {
-        let contents =
-            b"BT /F1 10 Tf 1 Tc 2 Tw 1 0 0 1 50 150 Tm [<00410020> 200 <0042>] TJ ET";
+        let contents = b"BT /F1 10 Tf 1 Tc 2 Tw 1 0 0 1 50 150 Tm [<00410020> 200 <0042>] TJ ET";
         let res = vertical_resources(false);
         let (_, _, _, chars) = text_of_res(contents, &res, default_view());
         let texts: Vec<&str> = chars.iter().map(|c| c.text.as_str()).collect();
@@ -3041,7 +3067,11 @@ Q
         // A: -10 - (-Tc) = -9
         assert!(approx(chars[0].advance[1], 9.0), "A={:?}", chars[0].advance);
         // 空白: -10 - (-Tc + Tw + TJ 2) = -13
-        assert!(approx(chars[1].advance[1], 13.0), "space={:?}", chars[1].advance);
+        assert!(
+            approx(chars[1].advance[1], 13.0),
+            "space={:?}",
+            chars[1].advance
+        );
         assert!(approx(chars[2].advance[1], 9.0), "B={:?}", chars[2].advance);
         assert!(approx(chars[1].transform[5] - chars[0].transform[5], 9.0));
         assert!(approx(chars[2].transform[5] - chars[1].transform[5], 13.0));
@@ -3054,11 +3084,7 @@ Q
             Some(vec![Object::Int(880), Object::Int(-1000)]),
             Some(vec![
                 Object::Int(0x41),
-                Object::Array(vec![
-                    Object::Int(-1000),
-                    Object::Int(200),
-                    Object::Int(300),
-                ]),
+                Object::Array(vec![Object::Int(-1000), Object::Int(200), Object::Int(300)]),
             ]),
         );
         let contents = b"BT /F1 10 Tf 1 0 0 1 50 100 Tm <0041> Tj ET";
@@ -3086,10 +3112,7 @@ Q
             0,
         );
         assert_eq!(glyphs.len(), 2);
-        assert!(
-            (glyphs[0].left - glyphs[1].left).abs() < 1.0,
-            "lefts"
-        );
+        assert!((glyphs[0].left - glyphs[1].left).abs() < 1.0, "lefts");
         assert!(
             glyphs[1].top > glyphs[0].top + 5.0,
             "tops {} {}",
@@ -3113,8 +3136,7 @@ Q
         let mut res = Dict::new();
         res.set("Font", Object::Dict(fonts_dict));
 
-        let contents =
-            b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (A) Tj /F1 12 Tf 1 0 0 1 20 50 Tm (B) Tj ET";
+        let contents = b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (A) Tj /F1 12 Tf 1 0 0 1 20 50 Tm (B) Tj ET";
         let (_, _, fonts, chars) = text_of_res(contents, &res, default_view());
         assert_eq!(fonts.len(), 1, "fonts={fonts:?}");
         assert_eq!(fonts[0].name, "Helvetica");
@@ -3134,8 +3156,7 @@ Q
         let mut res = Dict::new();
         res.set("Font", Object::Dict(fonts_dict));
 
-        let contents =
-            b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (A) Tj /F2 12 Tf 1 0 0 1 20 50 Tm (B) Tj ET";
+        let contents = b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (A) Tj /F2 12 Tf 1 0 0 1 20 50 Tm (B) Tj ET";
         let ExtractedText { fonts, chars, .. } = extract_text(
             contents,
             &res,
@@ -3165,9 +3186,7 @@ Q
         body.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
 
         let o3 = body.len();
-        body.extend_from_slice(
-            b"3 0 obj\n<< /Type /Font /Subtype /Type1 >>\nendobj\n",
-        );
+        body.extend_from_slice(b"3 0 obj\n<< /Type /Font /Subtype /Type1 >>\nendobj\n");
 
         let xref_off = body.len();
         body.extend_from_slice(b"xref\n0 4\n");

@@ -26,6 +26,12 @@ pub struct TextFont {
     pub ascent: f64,
     pub descent: f64,
     pub vertical: bool,
+    /// 太字属性（フォント資源から確定）
+    #[serde(default)]
+    pub bold: bool,
+    /// イタリック属性（フォント資源から確定）
+    #[serde(default)]
+    pub italic: bool,
 }
 
 /// 1グリフ分の座標付き文字
@@ -137,7 +143,9 @@ pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
 
         // フォント・サイズ変化で分割
         if let Some(c) = chunk.as_ref() {
-            if c.font != ch.font || (c.font_size - ch.font_size).abs() > 1e-9 || c.vertical != vertical
+            if c.font != ch.font
+                || (c.font_size - ch.font_size).abs() > 1e-9
+                || c.vertical != vertical
             {
                 flush_chunk(&mut items, &mut chunk);
                 reset_last_chars(&mut last_chars, &mut last_pos);
@@ -188,13 +196,27 @@ pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
 
                     if advance_y < text_orientation * thresholds.negative_space_max {
                         if advance_x.abs() > 0.5 * width_ref {
-                            append_eol(&mut items, &mut chunk, &ch.transform, ch.font, &mut last_chars, &mut last_pos);
+                            append_eol(
+                                &mut items,
+                                &mut chunk,
+                                &ch.transform,
+                                ch.font,
+                                &mut last_chars,
+                                &mut last_pos,
+                            );
                         } else {
                             reset_last_chars(&mut last_chars, &mut last_pos);
                             flush_chunk(&mut items, &mut chunk);
                         }
                     } else if advance_x.abs() > width_ref {
-                        append_eol(&mut items, &mut chunk, &ch.transform, ch.font, &mut last_chars, &mut last_pos);
+                        append_eol(
+                            &mut items,
+                            &mut chunk,
+                            &ch.transform,
+                            ch.font,
+                            &mut last_chars,
+                            &mut last_pos,
+                        );
                     } else {
                         if advance_y <= text_orientation * thresholds.not_a_space {
                             reset_last_chars(&mut last_chars, &mut last_pos);
@@ -203,13 +225,7 @@ pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
                             if should_add_whitespace(&last_chars, last_pos) {
                                 reset_last_chars(&mut last_chars, &mut last_pos);
                                 flush_chunk(&mut items, &mut chunk);
-                                push_whitespace(
-                                    &mut items,
-                                    0.0,
-                                    advance_y.abs(),
-                                    prev_xf,
-                                    ch.font,
-                                );
+                                push_whitespace(&mut items, 0.0, advance_y.abs(), prev_xf, ch.font);
                             } else if let Some(c) = chunk.as_mut() {
                                 c.signed_dim += advance_y;
                             }
@@ -227,13 +243,7 @@ pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
                         ) {
                             if chunk.as_ref().map(|c| c.str.is_empty()).unwrap_or(true) {
                                 reset_last_chars(&mut last_chars, &mut last_pos);
-                                push_whitespace(
-                                    &mut items,
-                                    0.0,
-                                    advance_y.abs(),
-                                    prev_xf,
-                                    ch.font,
-                                );
+                                push_whitespace(&mut items, 0.0, advance_y.abs(), prev_xf, ch.font);
                             } else if let Some(c) = chunk.as_mut() {
                                 c.signed_dim += advance_y;
                             }
@@ -266,13 +276,27 @@ pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
 
                     if advance_x < text_orientation * thresholds.negative_space_max {
                         if advance_y.abs() > 0.5 * height_ref {
-                            append_eol(&mut items, &mut chunk, &ch.transform, ch.font, &mut last_chars, &mut last_pos);
+                            append_eol(
+                                &mut items,
+                                &mut chunk,
+                                &ch.transform,
+                                ch.font,
+                                &mut last_chars,
+                                &mut last_pos,
+                            );
                         } else {
                             reset_last_chars(&mut last_chars, &mut last_pos);
                             flush_chunk(&mut items, &mut chunk);
                         }
                     } else if advance_y.abs() > height_ref {
-                        append_eol(&mut items, &mut chunk, &ch.transform, ch.font, &mut last_chars, &mut last_pos);
+                        append_eol(
+                            &mut items,
+                            &mut chunk,
+                            &ch.transform,
+                            ch.font,
+                            &mut last_chars,
+                            &mut last_pos,
+                        );
                     } else {
                         if advance_x <= text_orientation * thresholds.not_a_space {
                             reset_last_chars(&mut last_chars, &mut last_pos);
@@ -281,13 +305,7 @@ pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
                             if should_add_whitespace(&last_chars, last_pos) {
                                 reset_last_chars(&mut last_chars, &mut last_pos);
                                 flush_chunk(&mut items, &mut chunk);
-                                push_whitespace(
-                                    &mut items,
-                                    advance_x.abs(),
-                                    0.0,
-                                    prev_xf,
-                                    ch.font,
-                                );
+                                push_whitespace(&mut items, advance_x.abs(), 0.0, prev_xf, ch.font);
                             } else if let Some(c) = chunk.as_mut() {
                                 c.signed_dim += advance_x;
                             }
@@ -305,13 +323,7 @@ pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
                         ) {
                             if chunk.as_ref().map(|c| c.str.is_empty()).unwrap_or(true) {
                                 reset_last_chars(&mut last_chars, &mut last_pos);
-                                push_whitespace(
-                                    &mut items,
-                                    advance_x.abs(),
-                                    0.0,
-                                    prev_xf,
-                                    ch.font,
-                                );
+                                push_whitespace(&mut items, advance_x.abs(), 0.0, prev_xf, ch.font);
                             } else if let Some(c) = chunk.as_mut() {
                                 c.signed_dim += advance_x;
                             }
@@ -406,12 +418,7 @@ struct GlyphPos {
 }
 
 /// 書字方向グループから行を構築する
-fn lines_for_group(
-    page: &TextPage,
-    indices: &[usize],
-    vertical: bool,
-    rot: i32,
-) -> Vec<TextLine> {
+fn lines_for_group(page: &TextPage, indices: &[usize], vertical: bool, rot: i32) -> Vec<TextLine> {
     if indices.is_empty() {
         return Vec::new();
     }
@@ -421,11 +428,7 @@ fn lines_for_group(
         .map(|&idx| {
             let ch = &page.chars[idx];
             let (px, py) = derotate_xy(ch.transform[4], ch.transform[5], rot);
-            let (baseline, progress) = if vertical {
-                (px, py)
-            } else {
-                (py, px)
-            };
+            let (baseline, progress) = if vertical { (px, py) } else { (py, px) };
             GlyphPos {
                 idx,
                 baseline,
@@ -719,12 +722,7 @@ fn whitespace_between_touching_solids(
 }
 
 /// 行内の単語を構築する
-fn words_for_line(
-    page: &TextPage,
-    order: &[u32],
-    vertical: bool,
-    rot: i32,
-) -> Vec<TextWord> {
+fn words_for_line(page: &TextPage, order: &[u32], vertical: bool, rot: i32) -> Vec<TextWord> {
     let mut words: Vec<TextWord> = Vec::new();
     let mut cur: Vec<u32> = Vec::new();
     let mut prev_non_ws: Option<usize> = None;
@@ -1173,17 +1171,9 @@ fn derotate_positions(
 
 fn detect_rotate(m: &[f64; 6]) -> i32 {
     if m[0] != 0.0 && m[1] == 0.0 && m[2] == 0.0 {
-        if m[0] > 0.0 {
-            0
-        } else {
-            180
-        }
+        if m[0] > 0.0 { 0 } else { 180 }
     } else if m[1] != 0.0 && m[0] == 0.0 && m[3] == 0.0 {
-        if m[1] > 0.0 {
-            90
-        } else {
-            270
-        }
+        if m[1] > 0.0 { 90 } else { 270 }
     } else {
         -1
     }
@@ -1210,6 +1200,8 @@ mod tests {
             ascent: 0.8,
             descent: -0.2,
             vertical,
+            bold: false,
+            italic: false,
         }
     }
 
@@ -1258,7 +1250,11 @@ mod tests {
         TextChar {
             text: text.into(),
             left: x,
-            right: x + if vertical { font_size } else { adv_x.abs().max(1.0) },
+            right: x + if vertical {
+                font_size
+            } else {
+                adv_x.abs().max(1.0)
+            },
             top: y,
             bottom: y + if vertical {
                 adv_y.abs().max(font_size)
@@ -1351,15 +1347,7 @@ mod tests {
         let fs = 10.0;
         let glyph_width = 5.0;
         let tj_jump = 7.0;
-        let mut first = ch(
-            "A",
-            0.0,
-            100.0,
-            glyph_width + tj_jump,
-            0.0,
-            fs,
-            false,
-        );
+        let mut first = ch("A", 0.0, 100.0, glyph_width + tj_jump, 0.0, fs, false);
         // bbox は字送り幅まで、advance は TJ 数値による移動も含む
         first.right = glyph_width;
         let p = page(vec![
@@ -1477,7 +1465,11 @@ mod tests {
         assert_eq!(items[0].r#str, "あい");
         assert_eq!(items[0].dir, "ttb");
         // height = 縦前進の累積
-        assert!((items[0].height - 20.0).abs() < 1e-6, "h={}", items[0].height);
+        assert!(
+            (items[0].height - 20.0).abs() < 1e-6,
+            "h={}",
+            items[0].height
+        );
         // width = TRM 横軸長
         assert!((items[0].width - fs).abs() < 1e-6, "w={}", items[0].width);
     }
@@ -1534,14 +1526,7 @@ mod tests {
 
     // --- build_text_lines ---
 
-    fn ch_rot(
-        text: &str,
-        x: f64,
-        y: f64,
-        advance: f64,
-        font_size: f64,
-        rot: i32,
-    ) -> TextChar {
+    fn ch_rot(text: &str, x: f64, y: f64, advance: f64, font_size: f64, rot: i32) -> TextChar {
         let (transform, glyph_advance, left, right, top, bottom) = match rot {
             90 => (
                 [0.0, -font_size, -font_size, 0.0, x, y],
@@ -1705,15 +1690,7 @@ mod tests {
         first.advance[0] += gap;
         let p = page(vec![
             first,
-            ch(
-                "B",
-                glyph_width + gap,
-                100.0,
-                glyph_width,
-                0.0,
-                fs,
-                false,
-            ),
+            ch("B", glyph_width + gap, 100.0, glyph_width, 0.0, fs, false),
         ]);
         let lines = build_text_lines(&p);
         assert_eq!(lines.len(), 1);
@@ -1981,13 +1958,21 @@ mod tests {
             ch("C", adv * 2.0, 110.0, adv, 0.0, fs, false),
         ]);
         let lines = build_text_lines(&p);
-        assert!(lines.len() >= 2, "expected span cut, got {} lines", lines.len());
+        assert!(
+            lines.len() >= 2,
+            "expected span cut, got {} lines",
+            lines.len()
+        );
         let joined: String = lines
             .iter()
             .flat_map(|l| l.words.iter().map(|w| w.text.as_str()))
             .collect();
         assert_eq!(joined, "ABC");
-        assert!(lines.iter().all(|l| l.words.iter().map(|w| w.text.len()).sum::<usize>() < 3));
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.words.iter().map(|w| w.text.len()).sum::<usize>() < 3)
+        );
     }
 
     #[test]
@@ -2078,6 +2063,15 @@ mod tests {
         assert_eq!(lines[0].words.len(), 2);
         assert_eq!(lines[0].words[0].text, "A");
         assert_eq!(lines[0].words[1].text, "B");
+    }
+
+    #[test]
+    fn text_font_serde_default_bold_italic_false() {
+        let json = r#"{"name":"H","ascent":0.8,"descent":-0.2,"vertical":false}"#;
+        let font: TextFont = serde_json::from_str(json).unwrap();
+        assert!(!font.bold);
+        assert!(!font.italic);
+        assert_eq!(font.name, "H");
     }
 
     #[test]

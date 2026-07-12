@@ -25,6 +25,10 @@ const HEADING_L2_FACTOR: f64 = 1.4;
 const HEADING_L3_FACTOR: f64 = 1.2;
 /// 本文代表サイズの丸め単位（pt）
 const BODY_FS_BIN: f64 = 0.1;
+/// リスト字下げ許容の font_size 比
+const LIST_INDENT_FACTOR: f64 = 0.3;
+/// リスト字下げ許容の下限 pt
+const LIST_INDENT_MIN_PT: f64 = 2.0;
 
 /// 文書全体
 #[derive(Debug, Clone, Serialize)]
@@ -78,6 +82,8 @@ pub enum TextBlockKind {
     Paragraph,
     #[serde(rename = "heading")]
     Heading { level: u8 },
+    #[serde(rename = "list")]
+    List { ordered: bool },
 }
 
 /// 本文ブロックの役割（ヘッダ・フッタ検出）
@@ -99,6 +105,13 @@ impl TextBlockRole {
 /// 文書単位でヘッダ・フッタの役割を付ける
 pub fn assign_header_footer(doc: &mut DocDoc) {
     furniture::assign_header_footer(doc);
+}
+
+/// 文書単位でリストを検出する
+pub fn assign_lists(doc: &mut DocDoc) {
+    for page in &mut doc.pages {
+        assign_lists_page(page);
+    }
 }
 
 /// 文書単位で見出しを推定する（§4-5）
@@ -143,7 +156,7 @@ pub fn document_to_markdown(doc: &DocDoc, escape_markdown: bool) -> String {
     let mut parts = Vec::new();
     for page in &doc.pages {
         for block in &page.blocks {
-            if let Some(s) = block_to_markdown(block, escape_markdown) {
+            if let Some(s) = block_to_markdown(block, page, escape_markdown) {
                 parts.push(s);
             }
         }
@@ -152,29 +165,420 @@ pub fn document_to_markdown(doc: &DocDoc, escape_markdown: bool) -> String {
 }
 
 /// 1ブロックを Markdown 断片へ変換する。空表・空白のみ本文は None
-fn block_to_markdown(block: &DocBlock, escape_markdown: bool) -> Option<String> {
+fn block_to_markdown(block: &DocBlock, page: &DocPage, escape_markdown: bool) -> Option<String> {
     match block {
         DocBlock::Text(tb) => {
             if tb.role != TextBlockRole::Body {
                 return None;
             }
-            let text = if escape_markdown {
-                escape_text_block_text(&tb.text)
-            } else {
-                sanitize_md_text(&tb.text)
-            };
-            if text.trim().is_empty() {
-                return None;
-            }
             match &tb.kind {
                 TextBlockKind::Heading { level } => {
+                    let text = format_text_block_body(tb, page, escape_markdown);
+                    if text.trim().is_empty() {
+                        return None;
+                    }
                     Some(format!("{} {}", "#".repeat(*level as usize), text))
                 }
-                TextBlockKind::Paragraph => Some(text),
+                TextBlockKind::Paragraph => {
+                    let text = format_text_block_body(tb, page, escape_markdown);
+                    if text.trim().is_empty() {
+                        return None;
+                    }
+                    Some(text)
+                }
+                TextBlockKind::List { ordered } => {
+                    list_to_markdown(tb, page, *ordered, escape_markdown)
+                }
             }
         }
         DocBlock::Table(table) => table_to_markdown(table),
     }
+}
+
+/// 見出し・段落本文（書体があればインライン強調）
+fn format_text_block_body(tb: &TextBlock, page: &DocPage, escape_markdown: bool) -> String {
+    if join_paragraph_text(&tb.lines) == tb.text {
+        if let Some(styled) =
+            styled_markdown_from_lines(&tb.lines, &page.fonts, &page.chars, escape_markdown)
+        {
+            return styled;
+        }
+    }
+    format_md_body(&tb.text, escape_markdown)
+}
+
+/// 見出し・段落・リスト項目本文のエスケープ適用
+fn format_md_body(text: &str, escape_markdown: bool) -> String {
+    if escape_markdown {
+        escape_text_block_text(text)
+    } else {
+        sanitize_md_text(text)
+    }
+}
+
+/// リストの Markdown 直列化
+fn list_to_markdown(
+    tb: &TextBlock,
+    page: &DocPage,
+    ordered: bool,
+    escape_markdown: bool,
+) -> Option<String> {
+    let mut out_lines = Vec::new();
+    for (num, body_lines) in list_item_body_groups(&tb.lines) {
+        let plain = join_paragraph_text(&body_lines);
+        let body = if let Some(styled) =
+            styled_markdown_from_lines(&body_lines, &page.fonts, &page.chars, escape_markdown)
+        {
+            styled
+        } else {
+            format_md_body(&plain, escape_markdown)
+        };
+        if body.trim().is_empty() {
+            continue;
+        }
+        if ordered {
+            let Some(n) = num else {
+                continue;
+            };
+            out_lines.push(format!("{n}. {body}"));
+        } else {
+            out_lines.push(format!("- {body}"));
+        }
+    }
+    if out_lines.is_empty() {
+        None
+    } else {
+        Some(out_lines.join("\n"))
+    }
+}
+
+/// 書体属性
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MdStyle {
+    bold: bool,
+    italic: bool,
+}
+
+impl MdStyle {
+    fn normal() -> Self {
+        Self {
+            bold: false,
+            italic: false,
+        }
+    }
+
+    fn is_normal(self) -> bool {
+        !self.bold && !self.italic
+    }
+}
+
+/// 行結合途中の本文断片
+enum MdUnit {
+    /// グリフ由来の文字列
+    Text { text: String, style: MdStyle },
+    /// §4-4 の挿入空白など
+    Gap(String),
+}
+
+/// lines から書体付き Markdown 本文を組み立てる
+fn styled_markdown_from_lines(
+    lines: &[TextLine],
+    fonts: &[TextFont],
+    chars: &[TextChar],
+    escape_markdown: bool,
+) -> Option<String> {
+    if !lines_have_char_refs(lines) {
+        return None;
+    }
+    let units = build_md_units(lines, fonts, chars)?;
+    let runs = coalesce_md_units(&units);
+    Some(render_md_runs(&runs, escape_markdown))
+}
+
+/// 装飾に使える文字参照があるか
+fn lines_have_char_refs(lines: &[TextLine]) -> bool {
+    lines
+        .iter()
+        .any(|l| l.words.iter().any(|w| !w.chars.is_empty()))
+}
+
+/// §4-4 と同じ規則で書体付き断片列を構築する
+fn build_md_units(
+    lines: &[TextLine],
+    fonts: &[TextFont],
+    chars: &[TextChar],
+) -> Option<Vec<MdUnit>> {
+    if lines.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut units = line_to_md_units(&lines[0], fonts, chars)?;
+    for i in 1..lines.len() {
+        let prev = &lines[i - 1];
+        let next = &lines[i];
+        let next_units = line_to_md_units(next, fonts, chars)?;
+        let prev_last = prev.words.last().and_then(|w| w.text.chars().last());
+        let next_first = next.words.first().and_then(|w| w.text.chars().next());
+        match (prev_last, next_first) {
+            (Some('\u{00AD}'), _) => {
+                pop_md_unit_char(&mut units, '\u{00AD}');
+                units.extend(next_units);
+            }
+            (Some('-'), Some(nf)) => {
+                let before = prev.words.last().and_then(|w| {
+                    let mut it = w.text.chars().rev();
+                    let _hyphen = it.next();
+                    it.next()
+                });
+                if before.is_some_and(is_latin_letter) && is_latin_letter(nf) && nf.is_lowercase() {
+                    pop_md_unit_char(&mut units, '-');
+                    units.extend(next_units);
+                } else {
+                    units.extend(next_units);
+                }
+            }
+            (Some(pl), Some(nf)) if is_cjk(pl) || is_cjk(nf) => {
+                units.extend(next_units);
+            }
+            (Some(_), Some(_)) => {
+                units.push(MdUnit::Gap(" ".into()));
+                units.extend(next_units);
+            }
+            _ => {
+                let next_plain: String = next_units
+                    .iter()
+                    .map(|u| match u {
+                        MdUnit::Text { text, .. } => text.as_str(),
+                        MdUnit::Gap(g) => g.as_str(),
+                    })
+                    .collect();
+                if !next_plain.is_empty() {
+                    let out_plain: String = units
+                        .iter()
+                        .map(|u| match u {
+                            MdUnit::Text { text, .. } => text.as_str(),
+                            MdUnit::Gap(g) => g.as_str(),
+                        })
+                        .collect();
+                    if !out_plain.is_empty() {
+                        units.push(MdUnit::Gap(" ".into()));
+                    }
+                    units.extend(next_units);
+                }
+            }
+        }
+    }
+    Some(units)
+}
+
+fn line_to_md_units(
+    line: &TextLine,
+    fonts: &[TextFont],
+    chars: &[TextChar],
+) -> Option<Vec<MdUnit>> {
+    let mut units = Vec::new();
+    for (i, word) in line.words.iter().enumerate() {
+        if i > 0 {
+            units.push(MdUnit::Gap(" ".into()));
+        }
+        units.extend(word_to_md_units(word, fonts, chars)?);
+    }
+    Some(units)
+}
+
+fn word_to_md_units(
+    word: &TextWord,
+    fonts: &[TextFont],
+    chars: &[TextChar],
+) -> Option<Vec<MdUnit>> {
+    if word.chars.is_empty() {
+        if word.text.is_empty() {
+            return Some(Vec::new());
+        }
+        // 文字参照が無く本文だけある単語は復元不能
+        return None;
+    }
+    let mut units = Vec::with_capacity(word.chars.len());
+    let mut rebuilt = String::new();
+    for &ci in &word.chars {
+        let Some(ch) = chars.get(ci as usize) else {
+            // 不正な文字インデックス
+            return None;
+        };
+        let style = md_style_of_font(fonts, ch.font);
+        rebuilt.push_str(&ch.text);
+        units.push(MdUnit::Text {
+            text: ch.text.clone(),
+            style,
+        });
+    }
+    if rebuilt != word.text {
+        return None;
+    }
+    Some(units)
+}
+
+fn md_style_of_font(fonts: &[TextFont], font_idx: u32) -> MdStyle {
+    match fonts.get(font_idx as usize) {
+        Some(f) => MdStyle {
+            bold: f.bold,
+            italic: f.italic,
+        },
+        None => MdStyle::normal(),
+    }
+}
+
+/// 末尾の1コードポイントを units から除去する
+fn pop_md_unit_char(units: &mut Vec<MdUnit>, expected: char) {
+    while let Some(unit) = units.last_mut() {
+        match unit {
+            MdUnit::Gap(g) => {
+                if g.is_empty() {
+                    units.pop();
+                    continue;
+                }
+                // ギャップの末尾はハイフン除去対象にしない
+                return;
+            }
+            MdUnit::Text { text, .. } => {
+                if text.ends_with(expected) {
+                    text.pop();
+                    if text.is_empty() {
+                        units.pop();
+                    }
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// 同一書体の断片を結合し、間の挿入空白を区間へ取り込む
+fn coalesce_md_units(units: &[MdUnit]) -> Vec<(String, MdStyle)> {
+    let mut runs: Vec<(String, MdStyle)> = Vec::new();
+    let mut pending_gap = String::new();
+
+    for unit in units {
+        match unit {
+            MdUnit::Gap(g) => pending_gap.push_str(g),
+            MdUnit::Text { text, style } => {
+                if text.is_empty() {
+                    continue;
+                }
+                if let Some((last_text, last_style)) = runs.last_mut() {
+                    if *last_style == *style {
+                        last_text.push_str(&pending_gap);
+                        last_text.push_str(text);
+                        pending_gap.clear();
+                        continue;
+                    }
+                }
+                if !pending_gap.is_empty() {
+                    if let Some((last_text, last_style)) = runs.last_mut() {
+                        if last_style.is_normal() {
+                            last_text.push_str(&pending_gap);
+                        } else {
+                            runs.push((std::mem::take(&mut pending_gap), MdStyle::normal()));
+                        }
+                    } else {
+                        runs.push((std::mem::take(&mut pending_gap), MdStyle::normal()));
+                    }
+                    pending_gap.clear();
+                }
+                if let Some((last_text, last_style)) = runs.last_mut() {
+                    if *last_style == *style {
+                        last_text.push_str(text);
+                        continue;
+                    }
+                }
+                runs.push((text.clone(), *style));
+            }
+        }
+    }
+    if !pending_gap.is_empty() {
+        if let Some((last_text, last_style)) = runs.last_mut() {
+            if last_style.is_normal() {
+                last_text.push_str(&pending_gap);
+            } else {
+                runs.push((pending_gap, MdStyle::normal()));
+            }
+        } else {
+            runs.push((pending_gap, MdStyle::normal()));
+        }
+    }
+    runs
+}
+
+/// 書体区間を Markdown 強調付き文字列へ直列化する
+fn render_md_runs(runs: &[(String, MdStyle)], escape_markdown: bool) -> String {
+    let mut out = String::new();
+    for (text, style) in runs {
+        out.push_str(&render_md_run(text, *style, escape_markdown));
+    }
+    out
+}
+
+fn render_md_run(text: &str, style: MdStyle, escape_markdown: bool) -> String {
+    if style.is_normal() {
+        return format_md_body(text, escape_markdown);
+    }
+    // 区間端の空白は強調の外へ出す
+    let lead = text.chars().take_while(|&c| c == ' ').count();
+    let trail = text
+        .chars()
+        .rev()
+        .take_while(|&c| c == ' ')
+        .count()
+        .min(text.chars().count().saturating_sub(lead));
+    let core: String = text
+        .chars()
+        .skip(lead)
+        .take(text.chars().count() - lead - trail)
+        .collect();
+    let mut out = String::with_capacity(text.len() + 6);
+    for _ in 0..lead {
+        out.push(' ');
+    }
+    if !core.is_empty() {
+        let body = format_md_body(&core, escape_markdown);
+        let marker = if style.bold && style.italic {
+            "***"
+        } else if style.bold {
+            "**"
+        } else {
+            "*"
+        };
+        out.push_str(marker);
+        out.push_str(&body);
+        out.push_str(marker);
+    }
+    for _ in 0..trail {
+        out.push(' ');
+    }
+    out
+}
+
+/// リスト項目の番号とマーカー除去後の本文行
+fn list_item_body_groups(lines: &[TextLine]) -> Vec<(Option<u32>, Vec<TextLine>)> {
+    let mut entries = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if list_marker_kind(&lines[i]).is_none() {
+            i += 1;
+            continue;
+        }
+        let num = match list_marker_kind(&lines[i]) {
+            Some(ListMarkerKind::Ordered { n, .. }) => Some(n),
+            _ => None,
+        };
+        let start = i;
+        i += 1;
+        while i < lines.len() && list_marker_kind(&lines[i]).is_none() {
+            i += 1;
+        }
+        let body_lines = list_item_body_lines(&lines[start..i]);
+        entries.push((num, body_lines));
+    }
+    entries
 }
 
 /// GFM パイプテーブルへ直列化する（§6-3）
@@ -256,13 +660,7 @@ fn escape_text_block_text(text: &str) -> String {
 /// 改行・タブ・C0 制御文字を U+0020 へ置換する（§6-4）
 pub(crate) fn sanitize_md_text(text: &str) -> String {
     text.chars()
-        .map(|c| {
-            if is_md_control_char(c) {
-                ' '
-            } else {
-                c
-            }
-        })
+        .map(|c| if is_md_control_char(c) { ' ' } else { c })
         .collect()
 }
 
@@ -308,6 +706,9 @@ pub fn extract_document_from_bytes(
     let mut doc = DocDoc { pages };
     if options.detect_header_footer {
         assign_header_footer(&mut doc);
+    }
+    if options.detect_lists {
+        assign_lists(&mut doc);
     }
     assign_headings(&mut doc);
     Ok(doc)
@@ -498,10 +899,8 @@ fn build_blocks_with_regions(
 
     for (li, line) in body_lines.into_iter().enumerate() {
         if is_target_body_line(&line) {
-            let word_leaves: Vec<usize> = word_part_ids[li]
-                .iter()
-                .map(|&pid| leaf_of[pid])
-                .collect();
+            let word_leaves: Vec<usize> =
+                word_part_ids[li].iter().map(|&pid| leaf_of[pid]).collect();
             for (leaf, frag) in reconstitute_line_by_leaves(page, line, &word_leaves) {
                 if leaf < leaf_lines.len() {
                     leaf_lines[leaf].push(frag);
@@ -625,9 +1024,7 @@ fn reconstitute_line_by_leaves(
 
     // 元の line.chars 順を保って各葉へ積む
     let mut chars_by_leaf: Vec<Vec<u32>> = vec![Vec::new(); leaf_order.len()];
-    let leaf_slot = |leaf: usize| -> Option<usize> {
-        leaf_order.iter().position(|&l| l == leaf)
-    };
+    let leaf_slot = |leaf: usize| -> Option<usize> { leaf_order.iter().position(|&l| l == leaf) };
     for &cidx in &line.chars {
         let leaf = if let Some(wi) = find_word(cidx) {
             word_leaves[wi]
@@ -692,11 +1089,7 @@ fn collect_valid_cells(tables: &[Table]) -> Vec<BBox> {
 }
 
 /// 表所有グリフを除いた行を返す
-fn filter_table_owned_line(
-    page: &TextPage,
-    line: TextLine,
-    cells: &[BBox],
-) -> Option<TextLine> {
+fn filter_table_owned_line(page: &TextPage, line: TextLine, cells: &[BBox]) -> Option<TextLine> {
     if cells.is_empty() {
         return Some(line);
     }
@@ -868,11 +1261,7 @@ fn build_text_blocks(page: &TextPage, lines: Vec<TextLine>) -> Vec<TextBlock> {
     }
 
     let mut order: Vec<usize> = (0..group_keys.len()).collect();
-    order.sort_by(|&a, &b| {
-        group_min[a]
-            .cmp(&group_min[b])
-            .then_with(|| a.cmp(&b))
-    });
+    order.sort_by(|&a, &b| group_min[a].cmp(&group_min[b]).then_with(|| a.cmp(&b)));
 
     let mut blocks = Vec::new();
     for gi in order {
@@ -981,18 +1370,12 @@ fn join_paragraph_text(lines: &[TextLine]) -> String {
                 out.push_str(&next_str);
             }
             (Some('-'), Some(nf)) => {
-                let before = prev
-                    .words
-                    .last()
-                    .and_then(|w| {
-                        let mut it = w.text.chars().rev();
-                        let _hyphen = it.next();
-                        it.next()
-                    });
-                if before.is_some_and(is_latin_letter)
-                    && is_latin_letter(nf)
-                    && nf.is_lowercase()
-                {
+                let before = prev.words.last().and_then(|w| {
+                    let mut it = w.text.chars().rev();
+                    let _hyphen = it.next();
+                    it.next()
+                });
+                if before.is_some_and(is_latin_letter) && is_latin_letter(nf) && nf.is_lowercase() {
                     if out.ends_with('-') {
                         out.pop();
                     }
@@ -1031,6 +1414,377 @@ fn join_line_words(line: &TextLine) -> String {
         s.push_str(&w.text);
     }
     s
+}
+
+/// ページ内のリスト検出
+fn assign_lists_page(page: &mut DocPage) {
+    let blocks = std::mem::take(&mut page.blocks);
+    let mut out = Vec::with_capacity(blocks.len());
+    let mut iter = blocks.into_iter().peekable();
+    while let Some(block) = iter.next() {
+        match block {
+            DocBlock::Text(tb)
+                if tb.role == TextBlockRole::Body && tb.kind == TextBlockKind::Paragraph =>
+            {
+                let mut lines = tb.lines;
+                while let Some(DocBlock::Text(next)) = iter.peek() {
+                    if next.role != TextBlockRole::Body || next.kind != TextBlockKind::Paragraph {
+                        break;
+                    }
+                    if let Some(DocBlock::Text(next_tb)) = iter.next() {
+                        lines.extend(next_tb.lines);
+                    }
+                }
+                out.extend(segment_body_lines_for_lists(&page.chars, lines));
+            }
+            other => out.push(other),
+        }
+    }
+    page.blocks = out;
+}
+
+/// 番号マーカーの記号型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderedMarkerStyle {
+    /// `1.`
+    Dot,
+    /// `1)`
+    Paren,
+    /// `(1)`
+    LParen,
+}
+
+/// リストマーカー種別
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListMarkerKind {
+    Bullet,
+    Ordered { style: OrderedMarkerStyle, n: u32 },
+}
+
+/// 本文行のリスト分割
+fn segment_body_lines_for_lists(chars: &[TextChar], lines: Vec<TextLine>) -> Vec<DocBlock> {
+    let n = lines.len();
+    let mut i = 0;
+    let mut out = Vec::new();
+    let mut para_buf: Vec<TextLine> = Vec::new();
+
+    while i < n {
+        let Some(start_kind) = list_marker_kind(&lines[i]) else {
+            para_buf.push(lines[i].clone());
+            i += 1;
+            continue;
+        };
+
+        let run_left = lines[i].left;
+        let ordered = matches!(start_kind, ListMarkerKind::Ordered { .. });
+        let mut last_marker: Option<ListMarkerKind> = None;
+        let mut items: Vec<Vec<TextLine>> = Vec::new();
+        let mut j = i;
+        while j < n {
+            let Some(kind) = list_marker_kind(&lines[j]) else {
+                break;
+            };
+            if !marker_continues_run(last_marker, kind) {
+                break;
+            }
+            if !list_lefts_aligned(run_left, lines[j].left, chars, &lines[i], &lines[j]) {
+                break;
+            }
+            last_marker = Some(kind);
+            let marker_left = lines[j].left;
+            let marker_fs = line_rep_font_size(chars, &lines[j]);
+            let mut item = vec![lines[j].clone()];
+            j += 1;
+            while j < n && list_marker_kind(&lines[j]).is_none() {
+                let prev = item.last().unwrap();
+                if is_hang_continuation(chars, prev, &lines[j], marker_left, marker_fs) {
+                    item.push(lines[j].clone());
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            items.push(item);
+        }
+
+        if items.len() >= 2 {
+            if !para_buf.is_empty() {
+                out.push(DocBlock::Text(make_text_block(std::mem::take(
+                    &mut para_buf,
+                ))));
+            }
+            out.push(DocBlock::Text(make_list_block(items, ordered)));
+            i = j;
+        } else {
+            for item in items {
+                para_buf.extend(item);
+            }
+            if j == i {
+                para_buf.push(lines[i].clone());
+                i += 1;
+            } else {
+                i = j;
+            }
+        }
+    }
+
+    if !para_buf.is_empty() {
+        out.push(DocBlock::Text(make_text_block(para_buf)));
+    }
+    out
+}
+
+/// リスト区間へのマーカー追加可否
+fn marker_continues_run(last: Option<ListMarkerKind>, kind: ListMarkerKind) -> bool {
+    match (last, kind) {
+        (None, _) => true,
+        (Some(ListMarkerKind::Bullet), ListMarkerKind::Bullet) => true,
+        (
+            Some(ListMarkerKind::Ordered { style: s0, n: n0 }),
+            ListMarkerKind::Ordered { style: s1, n: n1 },
+        ) => s0 == s1 && n1 == n0.saturating_add(1),
+        _ => false,
+    }
+}
+
+/// 行頭リストマーカーの判定
+fn list_marker_kind(line: &TextLine) -> Option<ListMarkerKind> {
+    if line.dir == "ttb" {
+        return None;
+    }
+    let first = line.words.first()?;
+    if line.words.len() < 2 {
+        return None;
+    }
+    if is_bullet_marker_word(&first.text) {
+        return Some(ListMarkerKind::Bullet);
+    }
+    if let Some((style, n)) = parse_ordered_marker_word(&first.text) {
+        return Some(ListMarkerKind::Ordered { style, n });
+    }
+    None
+}
+
+fn is_bullet_marker_word(text: &str) -> bool {
+    if text == "-" || text == "*" {
+        return true;
+    }
+    let mut chars = text.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if is_bullet_glyph(c))
+}
+
+/// 番号マーカー単語の解析
+fn parse_ordered_marker_word(text: &str) -> Option<(OrderedMarkerStyle, u32)> {
+    let b = text.as_bytes();
+    if b.len() < 2 {
+        return None;
+    }
+    // (N)
+    if b[0] == b'(' && b[b.len() - 1] == b')' && b.len() >= 3 {
+        let digits = &b[1..b.len() - 1];
+        let n = parse_marker_digits(digits)?;
+        return Some((OrderedMarkerStyle::LParen, n));
+    }
+    // N.
+    if b[b.len() - 1] == b'.' {
+        let digits = &b[..b.len() - 1];
+        let n = parse_marker_digits(digits)?;
+        return Some((OrderedMarkerStyle::Dot, n));
+    }
+    // N)
+    if b[b.len() - 1] == b')' {
+        let digits = &b[..b.len() - 1];
+        let n = parse_marker_digits(digits)?;
+        return Some((OrderedMarkerStyle::Paren, n));
+    }
+    None
+}
+
+fn parse_marker_digits(digits: &[u8]) -> Option<u32> {
+    if digits.is_empty() || digits.len() > 3 || !digits.iter().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    std::str::from_utf8(digits).ok()?.parse().ok()
+}
+
+fn is_list_marker_word(text: &str) -> bool {
+    is_bullet_marker_word(text) || parse_ordered_marker_word(text).is_some()
+}
+
+/// 箇条記号か
+fn is_bullet_glyph(c: char) -> bool {
+    matches!(
+        c,
+        '\u{2022}' | '\u{25E6}' | '\u{25AA}' | '\u{25CF}' | '\u{25CB}' | '\u{25A0}' | '\u{25C6}'
+    )
+}
+
+/// マーカー左端の字下げ一致
+fn list_lefts_aligned(
+    left_a: f64,
+    left_b: f64,
+    chars: &[TextChar],
+    line_a: &TextLine,
+    line_b: &TextLine,
+) -> bool {
+    let fs_a = line_rep_font_size(chars, line_a).unwrap_or(0.0);
+    let fs_b = line_rep_font_size(chars, line_b).unwrap_or(0.0);
+    let tol = list_indent_tol(fs_a.max(fs_b));
+    (left_a - left_b).abs() <= tol
+}
+
+/// リスト字下げの許容幅
+fn list_indent_tol(font_size: f64) -> f64 {
+    let scaled = if font_size.is_finite() && font_size > 0.0 {
+        font_size * LIST_INDENT_FACTOR
+    } else {
+        0.0
+    };
+    LIST_INDENT_MIN_PT.max(scaled)
+}
+
+/// ぶら下げ継続行か
+fn is_hang_continuation(
+    chars: &[TextChar],
+    prev: &TextLine,
+    next: &TextLine,
+    marker_left: f64,
+    marker_fs: Option<f64>,
+) -> bool {
+    if next.dir == "ttb" || list_marker_kind(next).is_some() {
+        return false;
+    }
+    let Some(mfs) = marker_fs else {
+        return false;
+    };
+    let Some(nfs) = line_rep_font_size(chars, next) else {
+        return false;
+    };
+    if !(mfs.is_finite() && mfs > 0.0 && nfs.is_finite() && nfs > 0.0) {
+        return false;
+    }
+    let hang = list_indent_tol(mfs);
+    if next.left + f64::EPSILON < marker_left + hang {
+        return false;
+    }
+    let gap = (line_rep_baseline_from_chars(chars, next)
+        - line_rep_baseline_from_chars(chars, prev))
+    .abs();
+    gap <= mfs.max(nfs) * PARA_LEADING_FACTOR
+}
+
+/// 項目行群から List ブロックを組み立てる
+fn make_list_block(items: Vec<Vec<TextLine>>, ordered: bool) -> TextBlock {
+    let mut all_lines: Vec<TextLine> = Vec::new();
+    let mut item_texts: Vec<String> = Vec::new();
+    for item in items {
+        let body_lines = list_item_body_lines(&item);
+        let body = join_paragraph_text(&body_lines);
+        if !body.trim().is_empty() {
+            item_texts.push(body);
+        }
+        all_lines.extend(item);
+    }
+    let dir = all_lines
+        .first()
+        .map(|l| l.dir.clone())
+        .unwrap_or_else(|| "ltr".into());
+    let rot = all_lines.first().map(|l| l.rot).unwrap_or(0);
+    let mut left = f64::INFINITY;
+    let mut right = f64::NEG_INFINITY;
+    let mut top = f64::INFINITY;
+    let mut bottom = f64::NEG_INFINITY;
+    for line in &all_lines {
+        left = left.min(line.left);
+        right = right.max(line.right);
+        top = top.min(line.top);
+        bottom = bottom.max(line.bottom);
+    }
+    TextBlock {
+        kind: TextBlockKind::List { ordered },
+        role: TextBlockRole::Body,
+        text: item_texts.join("\n"),
+        left,
+        right,
+        top,
+        bottom,
+        dir,
+        rot,
+        lines: all_lines,
+    }
+}
+
+/// マーカーを除いた項目本文行
+fn list_item_body_lines(item: &[TextLine]) -> Vec<TextLine> {
+    if item.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(item.len());
+    let mut first = item[0].clone();
+    if first
+        .words
+        .first()
+        .is_some_and(|w| is_list_marker_word(&w.text))
+    {
+        first.words.remove(0);
+        rebuild_line_from_words(&mut first);
+    }
+    out.push(first);
+    out.extend(item.iter().skip(1).cloned());
+    out
+}
+
+/// 単語列に合わせた行の chars と bbox
+fn rebuild_line_from_words(line: &mut TextLine) {
+    line.chars = line
+        .words
+        .iter()
+        .flat_map(|w| w.chars.iter().copied())
+        .collect();
+    if line.words.is_empty() {
+        line.right = line.left;
+        return;
+    }
+    line.left = line
+        .words
+        .iter()
+        .map(|w| w.left)
+        .fold(f64::INFINITY, f64::min);
+    line.right = line
+        .words
+        .iter()
+        .map(|w| w.right)
+        .fold(f64::NEG_INFINITY, f64::max);
+    line.top = line
+        .words
+        .iter()
+        .map(|w| w.top)
+        .fold(f64::INFINITY, f64::min);
+    line.bottom = line
+        .words
+        .iter()
+        .map(|w| w.bottom)
+        .fold(f64::NEG_INFINITY, f64::max);
+}
+
+/// chars 参照での行代表ベースライン
+fn line_rep_baseline_from_chars(chars: &[TextChar], line: &TextLine) -> f64 {
+    let vertical = line.dir == "ttb";
+    let mut vals = Vec::new();
+    for &idx in &line.chars {
+        let Some(ch) = chars.get(idx as usize) else {
+            continue;
+        };
+        if is_whitespace_str(&ch.text) {
+            continue;
+        }
+        let (px, py) = derotate_xy(ch.transform[4], ch.transform[5], line.rot);
+        let v = if vertical { px } else { py };
+        if v.is_finite() {
+            vals.push(v);
+        }
+    }
+    median_f64(&mut vals).unwrap_or(line.top)
 }
 
 /// 行のストリーム順キー
@@ -1095,11 +1849,7 @@ fn line_progress_interval(page: &TextPage, line: &TextLine) -> (f64, f64) {
             max_p = max_p.max(p);
         }
     }
-    if any {
-        (min_p, max_p)
-    } else {
-        (0.0, 0.0)
-    }
+    if any { (min_p, max_p) } else { (0.0, 0.0) }
 }
 
 /// 進行軸区間の共有長が正か
@@ -1207,17 +1957,12 @@ mod tests {
             ascent: 0.8,
             descent: -0.2,
             vertical,
+            bold: false,
+            italic: false,
         }
     }
 
-    fn ch(
-        text: &str,
-        x: f64,
-        y: f64,
-        adv_x: f64,
-        adv_y: f64,
-        font_size: f64,
-    ) -> TextChar {
+    fn ch(text: &str, x: f64, y: f64, adv_x: f64, adv_y: f64, font_size: f64) -> TextChar {
         TextChar {
             text: text.into(),
             left: x,
@@ -1636,7 +2381,7 @@ mod tests {
         let fs = 10.0;
         let adv = 5.0;
         let p = page(vec![
-            ch("T", 0.0, 10.0, adv, 0.0, fs), // top para
+            ch("T", 0.0, 10.0, adv, 0.0, fs),  // top para
             ch("B", 0.0, 200.0, adv, 0.0, fs), // bottom para
         ]);
         let t = table_one(
@@ -1807,12 +2552,383 @@ mod tests {
         assert!(json.contains(r#""level":2"#));
     }
 
+    #[test]
+    fn json_list_shape_for_type() {
+        let tb = TextBlock {
+            kind: TextBlockKind::List { ordered: false },
+            role: TextBlockRole::Body,
+            text: "a\nb".into(),
+            left: 0.0,
+            right: 10.0,
+            top: 0.0,
+            bottom: 10.0,
+            dir: "ltr".into(),
+            rot: 0,
+            lines: vec![],
+        };
+        let json = serde_json::to_string(&DocBlock::Text(tb)).unwrap();
+        assert!(json.contains(r#""kind":"list""#));
+        assert!(json.contains(r#""ordered":false"#));
+    }
+
+    /// リスト検出テスト用の行組み立て
+    fn push_list_line(
+        chars: &mut Vec<TextChar>,
+        words: &[(&str, f64)],
+        top: f64,
+        fs: f64,
+    ) -> TextLine {
+        let bottom = top + fs;
+        let mut line_words = Vec::new();
+        let mut line_chars = Vec::new();
+        for &(text, left) in words {
+            let mut w_chars = Vec::new();
+            let mut x = left;
+            let adv = fs * 0.5;
+            for c in text.chars() {
+                let s = c.to_string();
+                let idx = chars.len() as u32;
+                chars.push(TextChar {
+                    text: s,
+                    left: x,
+                    right: x + adv,
+                    top,
+                    bottom,
+                    transform: [fs, 0.0, 0.0, -fs, x, top],
+                    advance: [adv, 0.0],
+                    glyph_width: None,
+                    font: 0,
+                    font_size: fs,
+                    rot: 0,
+                    upright: true,
+                    synthetic: false,
+                });
+                w_chars.push(idx);
+                line_chars.push(idx);
+                x += adv;
+            }
+            let right = if w_chars.is_empty() {
+                left
+            } else {
+                chars[*w_chars.last().unwrap() as usize].right
+            };
+            line_words.push(TextWord {
+                text: text.into(),
+                left,
+                right,
+                top,
+                bottom,
+                chars: w_chars,
+            });
+        }
+        let left = line_words
+            .iter()
+            .map(|w| w.left)
+            .fold(f64::INFINITY, f64::min);
+        let right = line_words
+            .iter()
+            .map(|w| w.right)
+            .fold(f64::NEG_INFINITY, f64::max);
+        TextLine {
+            left,
+            right,
+            top,
+            bottom,
+            dir: "ltr".into(),
+            rot: 0,
+            words: line_words,
+            chars: line_chars,
+        }
+    }
+
+    fn para_from_lines(lines: Vec<TextLine>) -> DocBlock {
+        DocBlock::Text(make_text_block(lines))
+    }
+
+    fn doc_from_para_lines(chars: Vec<TextChar>, lines: Vec<TextLine>) -> DocDoc {
+        DocDoc {
+            pages: vec![DocPage {
+                page_number: 1,
+                width: 600.0,
+                height: 800.0,
+                fonts: vec![],
+                chars,
+                blocks: vec![para_from_lines(lines)],
+            }],
+        }
+    }
+
+    #[test]
+    fn list_two_bullet_items_become_list() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(
+                &mut chars,
+                &[("\u{2022}", 50.0), ("Alpha", 60.0)],
+                100.0,
+                fs,
+            ),
+            push_list_line(&mut chars, &[("\u{2022}", 50.0), ("Beta", 60.0)], 115.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert_eq!(tb.len(), 1);
+        assert_eq!(tb[0].kind, TextBlockKind::List { ordered: false });
+        assert_eq!(tb[0].text, "Alpha\nBeta");
+        assert_eq!(document_to_markdown(&doc, true), "- Alpha\n- Beta");
+    }
+
+    #[test]
+    fn list_single_bullet_stays_paragraph() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![push_list_line(
+            &mut chars,
+            &[("\u{2022}", 50.0), ("Only", 60.0)],
+            100.0,
+            fs,
+        )];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert_eq!(tb.len(), 1);
+        assert_eq!(tb[0].kind, TextBlockKind::Paragraph);
+        assert!(tb[0].text.contains("Only"));
+        assert_eq!(document_to_markdown(&doc, true), "• Only");
+    }
+
+    #[test]
+    fn list_hanging_continuation_joins_item() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(
+                &mut chars,
+                &[("\u{2022}", 50.0), ("First", 60.0)],
+                100.0,
+                fs,
+            ),
+            push_list_line(&mut chars, &[("line", 58.0)], 112.0, fs),
+            push_list_line(
+                &mut chars,
+                &[("\u{2022}", 50.0), ("Second", 60.0)],
+                124.0,
+                fs,
+            ),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert_eq!(tb.len(), 1);
+        assert_eq!(tb[0].kind, TextBlockKind::List { ordered: false });
+        assert_eq!(tb[0].text, "First line\nSecond");
+        assert_eq!(document_to_markdown(&doc, true), "- First line\n- Second");
+    }
+
+    #[test]
+    fn list_different_indent_not_merged() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(&mut chars, &[("\u{2022}", 50.0), ("A", 60.0)], 100.0, fs),
+            push_list_line(&mut chars, &[("\u{2022}", 80.0), ("B", 90.0)], 115.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert!(tb.iter().all(|t| t.kind == TextBlockKind::Paragraph));
+    }
+
+    #[test]
+    fn list_ordered_number_detected() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(&mut chars, &[("1.", 50.0), ("One", 70.0)], 100.0, fs),
+            push_list_line(&mut chars, &[("2.", 50.0), ("Two", 70.0)], 115.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert_eq!(tb[0].kind, TextBlockKind::List { ordered: true });
+        assert_eq!(tb[0].text, "One\nTwo");
+        assert_eq!(document_to_markdown(&doc, true), "1. One\n2. Two");
+    }
+
+    #[test]
+    fn list_ordered_section_number_not_marker() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(&mut chars, &[("1.1", 50.0), ("Sec", 80.0)], 100.0, fs),
+            push_list_line(&mut chars, &[("1.2", 50.0), ("Sub", 80.0)], 115.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert!(tb.iter().all(|t| t.kind == TextBlockKind::Paragraph));
+    }
+
+    #[test]
+    fn list_ordered_non_consecutive_not_list() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(&mut chars, &[("1.", 50.0), ("A", 70.0)], 100.0, fs),
+            push_list_line(&mut chars, &[("3.", 50.0), ("C", 70.0)], 115.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert!(tb.iter().all(|t| t.kind == TextBlockKind::Paragraph));
+    }
+
+    #[test]
+    fn list_ordered_repeat_then_consecutive() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(&mut chars, &[("1.", 50.0), ("A", 70.0)], 100.0, fs),
+            push_list_line(&mut chars, &[("1.", 50.0), ("B", 70.0)], 115.0, fs),
+            push_list_line(&mut chars, &[("2.", 50.0), ("C", 70.0)], 130.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert!(
+            tb.iter()
+                .any(|t| t.kind == TextBlockKind::List { ordered: true })
+        );
+        let list = tb
+            .iter()
+            .find(|t| t.kind == TextBlockKind::List { ordered: true })
+            .unwrap();
+        assert_eq!(list.text, "B\nC");
+    }
+
+    #[test]
+    fn list_paren_number_detected() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(&mut chars, &[("1)", 50.0), ("One", 70.0)], 100.0, fs),
+            push_list_line(&mut chars, &[("2)", 50.0), ("Two", 70.0)], 115.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert_eq!(tb[0].kind, TextBlockKind::List { ordered: true });
+        assert_eq!(tb[0].text, "One\nTwo");
+        assert_eq!(document_to_markdown(&doc, true), "1. One\n2. Two");
+    }
+
+    #[test]
+    fn list_lparen_number_detected() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(&mut chars, &[("(1)", 50.0), ("One", 70.0)], 100.0, fs),
+            push_list_line(&mut chars, &[("(2)", 50.0), ("Two", 70.0)], 115.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert_eq!(tb[0].kind, TextBlockKind::List { ordered: true });
+        assert_eq!(document_to_markdown(&doc, true), "1. One\n2. Two");
+    }
+
+    #[test]
+    fn list_ordered_mixed_style_not_list() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(&mut chars, &[("1.", 50.0), ("One", 70.0)], 100.0, fs),
+            push_list_line(&mut chars, &[("(2)", 50.0), ("Two", 70.0)], 115.0, fs),
+            push_list_line(&mut chars, &[("2)", 50.0), ("Three", 70.0)], 130.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert!(tb.iter().all(|t| t.kind == TextBlockKind::Paragraph));
+    }
+
+    #[test]
+    fn list_ascii_dash_two_items() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(&mut chars, &[("-", 40.0), ("red", 50.0)], 100.0, fs),
+            push_list_line(&mut chars, &[("-", 40.0), ("blue", 50.0)], 115.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert_eq!(tb[0].kind, TextBlockKind::List { ordered: false });
+        assert_eq!(document_to_markdown(&doc, true), "- red\n- blue");
+    }
+
+    #[test]
+    fn list_item_body_escape_leading_hash() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(&mut chars, &[("\u{2022}", 50.0), ("#tag", 60.0)], 100.0, fs),
+            push_list_line(&mut chars, &[("\u{2022}", 50.0), ("ok", 60.0)], 115.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        assert_eq!(document_to_markdown(&doc, true), "- \\#tag\n- ok");
+    }
+
+    #[test]
+    fn list_star_footnote_runs_not_list_when_glued() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(&mut chars, &[("*****", 50.0), ("Note", 80.0)], 100.0, fs),
+            push_list_line(&mut chars, &[("*****", 50.0), ("More", 80.0)], 115.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert!(tb.iter().all(|t| t.kind == TextBlockKind::Paragraph));
+    }
+
+    #[test]
+    fn list_before_heading_prevents_list_as_heading() {
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let lines = vec![
+            push_list_line(
+                &mut chars,
+                &[("\u{2022}", 50.0), ("BigA", 60.0)],
+                40.0,
+                20.0,
+            ),
+            push_list_line(
+                &mut chars,
+                &[("\u{2022}", 50.0), ("BigB", 60.0)],
+                65.0,
+                20.0,
+            ),
+            push_list_line(&mut chars, &[("body", 50.0)], 200.0, fs),
+            push_list_line(&mut chars, &[("text", 50.0)], 215.0, fs),
+            push_list_line(&mut chars, &[("here", 50.0)], 230.0, fs),
+            push_list_line(&mut chars, &[("more", 50.0)], 245.0, fs),
+            push_list_line(&mut chars, &[("lines", 50.0)], 260.0, fs),
+        ];
+        let mut doc = doc_from_para_lines(chars, lines);
+        assign_lists(&mut doc);
+        assign_headings(&mut doc);
+        let kinds = text_kinds(&doc);
+        let list = kinds.iter().find(|(t, _)| t.contains("BigA")).unwrap();
+        assert_eq!(list.1, TextBlockKind::List { ordered: false });
+    }
+
     /// 本文と候補見出しから DocDoc を組み立てる
-    fn doc_from_body_and_titles(
-        body_fs: f64,
-        body_text: &str,
-        titles: &[(f64, &str)],
-    ) -> DocDoc {
+    fn doc_from_body_and_titles(body_fs: f64, body_text: &str, titles: &[(f64, &str)]) -> DocDoc {
         let mut chars = Vec::new();
         // 本文を複数グリフで最頻値を確保
         let mut y = 200.0;
@@ -2099,9 +3215,18 @@ mod tests {
             n_rows: 3,
             n_cols: 2,
             data: vec![
-                vec![cell("H1", 0.0, 0.0, 10.0, 10.0), cell("H2", 10.0, 0.0, 20.0, 10.0)],
-                vec![cell("A", 0.0, 10.0, 10.0, 20.0), cell("B", 10.0, 10.0, 20.0, 20.0)],
-                vec![cell("C", 0.0, 20.0, 10.0, 30.0), cell("D", 10.0, 20.0, 20.0, 30.0)],
+                vec![
+                    cell("H1", 0.0, 0.0, 10.0, 10.0),
+                    cell("H2", 10.0, 0.0, 20.0, 10.0),
+                ],
+                vec![
+                    cell("A", 0.0, 10.0, 10.0, 20.0),
+                    cell("B", 10.0, 10.0, 20.0, 20.0),
+                ],
+                vec![
+                    cell("C", 0.0, 20.0, 10.0, 30.0),
+                    cell("D", 10.0, 20.0, 20.0, 30.0),
+                ],
             ],
         };
         let doc = doc_with_blocks(vec![DocBlock::Table(t)]);
@@ -2149,8 +3274,14 @@ mod tests {
             n_rows: 2,
             n_cols: 2,
             data: vec![
-                vec![cell("H", 0.0, 0.0, 10.0, 10.0), cell("", 10.0, 0.0, 20.0, 10.0)],
-                vec![cell("", 0.0, 10.0, 10.0, 20.0), cell("V", 10.0, 10.0, 20.0, 20.0)],
+                vec![
+                    cell("H", 0.0, 0.0, 10.0, 10.0),
+                    cell("", 10.0, 0.0, 20.0, 10.0),
+                ],
+                vec![
+                    cell("", 0.0, 10.0, 10.0, 20.0),
+                    cell("V", 10.0, 10.0, 20.0, 20.0),
+                ],
             ],
         };
         let doc = doc_with_blocks(vec![DocBlock::Table(t)]);
@@ -2206,10 +3337,7 @@ mod tests {
             data: vec![vec![cell(r"a\b|c", 0.0, 0.0, 10.0, 10.0)]],
         };
         let doc = doc_with_blocks(vec![DocBlock::Table(t)]);
-        assert_eq!(
-            document_to_markdown(&doc, true),
-            "| a\\\\b\\|c |\n| --- |"
-        );
+        assert_eq!(document_to_markdown(&doc, true), "| a\\\\b\\|c |\n| --- |");
     }
 
     #[test]
@@ -2488,10 +3616,12 @@ mod tests {
         let right0 = &tb[1].lines[0];
         assert_eq!(right0.words.len(), 1);
         assert_eq!(right0.words[0].text, "F");
-        assert!(right0
-            .chars
-            .iter()
-            .all(|&i| !is_whitespace_str(&p.chars[i as usize].text)));
+        assert!(
+            right0
+                .chars
+                .iter()
+                .all(|&i| !is_whitespace_str(&p.chars[i as usize].text))
+        );
         assert_eq!(right0.chars, vec![0]);
         assert!((right0.left - 100.0).abs() < 1e-9);
     }
@@ -2775,6 +3905,15 @@ mod tests {
     }
 
     #[test]
+    fn extract_options_detect_lists_default_true() {
+        assert!(ExtractOptions::default().detect_lists);
+        let parsed: ExtractOptions = serde_json::from_str("{}").unwrap();
+        assert!(parsed.detect_lists);
+        let off: ExtractOptions = serde_json::from_str(r#"{"detect_lists":false}"#).unwrap();
+        assert!(!off.detect_lists);
+    }
+
+    #[test]
     fn furniture_band_boundary_exactly_one_sixth() {
         // height=600 → 1/6=100, 5/6=500。bottom ちょうど 100 は header 候補
         let h = 600.0;
@@ -3049,7 +4188,12 @@ mod tests {
                 DocBlock::Text(t) if t.text != "body" => Some(t.role),
                 _ => None,
             });
-            assert_eq!(role, Some(TextBlockRole::Footer), "page {}", page.page_number);
+            assert_eq!(
+                role,
+                Some(TextBlockRole::Footer),
+                "page {}",
+                page.page_number
+            );
         }
     }
 
@@ -3215,4 +4359,354 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "body\n\nbody");
     }
 
+    fn font_style(name: &str, bold: bool, italic: bool) -> TextFont {
+        TextFont {
+            name: name.into(),
+            ascent: 0.8,
+            descent: -0.2,
+            vertical: false,
+            bold,
+            italic,
+        }
+    }
+
+    /// 文字を追加しインデックスを返す
+    fn push_styled_ch(chars: &mut Vec<TextChar>, text: &str, x: f64, y: f64, font_idx: u32) -> u32 {
+        let idx = chars.len() as u32;
+        let adv = (text.chars().count() as f64 * 5.0).max(1.0);
+        chars.push(TextChar {
+            text: text.into(),
+            left: x,
+            right: x + adv,
+            top: y,
+            bottom: y + 10.0,
+            transform: [10.0, 0.0, 0.0, -10.0, x, y],
+            advance: [adv, 0.0],
+            glyph_width: None,
+            font: font_idx,
+            font_size: 10.0,
+            rot: 0,
+            upright: true,
+            synthetic: false,
+        });
+        idx
+    }
+
+    fn word_from_indices(chars: &[TextChar], indices: &[u32], left: f64, top: f64) -> TextWord {
+        let text: String = indices
+            .iter()
+            .filter_map(|&i| chars.get(i as usize).map(|c| c.text.as_str()))
+            .collect();
+        let right = indices
+            .last()
+            .and_then(|&i| chars.get(i as usize).map(|c| c.right))
+            .unwrap_or(left);
+        TextWord {
+            text,
+            left,
+            right,
+            top,
+            bottom: top + 10.0,
+            chars: indices.to_vec(),
+        }
+    }
+
+    fn line_from_words(words: Vec<TextWord>) -> TextLine {
+        let left = words.iter().map(|w| w.left).fold(f64::INFINITY, f64::min);
+        let right = words
+            .iter()
+            .map(|w| w.right)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let top = words.first().map(|w| w.top).unwrap_or(0.0);
+        let bottom = top + 10.0;
+        let line_chars: Vec<u32> = words.iter().flat_map(|w| w.chars.iter().copied()).collect();
+        TextLine {
+            left,
+            right,
+            top,
+            bottom,
+            dir: "ltr".into(),
+            rot: 0,
+            words,
+            chars: line_chars,
+        }
+    }
+
+    fn doc_styled(
+        fonts: Vec<TextFont>,
+        chars: Vec<TextChar>,
+        kind: TextBlockKind,
+        lines: Vec<TextLine>,
+    ) -> DocDoc {
+        let text = match &kind {
+            TextBlockKind::List { .. } => {
+                // リストは assign 後の text 相当を手で組まない。lines から項目本文を結合
+                let mut entries = Vec::new();
+                let mut i = 0;
+                while i < lines.len() {
+                    if list_marker_kind(&lines[i]).is_none() {
+                        i += 1;
+                        continue;
+                    }
+                    let start = i;
+                    i += 1;
+                    while i < lines.len() && list_marker_kind(&lines[i]).is_none() {
+                        i += 1;
+                    }
+                    let body = join_paragraph_text(&list_item_body_lines(&lines[start..i]));
+                    if !body.trim().is_empty() {
+                        entries.push(body);
+                    }
+                }
+                entries.join("\n")
+            }
+            _ => join_paragraph_text(&lines),
+        };
+        let left = lines.iter().map(|l| l.left).fold(f64::INFINITY, f64::min);
+        let right = lines
+            .iter()
+            .map(|l| l.right)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let top = lines.iter().map(|l| l.top).fold(f64::INFINITY, f64::min);
+        let bottom = lines
+            .iter()
+            .map(|l| l.bottom)
+            .fold(f64::NEG_INFINITY, f64::max);
+        DocDoc {
+            pages: vec![DocPage {
+                page_number: 1,
+                width: 600.0,
+                height: 800.0,
+                fonts,
+                chars,
+                blocks: vec![DocBlock::Text(TextBlock {
+                    kind,
+                    role: TextBlockRole::Body,
+                    text,
+                    left,
+                    right,
+                    top,
+                    bottom,
+                    dir: "ltr".into(),
+                    rot: 0,
+                    lines,
+                })],
+            }],
+        }
+    }
+
+    #[test]
+    fn markdown_emphasis_four_styles() {
+        let fonts = vec![
+            font_style("R", false, false),
+            font_style("B", true, false),
+            font_style("I", false, true),
+            font_style("BI", true, true),
+        ];
+        let mut chars = Vec::new();
+        let i0 = push_styled_ch(&mut chars, "plain", 0.0, 0.0, 0);
+        let i1 = push_styled_ch(&mut chars, "bold", 40.0, 0.0, 1);
+        let i2 = push_styled_ch(&mut chars, "ital", 80.0, 0.0, 2);
+        let i3 = push_styled_ch(&mut chars, "both", 120.0, 0.0, 3);
+        let line = line_from_words(vec![
+            word_from_indices(&chars, &[i0], 0.0, 0.0),
+            word_from_indices(&chars, &[i1], 40.0, 0.0),
+            word_from_indices(&chars, &[i2], 80.0, 0.0),
+            word_from_indices(&chars, &[i3], 120.0, 0.0),
+        ]);
+        let doc = doc_styled(fonts, chars, TextBlockKind::Paragraph, vec![line]);
+        assert_eq!(
+            document_to_markdown(&doc, true),
+            "plain **bold** *ital* ***both***"
+        );
+    }
+
+    #[test]
+    fn markdown_emphasis_mid_word_switch() {
+        let fonts = vec![font_style("R", false, false), font_style("B", true, false)];
+        let mut chars = Vec::new();
+        let a = push_styled_ch(&mut chars, "He", 0.0, 0.0, 1);
+        let b = push_styled_ch(&mut chars, "llo", 10.0, 0.0, 0);
+        let line = line_from_words(vec![word_from_indices(&chars, &[a, b], 0.0, 0.0)]);
+        let doc = doc_styled(fonts, chars, TextBlockKind::Paragraph, vec![line]);
+        assert_eq!(document_to_markdown(&doc, true), "**He**llo");
+    }
+
+    #[test]
+    fn markdown_emphasis_merges_same_style_words() {
+        let fonts = vec![font_style("B", true, false)];
+        let mut chars = Vec::new();
+        let a = push_styled_ch(&mut chars, "foo", 0.0, 0.0, 0);
+        let b = push_styled_ch(&mut chars, "bar", 30.0, 0.0, 0);
+        let line = line_from_words(vec![
+            word_from_indices(&chars, &[a], 0.0, 0.0),
+            word_from_indices(&chars, &[b], 30.0, 0.0),
+        ]);
+        let doc = doc_styled(fonts, chars, TextBlockKind::Paragraph, vec![line]);
+        assert_eq!(document_to_markdown(&doc, true), "**foo bar**");
+    }
+
+    #[test]
+    fn markdown_emphasis_cross_line_merge() {
+        let fonts = vec![font_style("I", false, true)];
+        let mut chars = Vec::new();
+        let a = push_styled_ch(&mut chars, "hello", 0.0, 0.0, 0);
+        let b = push_styled_ch(&mut chars, "world", 0.0, 12.0, 0);
+        let lines = vec![
+            line_from_words(vec![word_from_indices(&chars, &[a], 0.0, 0.0)]),
+            line_from_words(vec![word_from_indices(&chars, &[b], 0.0, 12.0)]),
+        ];
+        let doc = doc_styled(fonts, chars, TextBlockKind::Paragraph, lines);
+        assert_eq!(document_to_markdown(&doc, true), "*hello world*");
+    }
+
+    #[test]
+    fn markdown_emphasis_cjk_no_space() {
+        let fonts = vec![font_style("B", true, false)];
+        let mut chars = Vec::new();
+        let a = push_styled_ch(&mut chars, "漢", 0.0, 0.0, 0);
+        let b = push_styled_ch(&mut chars, "字", 10.0, 12.0, 0);
+        let lines = vec![
+            line_from_words(vec![word_from_indices(&chars, &[a], 0.0, 0.0)]),
+            line_from_words(vec![word_from_indices(&chars, &[b], 10.0, 12.0)]),
+        ];
+        let doc = doc_styled(fonts, chars, TextBlockKind::Paragraph, lines);
+        assert_eq!(document_to_markdown(&doc, true), "**漢字**");
+    }
+
+    #[test]
+    fn markdown_emphasis_heading_prefix_not_emphasized() {
+        let fonts = vec![font_style("B", true, false)];
+        let mut chars = Vec::new();
+        let a = push_styled_ch(&mut chars, "Title", 0.0, 0.0, 0);
+        let line = line_from_words(vec![word_from_indices(&chars, &[a], 0.0, 0.0)]);
+        let doc = doc_styled(
+            fonts,
+            chars,
+            TextBlockKind::Heading { level: 2 },
+            vec![line],
+        );
+        assert_eq!(document_to_markdown(&doc, true), "## **Title**");
+    }
+
+    #[test]
+    fn markdown_emphasis_list_marker_not_emphasized() {
+        let fonts = vec![font_style("B", true, false), font_style("R", false, false)];
+        let mut chars = Vec::new();
+        // マーカーを太字、本文を通常
+        let m1 = push_styled_ch(&mut chars, "\u{2022}", 50.0, 100.0, 0);
+        let b1 = push_styled_ch(&mut chars, "Alpha", 60.0, 100.0, 0);
+        let m2 = push_styled_ch(&mut chars, "\u{2022}", 50.0, 115.0, 0);
+        let b2 = push_styled_ch(&mut chars, "Beta", 60.0, 115.0, 0);
+        let lines = vec![
+            line_from_words(vec![
+                word_from_indices(&chars, &[m1], 50.0, 100.0),
+                word_from_indices(&chars, &[b1], 60.0, 100.0),
+            ]),
+            line_from_words(vec![
+                word_from_indices(&chars, &[m2], 50.0, 115.0),
+                word_from_indices(&chars, &[b2], 60.0, 115.0),
+            ]),
+        ];
+        let doc = doc_styled(fonts, chars, TextBlockKind::List { ordered: false }, lines);
+        assert_eq!(document_to_markdown(&doc, true), "- **Alpha**\n- **Beta**");
+    }
+
+    #[test]
+    fn markdown_emphasis_ordered_list() {
+        let fonts = vec![font_style("I", false, true)];
+        let mut chars = Vec::new();
+        let m1 = push_styled_ch(&mut chars, "1.", 50.0, 100.0, 0);
+        let b1 = push_styled_ch(&mut chars, "One", 70.0, 100.0, 0);
+        let m2 = push_styled_ch(&mut chars, "2.", 50.0, 115.0, 0);
+        let b2 = push_styled_ch(&mut chars, "Two", 70.0, 115.0, 0);
+        let lines = vec![
+            line_from_words(vec![
+                word_from_indices(&chars, &[m1], 50.0, 100.0),
+                word_from_indices(&chars, &[b1], 70.0, 100.0),
+            ]),
+            line_from_words(vec![
+                word_from_indices(&chars, &[m2], 50.0, 115.0),
+                word_from_indices(&chars, &[b2], 70.0, 115.0),
+            ]),
+        ];
+        let doc = doc_styled(fonts, chars, TextBlockKind::List { ordered: true }, lines);
+        assert_eq!(document_to_markdown(&doc, true), "1. *One*\n2. *Two*");
+    }
+
+    #[test]
+    fn markdown_emphasis_escape_star_and_backslash() {
+        let fonts = vec![font_style("B", true, false)];
+        let mut chars = Vec::new();
+        let a = push_styled_ch(&mut chars, "a*b\\c", 0.0, 0.0, 0);
+        let line = line_from_words(vec![word_from_indices(&chars, &[a], 0.0, 0.0)]);
+        let doc = doc_styled(fonts, chars, TextBlockKind::Paragraph, vec![line]);
+        // 本文中の * はエスケープ対象外、\ は \\
+        assert_eq!(document_to_markdown(&doc, true), r"**a*b\\c**");
+        assert_eq!(document_to_markdown(&doc, false), r"**a*b\c**");
+    }
+
+    #[test]
+    fn markdown_emphasis_invalid_font_index_is_normal() {
+        let fonts = vec![font_style("B", true, false)];
+        let mut chars = Vec::new();
+        // font 99 は不正 → 通常書体
+        let a = push_styled_ch(&mut chars, "x", 0.0, 0.0, 99);
+        let line = line_from_words(vec![word_from_indices(&chars, &[a], 0.0, 0.0)]);
+        let doc = doc_styled(fonts, chars, TextBlockKind::Paragraph, vec![line]);
+        assert_eq!(document_to_markdown(&doc, true), "x");
+    }
+
+    #[test]
+    fn markdown_emphasis_invalid_char_index_falls_back() {
+        let fonts = vec![font_style("B", true, false)];
+        let chars = Vec::new();
+        // 存在しない char index
+        let line = TextLine {
+            left: 0.0,
+            right: 10.0,
+            top: 0.0,
+            bottom: 10.0,
+            dir: "ltr".into(),
+            rot: 0,
+            words: vec![TextWord {
+                text: "bold".into(),
+                left: 0.0,
+                right: 10.0,
+                top: 0.0,
+                bottom: 10.0,
+                chars: vec![0],
+            }],
+            chars: vec![0],
+        };
+        let doc = DocDoc {
+            pages: vec![DocPage {
+                page_number: 1,
+                width: 600.0,
+                height: 800.0,
+                fonts,
+                chars,
+                blocks: vec![DocBlock::Text(TextBlock {
+                    kind: TextBlockKind::Paragraph,
+                    role: TextBlockRole::Body,
+                    text: "bold".into(),
+                    left: 0.0,
+                    right: 10.0,
+                    top: 0.0,
+                    bottom: 10.0,
+                    dir: "ltr".into(),
+                    rot: 0,
+                    lines: vec![line],
+                })],
+            }],
+        };
+        // 復元不能のため TextBlock.text へフォールバック（強調なし）
+        assert_eq!(document_to_markdown(&doc, true), "bold");
+    }
+
+    #[test]
+    fn markdown_emphasis_no_char_refs_falls_back() {
+        let doc = doc_with_blocks(vec![text_block(TextBlockKind::Paragraph, "fallback")]);
+        assert_eq!(document_to_markdown(&doc, true), "fallback");
+    }
 }

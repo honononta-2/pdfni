@@ -4,14 +4,14 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::cmap::{utf16be_bytes_to_string, CMap, MapValue};
+use super::cmap::{CMap, MapValue, utf16be_bytes_to_string};
 use super::data::{
-    encoding_by_name, font_basic_metrics, glyph_unicode, has_standard14_metrics,
-    is_serif_font, is_symbols_font, normalize_font_name, standard14_default_width,
-    standard14_glyph_width, STANDARD, WIN_ANSI, MAC_ROMAN, SYMBOL, ZAPF_DINGBATS,
+    MAC_ROMAN, STANDARD, SYMBOL, WIN_ANSI, ZAPF_DINGBATS, encoding_by_name, font_basic_metrics,
+    glyph_unicode, has_standard14_metrics, is_serif_font, is_symbols_font, normalize_font_name,
+    standard14_default_width, standard14_glyph_width,
 };
 use super::filters::decode_stream;
 use super::object::{Dict, Object, Ref, Stream};
@@ -27,6 +27,8 @@ const PROVISIONAL_WIDTH: f64 = 500.0;
 /// FontDescriptor /Flags
 const FLAG_SYMBOLIC: i64 = 4;
 const FLAG_NONSYMBOLIC: i64 = 32;
+const FLAG_ITALIC: i64 = 64;
+const FLAG_FORCE_BOLD: i64 = 262_144;
 
 /// 縦メトリクス [w1y, v1x, v1y]（グリフ空間 /1000 単位）
 pub(crate) type VMetric = [f64; 3];
@@ -52,6 +54,10 @@ pub(crate) struct LoadedFont {
     ucs2_cmap: Option<Arc<CMap>>,
     ascent: f64,
     descent: f64,
+    /// 太字属性（FontDescriptor とフォント名から確定）
+    bold: bool,
+    /// イタリック属性（FontDescriptor とフォント名から確定）
+    italic: bool,
     /// 構築ごとに一意な識別子
     uid: u64,
 }
@@ -92,6 +98,8 @@ impl LoadedFont {
             ucs2_cmap: None,
             ascent: DEFAULT_ASCENT,
             descent: DEFAULT_DESCENT,
+            bold: false,
+            italic: false,
             uid: next_font_uid(),
         }
     }
@@ -153,11 +161,7 @@ impl LoadedFont {
                 i += len;
 
                 let cid = charcode_to_cid(cmap, charcode);
-                let width = self
-                    .widths
-                    .get(&cid)
-                    .copied()
-                    .unwrap_or(self.default_width);
+                let width = self.widths.get(&cid).copied().unwrap_or(self.default_width);
                 visit(Glyph {
                     unicode: self.resolve_unicode(charcode, cid, true),
                     width,
@@ -244,6 +248,16 @@ impl LoadedFont {
     pub fn descent(&self) -> f64 {
         self.descent
     }
+
+    /// 太字属性
+    pub fn bold(&self) -> bool {
+        self.bold
+    }
+
+    /// イタリック属性
+    pub fn italic(&self) -> bool {
+        self.italic
+    }
 }
 
 /// グリフ分解の1文字分
@@ -315,12 +329,7 @@ pub(crate) fn lookup_font(
     Arc::new(load_font_object(entry, name, data, xref))
 }
 
-fn load_font_object(
-    entry: &Object,
-    name: &str,
-    data: &[u8],
-    xref: Option<&XRef>,
-) -> LoadedFont {
+fn load_font_object(entry: &Object, name: &str, data: &[u8], xref: Option<&XRef>) -> LoadedFont {
     match resolve_obj(entry, data, xref) {
         Object::Dict(dict) => load_font_dict(&dict, name, data, xref),
         _ => LoadedFont::stub(name),
@@ -398,8 +407,11 @@ fn load_simple(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Loa
     let mut to_unicode = load_tounicode(dict, None, data, xref);
     // ToUnicode が無い、または穴がある場合に Encoding+AGL で埋める
     if let ToUnicode::Map(map) = &mut to_unicode {
-        let simple_tu =
-            simple_font_to_unicode(&default_encoding, &differences, base_encoding_name.as_deref());
+        let simple_tu = simple_font_to_unicode(
+            &default_encoding,
+            &differences,
+            base_encoding_name.as_deref(),
+        );
         if map.is_empty() {
             *map = simple_tu;
         } else {
@@ -409,8 +421,8 @@ fn load_simple(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Loa
         }
     }
 
-    let (ascent, descent) =
-        resolve_ascent_descent(&descriptor, Some(&base_font), data, xref);
+    let (ascent, descent) = resolve_ascent_descent(&descriptor, Some(&base_font), data, xref);
+    let (bold, italic) = resolve_font_style(&descriptor, &base_font, data, xref);
 
     LoadedFont {
         name: name.into(),
@@ -424,6 +436,8 @@ fn load_simple(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Loa
         ucs2_cmap: None,
         ascent,
         descent,
+        bold,
+        italic,
         uid: next_font_uid(),
     }
 }
@@ -453,8 +467,11 @@ fn load_type3(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Load
 
     let mut to_unicode = load_tounicode(dict, None, data, xref);
     if let ToUnicode::Map(map) = &mut to_unicode {
-        let simple_tu =
-            simple_font_to_unicode(&default_encoding, &differences, base_encoding_name.as_deref());
+        let simple_tu = simple_font_to_unicode(
+            &default_encoding,
+            &differences,
+            base_encoding_name.as_deref(),
+        );
         if map.is_empty() {
             *map = simple_tu;
         } else {
@@ -464,8 +481,8 @@ fn load_type3(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Load
         }
     }
     // Type3 は埋め込み TrueType を持たない
-    let (ascent, descent) =
-        resolve_ascent_descent(&descriptor, Some(&base_font), data, xref);
+    let (ascent, descent) = resolve_ascent_descent(&descriptor, Some(&base_font), data, xref);
+    let (bold, italic) = resolve_font_style(&descriptor, &base_font, data, xref);
 
     LoadedFont {
         name: name.into(),
@@ -479,6 +496,8 @@ fn load_type3(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Load
         ucs2_cmap: None,
         ascent,
         descent,
+        bold,
+        italic,
         uid: next_font_uid(),
     }
 }
@@ -511,8 +530,8 @@ fn load_type0(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Load
         (HashMap::new(), None)
     };
 
-    let (ascent, descent) =
-        resolve_ascent_descent(&descriptor, Some(&base_font), data, xref);
+    let (ascent, descent) = resolve_ascent_descent(&descriptor, Some(&base_font), data, xref);
+    let (bold, italic) = resolve_font_style(&descriptor, &base_font, data, xref);
 
     LoadedFont {
         name: name.into(),
@@ -526,6 +545,8 @@ fn load_type0(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Load
         ucs2_cmap,
         ascent,
         descent,
+        bold,
+        italic,
         uid: next_font_uid(),
     }
 }
@@ -567,6 +588,121 @@ fn base_font_name(dict: &Dict, data: &[u8], xref: Option<&XRef>) -> String {
         },
         None => String::new(),
     }
+}
+
+/// FontDescriptor と BaseFont 名から太字・イタリックを確定する
+fn resolve_font_style(
+    descriptor: &Dict,
+    base_font: &str,
+    data: &[u8],
+    xref: Option<&XRef>,
+) -> (bool, bool) {
+    let (desc_bold, desc_italic) = style_from_descriptor(descriptor, data, xref);
+    let (name_bold, name_italic) = style_from_font_name(base_font);
+    (desc_bold || name_bold, desc_italic || name_italic)
+}
+
+/// FontDescriptor の Flags / ItalicAngle / FontWeight から書体属性を読む
+fn style_from_descriptor(descriptor: &Dict, data: &[u8], xref: Option<&XRef>) -> (bool, bool) {
+    let flags = descriptor
+        .get("Flags")
+        .and_then(|o| as_int(&resolve_obj(o, data, xref)))
+        .unwrap_or(0);
+    let mut bold = flags & FLAG_FORCE_BOLD != 0;
+    let mut italic = flags & FLAG_ITALIC != 0;
+
+    if let Some(angle) = descriptor
+        .get("ItalicAngle")
+        .and_then(|o| as_number(&resolve_obj(o, data, xref)))
+    {
+        if angle.is_finite() && angle != 0.0 {
+            italic = true;
+        }
+    }
+    if let Some(weight) = descriptor
+        .get("FontWeight")
+        .and_then(|o| as_number(&resolve_obj(o, data, xref)))
+    {
+        if weight.is_finite() && weight >= 700.0 {
+            bold = true;
+        }
+    }
+    (bold, italic)
+}
+
+/// フォント名から太字・イタリックを推定する（サブセット接頭辞除去後）
+fn style_from_font_name(name: &str) -> (bool, bool) {
+    let key = style_name_key(name);
+    if key.is_empty() {
+        return (false, false);
+    }
+    let bold = name_key_is_bold(&key);
+    let italic = name_key_is_italic(&key);
+    (bold, italic)
+}
+
+/// 書体判定用にサブセット接頭辞を除き区切りを正規化した小文字名
+fn style_name_key(name: &str) -> String {
+    let s = strip_subset_prefix(name);
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            ',' | '_' | ' ' | '\t' | '-' => {
+                if !out.ends_with('-') {
+                    out.push('-');
+                }
+            }
+            c => out.push(c.to_ascii_lowercase()),
+        }
+    }
+    // 前後の区切りを落とす
+    while out.starts_with('-') {
+        out.remove(0);
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// PDF サブセット接頭辞（6英大字 + `+`）を除く
+fn strip_subset_prefix(name: &str) -> &str {
+    let bytes = name.as_bytes();
+    if bytes.len() > 7 && bytes[6] == b'+' && bytes[..6].iter().all(|b| b.is_ascii_uppercase()) {
+        &name[7..]
+    } else {
+        name
+    }
+}
+
+fn name_key_is_bold(key: &str) -> bool {
+    if key.contains("bold") || key.contains("black") || key.contains("heavy") {
+        return true;
+    }
+    if key.starts_with("cmbx") || key.starts_with("cmmib") {
+        return true;
+    }
+    // demi は独立した書体要素として判定（medium 等の部分一致を避ける）
+    for token in key.split('-') {
+        if token == "demi" || token.starts_with("demi") {
+            return true;
+        }
+    }
+    false
+}
+
+fn name_key_is_italic(key: &str) -> bool {
+    if key.contains("italic") || key.contains("oblique") || key.contains("boldit") {
+        return true;
+    }
+    if key.ends_with("-it") || key == "it" {
+        return true;
+    }
+    if key.starts_with("cmti") || key.starts_with("cmmi") {
+        // cmmi / cmmib / cmti
+        return true;
+    }
+    false
 }
 
 /// 単純フォントの /Widths + MissingWidth
@@ -894,10 +1030,7 @@ fn load_tounicode(
                 return ToUnicode::empty();
             };
             let cmap = CMap::parse_embedded(&decoded);
-            if cmap.is_identity()
-                || cmap.name() == "Identity-H"
-                || cmap.name() == "Identity-V"
-            {
+            if cmap.is_identity() || cmap.name() == "Identity-H" || cmap.name() == "Identity-V" {
                 return ToUnicode::Identity;
             }
             let mut map = HashMap::new();
@@ -915,14 +1048,12 @@ fn build_tounicode_from_cmap(cmap: &CMap, map: &mut HashMap<u32, String>) {
     if cmap.is_identity() {
         return;
     }
-    cmap.for_each(|charcode, value| {
-        match value {
-            MapValue::Cid(cid) => {
-                map.insert(charcode, codepoint_to_string(*cid));
-            }
-            MapValue::Bytes(b) => {
-                map.insert(charcode, utf16be_bytes_to_string(b));
-            }
+    cmap.for_each(|charcode, value| match value {
+        MapValue::Cid(cid) => {
+            map.insert(charcode, codepoint_to_string(*cid));
+        }
+        MapValue::Bytes(b) => {
+            map.insert(charcode, utf16be_bytes_to_string(b));
         }
     });
 }
@@ -969,10 +1100,7 @@ fn resolve_ascent_descent(
         }
     }
 
-    (
-        correct_ascent(ascent),
-        correct_descent(descent),
-    )
+    (correct_ascent(ascent), correct_descent(descent))
 }
 
 /// 埋め込みフォントプログラムの有無
@@ -1373,7 +1501,10 @@ fn type1_builtin_encoding(
         let name_start = p;
         while p < body.len()
             && !body[p].is_ascii_whitespace()
-            && !matches!(body[p], b'/' | b'(' | b')' | b'[' | b']' | b'<' | b'>' | b'{' | b'}' | b'%')
+            && !matches!(
+                body[p],
+                b'/' | b'(' | b')' | b'[' | b']' | b'<' | b'>' | b'{' | b'}' | b'%'
+            )
         {
             p += 1;
         }
@@ -1390,11 +1521,7 @@ fn type1_builtin_encoding(
 }
 
 /// FontFile2 から head.unitsPerEm と hhea ascent/descent を読む
-fn try_truetype_metrics(
-    descriptor: &Dict,
-    data: &[u8],
-    xref: Option<&XRef>,
-) -> Option<(f64, f64)> {
+fn try_truetype_metrics(descriptor: &Dict, data: &[u8], xref: Option<&XRef>) -> Option<(f64, f64)> {
     let ff = descriptor.get("FontFile2")?;
     let stream = match resolve_obj(ff, data, xref) {
         Object::Stream(s) => s,
@@ -1558,8 +1685,8 @@ fn read_u32(data: &[u8], off: usize) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::object::Stream;
+    use super::*;
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -1713,10 +1840,7 @@ mod tests {
         let mut type0 = Dict::new();
         type0.set("Subtype", Object::Name("Type0".into()));
         type0.set("Encoding", Object::Name("Identity-H".into()));
-        type0.set(
-            "DescendantFonts",
-            Object::Array(vec![Object::Dict(cid)]),
-        );
+        type0.set("DescendantFonts", Object::Array(vec![Object::Dict(cid)]));
 
         let font = load_font_dict(&type0, "C0", &[], None);
         // Identity-H: 2-byte codes. CID = charcode
@@ -1896,9 +2020,21 @@ currentfile eexec\n\
 
         let font = load_font_dict(&d, "T1", pfa, None);
         let g = font.chars_to_glyphs(&[11, 12, 39]);
-        assert_eq!(g[0].unicode, "\u{fb00}", "ff ligature, got {:?}", g[0].unicode);
-        assert_eq!(g[1].unicode, "\u{fb01}", "fi ligature, got {:?}", g[1].unicode);
-        assert_eq!(g[2].unicode, "\u{2019}", "quoteright, got {:?}", g[2].unicode);
+        assert_eq!(
+            g[0].unicode, "\u{fb00}",
+            "ff ligature, got {:?}",
+            g[0].unicode
+        );
+        assert_eq!(
+            g[1].unicode, "\u{fb01}",
+            "fi ligature, got {:?}",
+            g[1].unicode
+        );
+        assert_eq!(
+            g[2].unicode, "\u{2019}",
+            "quoteright, got {:?}",
+            g[2].unicode
+        );
     }
 
     #[test]
@@ -1932,10 +2068,7 @@ endcmap
         let mut type0 = Dict::new();
         type0.set("Subtype", Object::Name("Type0".into()));
         type0.set("Encoding", Object::Stream(stream));
-        type0.set(
-            "DescendantFonts",
-            Object::Array(vec![Object::Dict(cid)]),
-        );
+        type0.set("DescendantFonts", Object::Array(vec![Object::Dict(cid)]));
 
         let font = load_font_dict(&type0, "C1", cmap_data, None);
         let g = font.chars_to_glyphs(b"A");
@@ -1950,10 +2083,7 @@ endcmap
         let mut type0 = Dict::new();
         type0.set("Subtype", Object::Name("Type0".into()));
         type0.set("Encoding", Object::Name("Identity-H".into()));
-        type0.set(
-            "DescendantFonts",
-            Object::Array(vec![Object::Dict(cid)]),
-        );
+        type0.set("DescendantFonts", Object::Array(vec![Object::Dict(cid)]));
         let font = load_font_dict(&type0, "C0", &[], None);
         // 2-byte 0x0020 is NOT word-spacing (length != 1)
         let g = font.chars_to_glyphs(&[0x00, 0x20]);
@@ -2093,10 +2223,7 @@ endcmap
         let mut type0 = Dict::new();
         type0.set("Subtype", Object::Name("Type0".into()));
         type0.set("Encoding", Object::Name(encoding.into()));
-        type0.set(
-            "DescendantFonts",
-            Object::Array(vec![Object::Dict(cid)]),
-        );
+        type0.set("DescendantFonts", Object::Array(vec![Object::Dict(cid)]));
         type0
     }
 
@@ -2212,21 +2339,14 @@ endcmap
                 "W2",
                 Object::Array(vec![
                     Object::Int(0x41),
-                    Object::Array(vec![
-                        Object::Int(-800),
-                        Object::Int(400),
-                        Object::Int(700),
-                    ]),
+                    Object::Array(vec![Object::Int(-800), Object::Int(400), Object::Int(700)]),
                 ]),
             );
         }
         let mut type0 = Dict::new();
         type0.set("Subtype", Object::Name("Type0".into()));
         type0.set("Encoding", Object::Name("Identity-V".into()));
-        type0.set(
-            "DescendantFonts",
-            Object::Array(vec![Object::Dict(cid)]),
-        );
+        type0.set("DescendantFonts", Object::Array(vec![Object::Dict(cid)]));
         type0
     }
 
@@ -2266,11 +2386,7 @@ endcmap
         let cases = [
             None,
             Some(vec![Object::Int(700), Object::Null]),
-            Some(vec![
-                Object::Int(700),
-                Object::Int(-900),
-                Object::Int(0),
-            ]),
+            Some(vec![Object::Int(700), Object::Int(-900), Object::Int(0)]),
         ];
         for dw2 in cases {
             let mut cid = Dict::new();
@@ -2325,13 +2441,139 @@ endcmap
         let mut type0 = Dict::new();
         type0.set("Subtype", Object::Name("Type0".into()));
         type0.set("Encoding", Object::Name("Identity-H".into()));
-        type0.set(
-            "DescendantFonts",
-            Object::Array(vec![Object::Dict(cid)]),
-        );
+        type0.set("DescendantFonts", Object::Array(vec![Object::Dict(cid)]));
         let font = load_font_dict(&type0, "H", &[], None);
         assert!(!font.vertical());
         let g = font.chars_to_glyphs(&[0x00, 0x41]);
         assert!(g[0].vmetric.is_none());
+    }
+
+    #[test]
+    fn stub_is_not_bold_or_italic() {
+        let font = LoadedFont::stub("F1");
+        assert!(!font.bold());
+        assert!(!font.italic());
+    }
+
+    #[test]
+    fn style_from_descriptor_flags_and_metrics() {
+        // Italic flag
+        let mut d = Dict::new();
+        d.set("Flags", Object::Int(FLAG_ITALIC));
+        assert_eq!(style_from_descriptor(&d, &[], None), (false, true));
+
+        // ForceBold flag
+        let mut d = Dict::new();
+        d.set("Flags", Object::Int(FLAG_FORCE_BOLD));
+        assert_eq!(style_from_descriptor(&d, &[], None), (true, false));
+
+        // ItalicAngle 非ゼロ
+        let mut d = Dict::new();
+        d.set("ItalicAngle", Object::Real(-12.0));
+        assert_eq!(style_from_descriptor(&d, &[], None), (false, true));
+
+        // ItalicAngle 0 は斜体にしない
+        let mut d = Dict::new();
+        d.set("ItalicAngle", Object::Int(0));
+        assert_eq!(style_from_descriptor(&d, &[], None), (false, false));
+
+        // FontWeight 700
+        let mut d = Dict::new();
+        d.set("FontWeight", Object::Int(700));
+        assert_eq!(style_from_descriptor(&d, &[], None), (true, false));
+
+        // FontWeight 400 は太字にしない
+        let mut d = Dict::new();
+        d.set("FontWeight", Object::Int(400));
+        assert_eq!(style_from_descriptor(&d, &[], None), (false, false));
+
+        // 両方
+        let mut d = Dict::new();
+        d.set("Flags", Object::Int(FLAG_ITALIC | FLAG_FORCE_BOLD));
+        d.set("ItalicAngle", Object::Real(-10.0));
+        d.set("FontWeight", Object::Int(800));
+        assert_eq!(style_from_descriptor(&d, &[], None), (true, true));
+    }
+
+    #[test]
+    fn style_from_font_name_positive() {
+        // subset 付き Standard 14
+        assert_eq!(style_from_font_name("ABCDEF+Times-Bold"), (true, false));
+        assert_eq!(style_from_font_name("ABCDEF+Times-Italic"), (false, true));
+        assert_eq!(
+            style_from_font_name("ABCDEF+Times-BoldItalic"),
+            (true, true)
+        );
+        // 区切り正規化
+        assert_eq!(style_from_font_name("Arial,Bold"), (true, false));
+        assert_eq!(style_from_font_name("Arial,BoldItalic"), (true, true));
+        // 太字名
+        assert_eq!(style_from_font_name("Foo-Semibold"), (true, false));
+        assert_eq!(style_from_font_name("Foo-Demi"), (true, false));
+        assert_eq!(style_from_font_name("Foo-Black"), (true, false));
+        assert_eq!(style_from_font_name("Foo-Heavy"), (true, false));
+        // 斜体名
+        assert_eq!(style_from_font_name("Foo-Oblique"), (false, true));
+        assert_eq!(style_from_font_name("Foo-BoldIt"), (true, true));
+        assert_eq!(style_from_font_name("Bar-It"), (false, true));
+        // TeX
+        assert_eq!(style_from_font_name("CMBX10"), (true, false));
+        assert_eq!(style_from_font_name("CMTI10"), (false, true));
+        assert_eq!(style_from_font_name("CMMI10"), (false, true));
+        assert_eq!(style_from_font_name("CMMIB10"), (true, true));
+    }
+
+    #[test]
+    fn style_from_font_name_negative() {
+        assert_eq!(style_from_font_name("Foo-Medium"), (false, false));
+        assert_eq!(style_from_font_name("Foo-Regular"), (false, false));
+        assert_eq!(style_from_font_name("Foo-Roman"), (false, false));
+        assert_eq!(style_from_font_name("Foo-Book"), (false, false));
+        assert_eq!(style_from_font_name("md"), (false, false));
+        assert_eq!(style_from_font_name("F1"), (false, false));
+        assert_eq!(style_from_font_name("Helvetica"), (false, false));
+        assert_eq!(style_from_font_name(""), (false, false));
+    }
+
+    #[test]
+    fn load_simple_applies_descriptor_and_name_style() {
+        let mut fd = Dict::new();
+        fd.set("Flags", Object::Int(FLAG_ITALIC));
+        fd.set("Ascent", Object::Int(800));
+        fd.set("Descent", Object::Int(-200));
+
+        let mut font_dict = Dict::new();
+        font_dict.set("Subtype", Object::Name("Type1".into()));
+        font_dict.set("BaseFont", Object::Name("Helvetica-Bold".into()));
+        font_dict.set("FontDescriptor", Object::Dict(fd));
+        font_dict.set("FirstChar", Object::Int(65));
+        font_dict.set("LastChar", Object::Int(65));
+        font_dict.set("Widths", Object::Array(vec![Object::Int(500)]));
+
+        let font = load_font_dict(&font_dict, "F", &[], None);
+        assert!(font.bold());
+        assert!(font.italic());
+    }
+
+    #[test]
+    fn load_type0_uses_descendant_style() {
+        let mut fd = Dict::new();
+        fd.set("FontWeight", Object::Int(700));
+        fd.set("ItalicAngle", Object::Real(-12.0));
+
+        let mut cid = Dict::new();
+        cid.set("Subtype", Object::Name("CIDFontType2".into()));
+        cid.set("BaseFont", Object::Name("SomeCIDFont".into()));
+        cid.set("FontDescriptor", Object::Dict(fd));
+        cid.set("DW", Object::Int(1000));
+
+        let mut type0 = Dict::new();
+        type0.set("Subtype", Object::Name("Type0".into()));
+        type0.set("Encoding", Object::Name("Identity-H".into()));
+        type0.set("DescendantFonts", Object::Array(vec![Object::Dict(cid)]));
+
+        let font = load_font_dict(&type0, "C", &[], None);
+        assert!(font.bold());
+        assert!(font.italic());
     }
 }
