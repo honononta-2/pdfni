@@ -139,11 +139,11 @@ pub fn assign_headings(doc: &mut DocDoc) {
 }
 
 /// 文書モデルを Markdown 文字列へ直列化する（§6）
-pub fn document_to_markdown(doc: &DocDoc) -> String {
+pub fn document_to_markdown(doc: &DocDoc, escape_markdown: bool) -> String {
     let mut parts = Vec::new();
     for page in &doc.pages {
         for block in &page.blocks {
-            if let Some(s) = block_to_markdown(block) {
+            if let Some(s) = block_to_markdown(block, escape_markdown) {
                 parts.push(s);
             }
         }
@@ -152,13 +152,17 @@ pub fn document_to_markdown(doc: &DocDoc) -> String {
 }
 
 /// 1ブロックを Markdown 断片へ変換する。空表・空白のみ本文は None
-fn block_to_markdown(block: &DocBlock) -> Option<String> {
+fn block_to_markdown(block: &DocBlock, escape_markdown: bool) -> Option<String> {
     match block {
         DocBlock::Text(tb) => {
             if tb.role != TextBlockRole::Body {
                 return None;
             }
-            let text = sanitize_md_text(&tb.text);
+            let text = if escape_markdown {
+                escape_text_block_text(&tb.text)
+            } else {
+                sanitize_md_text(&tb.text)
+            };
             if text.trim().is_empty() {
                 return None;
             }
@@ -222,6 +226,31 @@ fn escape_cell_text(text: &str) -> String {
         }
     }
     out
+}
+
+/// 見出し・段落 text の制御文字置換と本文エスケープ（§6-4）
+fn escape_text_block_text(text: &str) -> String {
+    let sanitized = sanitize_md_text(text);
+    let mut body = String::with_capacity(sanitized.len() + 1);
+    for c in sanitized.chars() {
+        if c == '\\' {
+            body.push_str("\\\\");
+        } else {
+            body.push(c);
+        }
+    }
+    // 先頭の連続 U+0020 直後のブロック構文文字を1文字だけエスケープする
+    let n_space = body.bytes().take_while(|&b| b == b' ').count();
+    if let Some(first) = body[n_space..].chars().next() {
+        if matches!(first, '#' | '*' | '-' | '+' | '>' | '|') {
+            let mut out = String::with_capacity(body.len() + 1);
+            out.push_str(&body[..n_space]);
+            out.push('\\');
+            out.push_str(&body[n_space..]);
+            return out;
+        }
+    }
+    body
 }
 
 /// 改行・タブ・C0 制御文字を U+0020 へ置換する（§6-4）
@@ -2052,7 +2081,7 @@ mod tests {
             text_block(TextBlockKind::Paragraph, "body text"),
         ]);
         assert_eq!(
-            document_to_markdown(&doc),
+            document_to_markdown(&doc, true),
             "# Title\n\n## Section\n\n### Sub\n\nbody text"
         );
     }
@@ -2077,7 +2106,7 @@ mod tests {
         };
         let doc = doc_with_blocks(vec![DocBlock::Table(t)]);
         assert_eq!(
-            document_to_markdown(&doc),
+            document_to_markdown(&doc, true),
             "| H1 | H2 |\n| --- | --- |\n| A | B |\n| C | D |"
         );
     }
@@ -2101,7 +2130,7 @@ mod tests {
         };
         let doc = doc_with_blocks(vec![DocBlock::Table(t)]);
         assert_eq!(
-            document_to_markdown(&doc),
+            document_to_markdown(&doc, true),
             "| Only | Header |\n| --- | --- |"
         );
     }
@@ -2126,7 +2155,7 @@ mod tests {
         };
         let doc = doc_with_blocks(vec![DocBlock::Table(t)]);
         assert_eq!(
-            document_to_markdown(&doc),
+            document_to_markdown(&doc, true),
             "| H |  |\n| --- | --- |\n|  | V |"
         );
     }
@@ -2156,7 +2185,7 @@ mod tests {
         };
         let doc = doc_with_blocks(vec![DocBlock::Table(t)]);
         assert_eq!(
-            document_to_markdown(&doc),
+            document_to_markdown(&doc, true),
             "| H |  |\n| --- | --- |\n| A | B |"
         );
     }
@@ -2178,7 +2207,7 @@ mod tests {
         };
         let doc = doc_with_blocks(vec![DocBlock::Table(t)]);
         assert_eq!(
-            document_to_markdown(&doc),
+            document_to_markdown(&doc, true),
             "| a\\\\b\\|c |\n| --- |"
         );
     }
@@ -2202,7 +2231,7 @@ mod tests {
                 data: vec![vec![cell(mixed, 0.0, 0.0, 10.0, 10.0)]],
             }),
         ]);
-        let md = document_to_markdown(&doc);
+        let md = document_to_markdown(&doc, true);
         assert_eq!(
             md,
             "# a b c d e f g\n\na b c d e f g\n\n| a b c d e f g |\n| --- |"
@@ -2211,6 +2240,55 @@ mod tests {
         assert!(!md.contains('\u{2028}'));
         assert!(!md.contains('\u{2029}'));
         assert!(!md.contains('\u{0001}'));
+    }
+
+    #[test]
+    fn markdown_escape_leading_block_markers() {
+        let doc = doc_with_blocks(vec![
+            text_block(TextBlockKind::Paragraph, "# not a heading"),
+            text_block(TextBlockKind::Paragraph, "  - not a list"),
+            text_block(TextBlockKind::Paragraph, "* star"),
+            text_block(TextBlockKind::Paragraph, "+ plus"),
+            text_block(TextBlockKind::Paragraph, "> quote"),
+            text_block(TextBlockKind::Paragraph, "| pipe"),
+            text_block(TextBlockKind::Paragraph, "### triple"),
+            text_block(TextBlockKind::Paragraph, r"a\b mid"),
+            text_block(TextBlockKind::Heading { level: 1 }, "# title-ish"),
+            text_block(TextBlockKind::Paragraph, "mid # not escaped"),
+        ]);
+        assert_eq!(
+            document_to_markdown(&doc, true),
+            "\\# not a heading\n\n  \\- not a list\n\n\\* star\n\n\\+ plus\n\n\
+             \\> quote\n\n\\| pipe\n\n\\### triple\n\na\\\\b mid\n\n# \\# title-ish\n\n\
+             mid # not escaped"
+        );
+    }
+
+    #[test]
+    fn markdown_escape_markdown_false_skips_body_escape() {
+        let doc = doc_with_blocks(vec![
+            text_block(TextBlockKind::Paragraph, "# keep"),
+            text_block(TextBlockKind::Paragraph, "- keep"),
+            text_block(TextBlockKind::Paragraph, r"a\b"),
+            text_block(TextBlockKind::Heading { level: 2 }, "# h"),
+            DocBlock::Table(Table {
+                extraction_method: "lattice",
+                bbox: BBox {
+                    x0: 0.0,
+                    top: 0.0,
+                    x1: 20.0,
+                    bottom: 20.0,
+                },
+                n_rows: 1,
+                n_cols: 1,
+                data: vec![vec![cell(r"a|b\c", 0.0, 0.0, 10.0, 10.0)]],
+            }),
+        ]);
+        // 本文エスケープはオフ、見出し接頭辞とセル・制御文字は常時
+        assert_eq!(
+            document_to_markdown(&doc, false),
+            "# keep\n\n- keep\n\na\\b\n\n## # h\n\n| a\\|b\\\\c |\n| --- |"
+        );
     }
 
     #[test]
@@ -2246,7 +2324,7 @@ mod tests {
                 },
             ],
         };
-        let md = document_to_markdown(&doc);
+        let md = document_to_markdown(&doc, true);
         assert_eq!(md, "p1\n\np2\n\np3");
         assert!(!md.ends_with('\n'));
     }
@@ -2254,7 +2332,7 @@ mod tests {
     #[test]
     fn markdown_empty_doc_and_empty_paragraph() {
         let empty = DocDoc { pages: vec![] };
-        assert_eq!(document_to_markdown(&empty), "");
+        assert_eq!(document_to_markdown(&empty, true), "");
 
         let empty_pages = DocDoc {
             pages: vec![DocPage {
@@ -2266,14 +2344,14 @@ mod tests {
                 blocks: vec![],
             }],
         };
-        assert_eq!(document_to_markdown(&empty_pages), "");
+        assert_eq!(document_to_markdown(&empty_pages, true), "");
 
         // 空段落は非空ブロックではない
         let empty_para = doc_with_blocks(vec![
             text_block(TextBlockKind::Paragraph, ""),
             text_block(TextBlockKind::Paragraph, "x"),
         ]);
-        assert_eq!(document_to_markdown(&empty_para), "x");
+        assert_eq!(document_to_markdown(&empty_para, true), "x");
     }
 
     #[test]
@@ -2307,7 +2385,7 @@ mod tests {
             text_block(TextBlockKind::Paragraph, "keep"),
             DocBlock::Table(zero_cols),
         ]);
-        assert_eq!(document_to_markdown(&doc), "keep");
+        assert_eq!(document_to_markdown(&doc, true), "keep");
     }
 
     /// 制御文字・空白のみの見出し・段落は Markdown に出さない
@@ -2320,7 +2398,7 @@ mod tests {
             text_block(TextBlockKind::Heading { level: 2 }, "   "),
             text_block(TextBlockKind::Paragraph, "\u{2028}\u{2029}"),
         ]);
-        assert_eq!(document_to_markdown(&doc), "keep");
+        assert_eq!(document_to_markdown(&doc, true), "keep");
     }
 
     /// ベースラインの揃った2列ページ（行が列をまたぐ）
@@ -2572,7 +2650,7 @@ mod tests {
             }],
         };
         assign_headings(&mut doc);
-        let md = document_to_markdown(&doc);
+        let md = document_to_markdown(&doc, true);
         // 左列が先に出る
         let pos_t = md.find('T').expect("T");
         let pos_u = md.find('U').expect("U");
@@ -2685,6 +2763,15 @@ mod tests {
     #[test]
     fn extract_options_detect_header_footer_default_false() {
         assert!(!ExtractOptions::default().detect_header_footer);
+    }
+
+    #[test]
+    fn extract_options_escape_markdown_default_true() {
+        assert!(ExtractOptions::default().escape_markdown);
+        let parsed: ExtractOptions = serde_json::from_str("{}").unwrap();
+        assert!(parsed.escape_markdown);
+        let off: ExtractOptions = serde_json::from_str(r#"{"escape_markdown":false}"#).unwrap();
+        assert!(!off.escape_markdown);
     }
 
     #[test]
@@ -3054,7 +3141,7 @@ mod tests {
                 lines: vec![],
             }),
         ]);
-        assert_eq!(document_to_markdown(&doc), "body");
+        assert_eq!(document_to_markdown(&doc, true), "body");
     }
 
     #[test]
@@ -3125,7 +3212,7 @@ mod tests {
         assign_header_footer(&mut doc);
         assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Header);
         assert_eq!(roles_of(&doc)[1][0], TextBlockRole::Header);
-        assert_eq!(document_to_markdown(&doc), "body\n\nbody");
+        assert_eq!(document_to_markdown(&doc, true), "body\n\nbody");
     }
 
 }

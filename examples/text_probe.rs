@@ -9,7 +9,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let input = args.next().unwrap_or_else(|| {
         eprintln!(
-            "usage: text_probe <input.pdf> [lines|items|doc|md|dochf|mdhf] [output.json] [password]"
+            "usage: text_probe <input.pdf> [lines|items|doc|md|mdnoesc|dochf|mdhf] [output.json] [password]"
         );
         std::process::exit(2);
     });
@@ -36,7 +36,18 @@ fn main() {
                 password = args.next();
             }
             "md" => {
-                mode = Mode::Md { detect_hf: false };
+                mode = Mode::Md {
+                    detect_hf: false,
+                    escape_markdown: true,
+                };
+                out_path = args.next();
+                password = args.next();
+            }
+            "mdnoesc" => {
+                mode = Mode::Md {
+                    detect_hf: false,
+                    escape_markdown: false,
+                };
                 out_path = args.next();
                 password = args.next();
             }
@@ -46,7 +57,10 @@ fn main() {
                 password = args.next();
             }
             "mdhf" => {
-                mode = Mode::Md { detect_hf: true };
+                mode = Mode::Md {
+                    detect_hf: true,
+                    escape_markdown: true,
+                };
                 out_path = args.next();
                 password = args.next();
             }
@@ -65,14 +79,21 @@ fn main() {
         }
     };
 
-    // doc / md / dochf / mdhf は文書モデル入口、それ以外は座標付き文字入口
+    // doc / md / mdnoesc / dochf / mdhf は文書モデル入口、それ以外は座標付き文字入口
     if matches!(mode, Mode::Doc { .. } | Mode::Md { .. }) {
         let detect_hf = match mode {
-            Mode::Doc { detect_hf } | Mode::Md { detect_hf } => detect_hf,
+            Mode::Doc { detect_hf } | Mode::Md { detect_hf, .. } => detect_hf,
             _ => false,
+        };
+        let escape_markdown = match mode {
+            Mode::Md {
+                escape_markdown, ..
+            } => escape_markdown,
+            _ => true,
         };
         let options = ExtractOptions {
             detect_header_footer: detect_hf,
+            escape_markdown,
             ..ExtractOptions::default()
         };
         let doc = match extract_document_from_bytes(&bytes, password.as_deref(), &options) {
@@ -91,7 +112,9 @@ fn main() {
                     std::process::exit(1);
                 }
             },
-            Mode::Md { .. } => document_to_markdown(&doc),
+            Mode::Md {
+                escape_markdown, ..
+            } => document_to_markdown(&doc, escape_markdown),
             _ => unreachable!(),
         };
 
@@ -219,5 +242,8 @@ enum Mode {
     Items,
     Lines,
     Doc { detect_hf: bool },
-    Md { detect_hf: bool },
+    Md {
+        detect_hf: bool,
+        escape_markdown: bool,
+    },
 }

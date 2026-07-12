@@ -80,7 +80,7 @@ pub enum DetectMode {
 }
 
 /// 抽出処理のパラメータ
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ExtractOptions {
     pub mode: DetectMode,
@@ -89,6 +89,26 @@ pub struct ExtractOptions {
     pub text: TextSettings,
     /// ヘッダ・フッタ検出（既定は無効）
     pub detect_header_footer: bool,
+    /// 見出し・段落の Markdown 本文エスケープ（既定は有効）
+    #[serde(default = "default_escape_markdown")]
+    pub escape_markdown: bool,
+}
+
+fn default_escape_markdown() -> bool {
+    true
+}
+
+impl Default for ExtractOptions {
+    fn default() -> Self {
+        Self {
+            mode: DetectMode::default(),
+            lattice: LatticeSettings::default(),
+            hybrid: HybridSettings::default(),
+            text: TextSettings::default(),
+            detect_header_footer: false,
+            escape_markdown: true,
+        }
+    }
 }
 
 fn is_cjk(c: char) -> bool {

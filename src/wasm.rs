@@ -123,6 +123,9 @@ pub fn extract_markdown_from_pdf(
     let doc =
         crate::document::extract_document_from_bytes(bytes, password.as_deref(), &options)
             .map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(crate::document::document_to_markdown(&doc))
+    Ok(crate::document::document_to_markdown(
+        &doc,
+        options.escape_markdown,
+    ))
 }
 
