@@ -3,11 +3,12 @@
 use serde::Serialize;
 
 use crate::columns::{Participant, ParticipantKind, split_regions};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::extract::ExtractOptions;
 use crate::furniture;
 use crate::model::{BBox, Cell, Table};
-use crate::reader::{extract_from_bytes, extract_text_from_bytes};
+use crate::extract::extract_from_parts;
+use crate::reader::read_pages_and_text;
 use crate::text::{
     TextChar, TextFont, TextLine, TextPage, TextWord, build_text_lines_with, derotate_xy,
     is_whitespace_str,
@@ -675,21 +676,14 @@ pub fn extract_document_from_bytes(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<DocDoc> {
-    let tables_doc = extract_from_bytes(data, password, options)?;
-    let text_doc = extract_text_from_bytes(data, password)?;
-    if tables_doc.pages.len() != text_doc.pages.len() {
-        return Err(Error::Reader(format!(
-            "page count mismatch: tables has {} pages, text has {} pages",
-            tables_doc.pages.len(),
-            text_doc.pages.len()
-        )));
-    }
+    let (parts, text_pages) = read_pages_and_text(data, password)?;
+    let tables_doc = extract_from_parts(parts, options);
 
-    let mut pages = Vec::with_capacity(text_doc.pages.len());
+    let mut pages = Vec::with_capacity(text_pages.len());
     for (i, (page, text_page)) in tables_doc
         .pages
         .into_iter()
-        .zip(text_doc.pages.into_iter())
+        .zip(text_pages.into_iter())
         .enumerate()
     {
         let blocks = build_blocks_owned(&text_page, page.tables, options.bidi);

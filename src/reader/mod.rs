@@ -19,7 +19,7 @@ use crate::extract::{ExtractOptions, PagePart, extract_from_parts};
 use crate::model::Document;
 use crate::text::{TextDoc, TextPage};
 
-use content::{ContentCtx, extract_parts, extract_text};
+use content::{ContentCtx, extract_parts, extract_parts_and_text, extract_text};
 use pages::{collect_pages, decode_contents, view_height, view_width};
 use xref::XRef;
 
@@ -106,4 +106,62 @@ fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<Text
         fonts: text.fonts,
         chars: text.chars,
     })
+}
+
+/// PDF バイト列からページ単位の parts と座標付き文字を 1 パスで構築する
+pub(crate) fn read_pages_and_text(
+    bytes: &[u8],
+    password: Option<&str>,
+) -> Result<(Vec<PagePart>, Vec<TextPage>)> {
+    let xref = XRef::parse_with_password(bytes, password)?;
+    let page_infos = collect_pages(bytes, &xref)?;
+    let results: Vec<(PagePart, TextPage)> = crate::par::map_ordered(
+        page_infos,
+        || &xref,
+        |xref, _, p| build_page_part_and_text(p, bytes, xref),
+    )
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
+    Ok(results.into_iter().unzip())
+}
+
+/// ページ1枚分の parts と座標付き文字を 1 パスで構築する
+fn build_page_part_and_text(
+    p: pages::PageInfo,
+    bytes: &[u8],
+    xref: &XRef,
+) -> Result<(PagePart, TextPage)> {
+    let contents = decode_contents(bytes, xref, &p.contents)?;
+    let (parts, text) = extract_parts_and_text(
+        &contents,
+        &p.resources,
+        p.view,
+        ContentCtx {
+            data: bytes,
+            xref: Some(xref),
+        },
+        p.rotate,
+    );
+    let (mut width, mut height) = (view_width(p.view), view_height(p.view));
+    if p.rotate == 90 || p.rotate == 270 {
+        std::mem::swap(&mut width, &mut height);
+    }
+    if parts.norm_rotate == 90 || parts.norm_rotate == 270 {
+        std::mem::swap(&mut width, &mut height);
+    }
+    let part = PagePart {
+        width,
+        height,
+        glyphs: parts.glyphs,
+        edges: parts.edges,
+        norm_rotate: parts.norm_rotate,
+        graphics: parts.graphics,
+    };
+    let tp = TextPage {
+        width: text.width,
+        height: text.height,
+        fonts: text.fonts,
+        chars: text.chars,
+    };
+    Ok((part, tp))
 }

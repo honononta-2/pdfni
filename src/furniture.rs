@@ -23,8 +23,17 @@ pub fn assign_header_footer(doc: &mut DocDoc) {
         return;
     }
 
-    detect_direction(doc, Direction::Header);
-    detect_direction(doc, Direction::Footer);
+    let n_pages = doc.pages.len();
+    let mut header_cands: Vec<Vec<Cand>> = Vec::with_capacity(n_pages);
+    let mut footer_cands: Vec<Vec<Cand>> = Vec::with_capacity(n_pages);
+    for page in &doc.pages {
+        let (h, f) = page_candidates_both(page);
+        header_cands.push(h);
+        footer_cands.push(f);
+    }
+
+    apply_direction(doc, Direction::Header, header_cands);
+    apply_direction(doc, Direction::Footer, footer_cands);
 }
 
 #[derive(Clone, Copy)]
@@ -53,12 +62,8 @@ struct Cand {
     font_size: Option<f64>,
 }
 
-fn detect_direction(doc: &mut DocDoc, dir: Direction) {
+fn apply_direction(doc: &mut DocDoc, dir: Direction, candidates: Vec<Vec<Cand>>) {
     let n_pages = doc.pages.len();
-    let mut candidates: Vec<Vec<Cand>> = Vec::with_capacity(n_pages);
-    for page in &doc.pages {
-        candidates.push(page_candidates(page, dir));
-    }
 
     let mut n_p = vec![0usize; n_pages];
 
@@ -159,14 +164,18 @@ fn detect_direction(doc: &mut DocDoc, dir: Direction) {
     }
 }
 
-fn page_candidates(page: &crate::document::DocPage, dir: Direction) -> Vec<Cand> {
+/// ヘッダ帯とフッタ帯の候補を 1 度の走査で分別する
+fn page_candidates_both(page: &crate::document::DocPage) -> (Vec<Cand>, Vec<Cand>) {
     let w = page.width;
     let h = page.height;
     if !(w.is_finite() && w > 0.0 && h.is_finite() && h > 0.0) {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
-    let mut cands = Vec::new();
+    let header_limit = h / 6.0;
+    let footer_limit = h * 5.0 / 6.0;
+    let mut header_cands = Vec::new();
+    let mut footer_cands = Vec::new();
     for (bi, block) in page.blocks.iter().enumerate() {
         let DocBlock::Text(tb) = block else {
             continue;
@@ -174,41 +183,46 @@ fn page_candidates(page: &crate::document::DocPage, dir: Direction) -> Vec<Cand>
         if !is_candidate_text(&tb.text) {
             continue;
         }
-        let in_band = match dir {
-            Direction::Header => tb.bottom <= h / 6.0,
-            Direction::Footer => tb.top >= h * 5.0 / 6.0,
-        };
-        if !in_band {
+        let in_header = tb.bottom <= header_limit;
+        let in_footer = tb.top >= footer_limit;
+        if !in_header && !in_footer {
             continue;
         }
-        cands.push(Cand {
-            block_idx: bi,
-            left: tb.left,
-            right: tb.right,
-            top: tb.top,
-            bottom: tb.bottom,
-            text: tb.text.clone(),
-            font_size: block_rep_font_size(&page.chars, tb),
-        });
-    }
-
-    match dir {
-        Direction::Header => {
-            cands.sort_by(|a, b| {
-                a.top
-                    .total_cmp(&b.top)
-                    .then_with(|| a.block_idx.cmp(&b.block_idx))
+        let font_size = block_rep_font_size(&page.chars, tb);
+        if in_header {
+            header_cands.push(Cand {
+                block_idx: bi,
+                left: tb.left,
+                right: tb.right,
+                top: tb.top,
+                bottom: tb.bottom,
+                text: tb.text.clone(),
+                font_size,
             });
         }
-        Direction::Footer => {
-            cands.sort_by(|a, b| {
-                b.bottom
-                    .total_cmp(&a.bottom)
-                    .then_with(|| a.block_idx.cmp(&b.block_idx))
+        if in_footer {
+            footer_cands.push(Cand {
+                block_idx: bi,
+                left: tb.left,
+                right: tb.right,
+                top: tb.top,
+                bottom: tb.bottom,
+                text: tb.text.clone(),
+                font_size,
             });
         }
     }
-    cands
+    header_cands.sort_by(|a, b| {
+        a.top
+            .total_cmp(&b.top)
+            .then_with(|| a.block_idx.cmp(&b.block_idx))
+    });
+    footer_cands.sort_by(|a, b| {
+        b.bottom
+            .total_cmp(&a.bottom)
+            .then_with(|| a.block_idx.cmp(&b.block_idx))
+    });
+    (header_cands, footer_cands)
 }
 
 /// Markdown と同じ空判定で候補になるか
@@ -518,7 +532,7 @@ mod tests {
             candidate_block("second", 550.0, 590.0),
         ];
 
-        let candidates = page_candidates(&page, Direction::Footer);
+        let (_, candidates) = page_candidates_both(&page);
         let block_indices: Vec<_> = candidates.iter().map(|c| c.block_idx).collect();
         assert_eq!(block_indices, vec![0, 1]);
     }
@@ -535,12 +549,14 @@ mod tests {
 
         for value in invalid {
             let width_page = candidate_page(value, 600.0);
-            assert!(page_candidates(&width_page, Direction::Header).is_empty());
-            assert!(page_candidates(&width_page, Direction::Footer).is_empty());
+            let (h, f) = page_candidates_both(&width_page);
+            assert!(h.is_empty());
+            assert!(f.is_empty());
 
             let height_page = candidate_page(400.0, value);
-            assert!(page_candidates(&height_page, Direction::Header).is_empty());
-            assert!(page_candidates(&height_page, Direction::Footer).is_empty());
+            let (h, f) = page_candidates_both(&height_page);
+            assert!(h.is_empty());
+            assert!(f.is_empty());
         }
     }
 

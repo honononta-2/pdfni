@@ -179,18 +179,35 @@ pub(crate) fn median(mut v: Vec<f64>) -> f64 {
 
 /// 縦横どちらかでしか整列しないセグメントを反復して落とす
 fn connected_set(segs: &[Seg], tol: f64) -> Vec<usize> {
-    let mut active: Vec<usize> = (0..segs.len()).collect();
+    let n0 = segs.len();
+    let mut active: Vec<usize> = (0..n0).collect();
+    let mut lefts: Vec<f64> = Vec::with_capacity(n0);
+    let mut rights: Vec<f64> = Vec::with_capacity(n0);
+    let mut hmids: Vec<f64> = Vec::with_capacity(n0);
+    let mut tops: Vec<f64> = Vec::with_capacity(n0);
+    let mut bots: Vec<f64> = Vec::with_capacity(n0);
+    let mut vmids: Vec<f64> = Vec::with_capacity(n0);
+    let mut keep: Vec<usize> = Vec::with_capacity(n0);
     loop {
         let n = active.len();
         if n == 0 {
             break;
         }
-        let lefts: Vec<f64> = active.iter().map(|&i| segs[i].bbox.x0).collect();
-        let rights: Vec<f64> = active.iter().map(|&i| segs[i].bbox.x1).collect();
-        let hmids: Vec<f64> = active.iter().map(|&i| segs[i].bbox.cx()).collect();
-        let tops: Vec<f64> = active.iter().map(|&i| segs[i].bbox.top).collect();
-        let bots: Vec<f64> = active.iter().map(|&i| segs[i].bbox.bottom).collect();
-        let vmids: Vec<f64> = active.iter().map(|&i| segs[i].bbox.cy()).collect();
+        lefts.clear();
+        rights.clear();
+        hmids.clear();
+        tops.clear();
+        bots.clear();
+        vmids.clear();
+        for &i in &active {
+            let b = &segs[i].bbox;
+            lefts.push(b.x0);
+            rights.push(b.x1);
+            hmids.push(b.cx());
+            tops.push(b.top);
+            bots.push(b.bottom);
+            vmids.push(b.cy());
+        }
 
         let gl = group_sizes(&lefts, tol);
         let gr = group_sizes(&rights, tol);
@@ -199,7 +216,7 @@ fn connected_set(segs: &[Seg], tol: f64) -> Vec<usize> {
         let gb = group_sizes(&bots, tol);
         let gv = group_sizes(&vmids, tol);
 
-        let mut keep = Vec::new();
+        keep.clear();
         for k in 0..n {
             let col_count = gl[k].max(gr[k]).max(gm[k]);
             let row_count = gt[k].max(gb[k]).max(gv[k]);
@@ -210,7 +227,7 @@ fn connected_set(segs: &[Seg], tol: f64) -> Vec<usize> {
         if keep.len() == n {
             break;
         }
-        active = keep;
+        std::mem::swap(&mut active, &mut keep);
     }
     active
 }

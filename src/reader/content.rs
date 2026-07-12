@@ -170,12 +170,24 @@ pub(crate) fn extract_parts(
         graphics: &mut graphics,
         visiting: &mut visiting,
         text_sink: None,
+        collect_paths: true,
+        collect_glyphs: true,
     }
     .interpret(contents, resources, IDENTITY_MAT);
 
+    finalize_parts(tagged, edges, graphics, view, page_rotate)
+}
+
+/// interpret 結果から parts の後段処理を通して ExtractedParts を返す
+fn finalize_parts(
+    mut tagged: Vec<(GlyphPart, RotQ)>,
+    mut edges: Vec<EdgePart>,
+    mut graphics: Vec<GraphicPart>,
+    view: [f64; 4],
+    page_rotate: i32,
+) -> ExtractedParts {
     let (mut w, mut h) = (view[2] - view[0], view[3] - view[1]);
 
-    // ページ属性 /Rotate の適用（表示座標系へ）
     let page_rot = (page_rotate.rem_euclid(360) / 90) as u8;
     if page_rot != 0 {
         rotate_parts(&mut tagged, &mut edges, &mut graphics, w, h, page_rot);
@@ -188,7 +200,6 @@ pub(crate) fn extract_parts(
         }
     }
 
-    // ページ内容の支配回転の正規化
     let rot = dominant_rotation(&tagged);
     if rot != 0 {
         rotate_parts(&mut tagged, &mut edges, &mut graphics, w, h, rot);
@@ -237,9 +248,49 @@ pub(crate) fn extract_text(
         graphics: &mut graphics,
         visiting: &mut visiting,
         text_sink: Some(&mut sink),
+        collect_paths: false,
+        collect_glyphs: false,
     }
     .interpret(contents, resources, IDENTITY_MAT);
 
+    finalize_text(sink, view, page_rotate)
+}
+
+/// コンテンツストリームから parts と座標付き文字を 1 パスで抽出する
+///
+/// interpret の結果を共有し、後段の rotate と正規化は parts/text それぞれ独立に走る
+pub(crate) fn extract_parts_and_text(
+    contents: &[u8],
+    resources: &Dict,
+    view: [f64; 4],
+    ctx: ContentCtx<'_>,
+    page_rotate: i32,
+) -> (ExtractedParts, ExtractedText) {
+    let mut tagged = Vec::new();
+    let mut edges = Vec::new();
+    let mut graphics = Vec::new();
+    let mut visiting = HashSet::new();
+    let mut sink = TextSink::new();
+    Evaluator {
+        ctx: &ctx,
+        view,
+        glyphs: &mut tagged,
+        edges: &mut edges,
+        graphics: &mut graphics,
+        visiting: &mut visiting,
+        text_sink: Some(&mut sink),
+        collect_paths: true,
+        collect_glyphs: true,
+    }
+    .interpret(contents, resources, IDENTITY_MAT);
+
+    let parts = finalize_parts(tagged, edges, graphics, view, page_rotate);
+    let text = finalize_text(sink, view, page_rotate);
+    (parts, text)
+}
+
+/// interpret 結果の TextSink から text の後段処理を通して ExtractedText を返す
+fn finalize_text(mut sink: TextSink, view: [f64; 4], page_rotate: i32) -> ExtractedText {
     let (mut w, mut h) = (view[2] - view[0], view[3] - view[1]);
     dedup_overlaid_glyphs(&mut sink.chars);
     synth_word_spaces_text(&mut sink.chars);
@@ -1213,6 +1264,10 @@ struct Evaluator<'a, 'b> {
     graphics: &'a mut Vec<GraphicPart>,
     visiting: &'a mut HashSet<Ref>,
     text_sink: Option<&'a mut TextSink>,
+    /// edges/graphics を集める
+    collect_paths: bool,
+    /// glyphs を集める
+    collect_glyphs: bool,
 }
 
 /// interpret 1回分（1ストリーム分）の可変状態
@@ -1225,8 +1280,10 @@ struct Frame<'r> {
     /// この resources スコープ内の Tf 名前 → フォント
     font_memo: HashMap<String, Arc<LoadedFont>>,
     resources: &'r Dict,
-    /// パス構築・ペイントを edges/graphics に反映するか（text_sink 経路では捨てる）
+    /// パス構築・ペイントを edges/graphics に反映するか
     collect_paths: bool,
+    /// TJ 配列展開の使い回しバッファ
+    tj_scratch: Vec<u8>,
 }
 
 impl Evaluator<'_, '_> {
@@ -1260,7 +1317,8 @@ impl Evaluator<'_, '_> {
             text: TextState::new(),
             font_memo: HashMap::new(),
             resources,
-            collect_paths: self.text_sink.is_none(),
+            collect_paths: self.collect_paths,
+            tj_scratch: Vec::new(),
         };
 
         loop {
@@ -1320,6 +1378,7 @@ impl Evaluator<'_, '_> {
             font_memo,
             resources,
             collect_paths,
+            tj_scratch,
         } = frame;
         match op {
             // グラフィックス状態（テキスト状態も保存・復元する。アンダーフローは無視）
@@ -1474,19 +1533,22 @@ impl Evaluator<'_, '_> {
             Op::TStar => text.next_line(),
             Op::Tj => {
                 if let Some(Object::Str(s)) = stack.pop() {
-                    self.show_text_bytes(text, &s, 0.0, *ctm);
+                    let font = text.font.clone();
+                    self.show_text_bytes(text, font.as_ref(), &s, 0.0, *ctm);
                 }
             }
             Op::TJ => {
                 if let Some(Object::Array(arr)) = stack.pop() {
-                    self.show_text_array(text, &arr, *ctm);
+                    let font = text.font.clone();
+                    self.show_text_array(text, font.as_ref(), &arr, *ctm, tj_scratch);
                 }
             }
             Op::Quote => {
                 // 改行してから Tj
                 if let Some(Object::Str(s)) = stack.pop() {
                     text.next_line();
-                    self.show_text_bytes(text, &s, 0.0, *ctm);
+                    let font = text.font.clone();
+                    self.show_text_bytes(text, font.as_ref(), &s, 0.0, *ctm);
                 }
             }
             Op::DblQuote => {
@@ -1496,7 +1558,8 @@ impl Evaluator<'_, '_> {
                         text.word_spacing = n[0];
                         text.char_spacing = n[1];
                         text.next_line();
-                        self.show_text_bytes(text, &s, 0.0, *ctm);
+                        let font = text.font.clone();
+                        self.show_text_bytes(text, font.as_ref(), &s, 0.0, *ctm);
                     }
                 }
             }
@@ -1507,8 +1570,15 @@ impl Evaluator<'_, '_> {
     }
 
     /// TJ 配列の表示
-    fn show_text_array(&mut self, text: &mut TextState, arr: &[Object], ctm: [f64; 6]) {
-        let mut buf: Vec<u8> = Vec::new();
+    fn show_text_array(
+        &mut self,
+        text: &mut TextState,
+        font: Option<&Arc<LoadedFont>>,
+        arr: &[Object],
+        ctm: [f64; 6],
+        buf: &mut Vec<u8>,
+    ) {
+        buf.clear();
         for item in arr {
             match item {
                 Object::Str(s) => buf.extend_from_slice(s),
@@ -1516,14 +1586,14 @@ impl Evaluator<'_, '_> {
                     let n = *n as f64;
                     if n != 0.0 {
                         let extra = -n / 1000.0 * text.font_size;
-                        self.show_text_bytes(text, &buf, extra, ctm);
+                        self.show_text_bytes(text, font, buf, extra, ctm);
                         buf.clear();
                     }
                 }
                 Object::Real(n) => {
                     if *n != 0.0 {
                         let extra = -n / 1000.0 * text.font_size;
-                        self.show_text_bytes(text, &buf, extra, ctm);
+                        self.show_text_bytes(text, font, buf, extra, ctm);
                         buf.clear();
                     }
                 }
@@ -1531,7 +1601,7 @@ impl Evaluator<'_, '_> {
             }
         }
         if !buf.is_empty() {
-            self.show_text_bytes(text, &buf, 0.0, ctm);
+            self.show_text_bytes(text, font, buf, 0.0, ctm);
         }
     }
 
@@ -1542,11 +1612,12 @@ impl Evaluator<'_, '_> {
     fn show_text_bytes(
         &mut self,
         text: &mut TextState,
+        font: Option<&Arc<LoadedFont>>,
         bytes: &[u8],
         extra_spacing: f64,
         ctm: [f64; 6],
     ) {
-        let Some(font) = text.font.clone() else {
+        let Some(font_arc) = font else {
             // フォント未設定時は extra だけの平行移動（TJ 数値のみ）
             if extra_spacing != 0.0 {
                 let dx = extra_spacing * text.text_h_scale;
@@ -1554,11 +1625,13 @@ impl Evaluator<'_, '_> {
             }
             return;
         };
+        let font = &**font_arc;
         if font.vertical() {
-            self.show_text_bytes_vertical(text, &font, bytes, extra_spacing, ctm);
+            self.show_text_bytes_vertical(text, font, bytes, extra_spacing, ctm);
             return;
         }
         let view = self.view;
+        let collect_glyphs = self.collect_glyphs;
         let glyphs = &mut *self.glyphs;
         let mut text_sink = self.text_sink.as_deref_mut();
 
@@ -1576,8 +1649,7 @@ impl Evaluator<'_, '_> {
         let descent = font.descent();
         let font_idx = text_sink
             .as_mut()
-            .map(|s| s.font_index(&font, &text.font_name));
-        let collect_glyphs = text_sink.is_none();
+            .map(|s| s.font_index(font, &text.font_name));
 
         // 列内で不変: TRM 線形成分と派生量（平行移動のみ変わる）
         // text_rendering_matrix と同じ式・同じ演算順で一度だけ算出する
@@ -1629,10 +1701,6 @@ impl Evaluator<'_, '_> {
             let end_trm = mat_mul(ctm, mat_mul(end_tm, tsm));
             let (ex, ey) = (end_trm[4], end_trm[5]);
             let device_w = (ex - ox) * ux + (ey - oy) * uy;
-            // 公称字送り（Tc・Tw・TJ なし）のデバイス長
-            let pure_end_tm = translate_mat(text.text_matrix, scaled_dim, 0.0);
-            let pure_end_trm = mat_mul(ctm, mat_mul(pure_end_tm, tsm));
-            let pure_device_w = (pure_end_trm[4] - ox) * ux + (pure_end_trm[5] - oy) * uy;
 
             // 表経路: コードポイントごとに分割し幅を等分
             if collect_glyphs {
@@ -1675,6 +1743,11 @@ impl Evaluator<'_, '_> {
                     .collect();
                 if !text_str.is_empty() {
                     let (x0, x1, y0, y1) = glyph_box(ox, oy, ux, uy, 0.0, device_w, a_off, d_off);
+                    // 公称字送り（Tc・Tw・TJ なし）のデバイス長
+                    let pure_end_tm = translate_mat(text.text_matrix, scaled_dim, 0.0);
+                    let pure_end_trm = mat_mul(ctm, mat_mul(pure_end_tm, tsm));
+                    let pure_device_w =
+                        (pure_end_trm[4] - ox) * ux + (pure_end_trm[5] - oy) * uy;
                     // 前進ベクトル（TJ 含む、表示座標）
                     let end_tm_full = translate_mat(text.text_matrix, advance, 0.0);
                     let end_trm_full = mat_mul(ctm, mat_mul(end_tm_full, tsm));
@@ -1718,6 +1791,7 @@ impl Evaluator<'_, '_> {
         ctm: [f64; 6],
     ) {
         let view = self.view;
+        let collect_glyphs = self.collect_glyphs;
         let glyphs = &mut *self.glyphs;
         let mut text_sink = self.text_sink.as_deref_mut();
 
@@ -1739,7 +1813,6 @@ impl Evaluator<'_, '_> {
         let font_idx = text_sink
             .as_mut()
             .map(|s| s.font_index(font, &text.font_name));
-        let collect_glyphs = text_sink.is_none();
 
         // 列内で不変: TRM 線形成分と派生量（平行移動のみ変わる）
         let trm_lin = text.text_rendering_matrix(ctm);
