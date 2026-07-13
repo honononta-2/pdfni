@@ -105,4 +105,6 @@ pub struct Page {
 pub struct Document {
     pub source: String,
     pub pages: Vec<Page>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }

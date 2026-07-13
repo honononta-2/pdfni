@@ -91,7 +91,7 @@ pub fn extract_text_lines_from_pdf(
 }
 
 /// PDF バイト列から文書モデルを抽出し DocDoc の JSON を返す
-#[cfg(feature = "reader")]
+#[cfg(feature = "document")]
 #[wasm_bindgen]
 pub fn extract_document_from_pdf(
     bytes: &[u8],
@@ -111,7 +111,7 @@ pub fn extract_document_from_pdf(
 }
 
 /// PDF バイト列から文書モデルを抽出し Markdown 文字列を返す
-#[cfg(feature = "reader")]
+#[cfg(feature = "document")]
 #[wasm_bindgen]
 pub fn extract_markdown_from_pdf(
     bytes: &[u8],

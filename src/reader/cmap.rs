@@ -690,6 +690,7 @@ endcmap
         assert_eq!(bytes_str(&cmap, 0x40), "A");
     }
 
+    #[cfg(feature = "cmap-japan1")]
     #[test]
     fn load_90ms_rksj_h_codespace_and_read() {
         let cmap = CMap::load_predefined("90ms-RKSJ-H").expect("load 90ms-RKSJ-H");
@@ -703,6 +704,7 @@ endcmap
         assert_eq!(len2, 2);
     }
 
+    #[cfg(feature = "cmap-japan1")]
     #[test]
     fn japan1_cid_to_ucs2_fullwidth_space() {
         let rksj = CMap::load_predefined("90ms-RKSJ-H").expect("load RKSJ");
@@ -720,6 +722,7 @@ endcmap
         }
     }
 
+    #[cfg(feature = "cmap-japan1")]
     #[test]
     fn load_90ms_rksj_v_usecmap_and_vertical() {
         let cmap = CMap::load_predefined("90ms-RKSJ-V").expect("load V");
@@ -730,6 +733,7 @@ endcmap
         assert!(cmap.lookup(0x8140).is_some());
     }
 
+    #[cfg(feature = "cmap-japan1")]
     #[test]
     fn embedded_usecmap_inherits_parent() {
         // 親 90ms-RKSJ-H を usecmap し、子は codespace 無しで 0x8140 だけ上書き
@@ -789,11 +793,27 @@ endcmap
     fn feature_gates_bcmap_bytes() {
         use super::super::data::bcmaps::{bcmap_bytes, bundled_features};
         let f = bundled_features();
-        // reader 既定では全系統有効
-        assert!(f.japan1);
-        assert!(f.gb1);
-        assert!(bcmap_bytes("90ms-RKSJ-H").is_some());
-        assert!(bcmap_bytes("GB-EUC-H").is_some());
+        #[cfg(feature = "cmap-gb1")]
+        {
+            assert!(f.gb1);
+            assert!(bcmap_bytes("GB-EUC-H").is_some());
+        }
+        #[cfg(feature = "cmap-cns1")]
+        {
+            assert!(f.cns1);
+            assert!(bcmap_bytes("B5-H").is_some());
+        }
+        #[cfg(feature = "cmap-japan1")]
+        {
+            assert!(f.japan1);
+            assert!(bcmap_bytes("90ms-RKSJ-H").is_some());
+        }
+        #[cfg(feature = "cmap-korea1")]
+        {
+            assert!(f.korea1);
+            assert!(bcmap_bytes("KSC-EUC-H").is_some());
+        }
+        let _ = f;
         // 未同梱名
         assert!(bcmap_bytes("No-Such-CMap").is_none());
     }

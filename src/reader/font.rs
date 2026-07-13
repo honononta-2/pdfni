@@ -903,7 +903,7 @@ fn load_encoding_cmap(
     xref: Option<&XRef>,
 ) -> (Arc<CMap>, EncodingOrigin) {
     let Some(enc) = type0.get("Encoding") else {
-        eprintln!("reader: Type0 font missing /Encoding; treating as Identity-H");
+        warn(xref, "Type0 font missing /Encoding; treating as Identity-H");
         return (Arc::new(CMap::identity_h()), EncodingOrigin::Predefined);
     };
     match resolve_obj(enc, data, xref) {
@@ -914,8 +914,11 @@ fn load_encoding_cmap(
             match load_predefined_cmap(&n, xref) {
                 Ok(c) => (c, EncodingOrigin::Predefined),
                 Err(e) => {
-                    eprintln!(
-                        "reader: failed to load predefined CMap '{n}' ({e}); treating as Identity-H"
+                    warn(
+                        xref,
+                        format!(
+                            "failed to load predefined CMap '{n}' ({e}); treating as Identity-H"
+                        ),
                     );
                     (Arc::new(CMap::identity_h()), EncodingOrigin::Predefined)
                 }
@@ -929,7 +932,7 @@ fn load_encoding_cmap(
             )
         }
         _ => {
-            eprintln!("reader: invalid /Encoding; treating as Identity-H");
+            warn(xref, "invalid /Encoding; treating as Identity-H");
             (Arc::new(CMap::identity_h()), EncodingOrigin::Predefined)
         }
     }
@@ -957,7 +960,7 @@ fn load_ucs2_companion(
     match load_predefined_cmap(&name, xref) {
         Ok(c) => Some(c),
         Err(e) => {
-            eprintln!("reader: failed to load UCS2 CMap '{name}' ({e})");
+            warn(xref, format!("failed to load UCS2 CMap '{name}' ({e})"));
             None
         }
     }
@@ -1016,7 +1019,7 @@ fn load_tounicode(
                 return ToUnicode::Identity;
             }
             // その他の名前付き ToUnicode は第2段階
-            eprintln!("reader: named ToUnicode '{n}' not loaded yet");
+            warn(xref, format!("named ToUnicode '{n}' not loaded yet"));
             ToUnicode::empty()
         }
         Object::Stream(s) => {
@@ -1667,6 +1670,16 @@ fn read_i16(data: &[u8], off: usize) -> Option<i16> {
     Some(i16::from_be_bytes([data[off], data[off + 1]]))
 }
 
+/// フォント処理中に発生した警告を xref 経由で蓄積する
+fn warn(xref: Option<&XRef>, msg: impl Into<String>) {
+    let msg = msg.into();
+    if let Some(x) = xref {
+        x.push_warning(format!("reader: {msg}"));
+    } else {
+        eprintln!("reader: {msg}");
+    }
+}
+
 fn read_u32(data: &[u8], off: usize) -> Option<u32> {
     if off + 4 > data.len() {
         return None;
@@ -2186,6 +2199,7 @@ endcmap
     }
 
     /// Adobe-Japan1 の CIDSystemInfo
+    #[cfg(feature = "cmap-japan1")]
     fn japan1_cid_system_info() -> Dict {
         let mut info = Dict::new();
         info.set("Registry", Object::Str(b"Adobe".to_vec()));
@@ -2195,6 +2209,7 @@ endcmap
     }
 
     /// 90ms-RKSJ-H 複合フォント（/W 付き）
+    #[cfg(feature = "cmap-japan1")]
     fn type0_rksj(encoding: &str, with_w: bool) -> Dict {
         let mut cid = Dict::new();
         cid.set("Subtype", Object::Name("CIDFontType0".into()));
@@ -2223,6 +2238,7 @@ endcmap
         type0
     }
 
+    #[cfg(feature = "cmap-japan1")]
     #[test]
     fn predefined_rksj_h_unicode_width_and_mixed() {
         let type0 = type0_rksj("90ms-RKSJ-H", true);
@@ -2242,6 +2258,7 @@ endcmap
         assert_eq!(g2[1].unicode, "\u{3000}");
     }
 
+    #[cfg(feature = "cmap-japan1")]
     #[test]
     fn predefined_rksj_v_vertical_same_unicode() {
         let h = load_font_dict(&type0_rksj("90ms-RKSJ-H", false), "H", &[], None);
@@ -2254,6 +2271,7 @@ endcmap
         assert_eq!(gv[0].unicode, gh[0].unicode);
     }
 
+    #[cfg(feature = "cmap-japan1")]
     #[test]
     fn tounicode_takes_priority_over_ucs2() {
         // ToUnicode: 0x8140 → "X"（UCS2 なら U+3000）
@@ -2279,6 +2297,7 @@ endcmap
         assert_eq!(g[0].unicode, "X");
     }
 
+    #[cfg(feature = "cmap-japan1")]
     #[test]
     fn identity_h_japan1_ucs2_without_tounicode() {
         // 0x8140 の CID を Identity の charcode として使う

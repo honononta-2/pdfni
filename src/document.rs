@@ -35,6 +35,8 @@ const LIST_INDENT_MIN_PT: f64 = 2.0;
 #[derive(Debug, Clone, Serialize)]
 pub struct DocDoc {
     pub pages: Vec<DocPage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// 1ページ分の文書モデル
@@ -676,7 +678,7 @@ pub fn extract_document_from_bytes(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<DocDoc> {
-    let (parts, text_pages) = read_pages_and_text(data, password)?;
+    let (parts, text_pages, warnings) = read_pages_and_text(data, password)?;
     let tables_doc = extract_from_parts(parts, options);
 
     let mut pages = Vec::with_capacity(text_pages.len());
@@ -697,7 +699,7 @@ pub fn extract_document_from_bytes(
         });
     }
 
-    let mut doc = DocDoc { pages };
+    let mut doc = DocDoc { pages, warnings };
     if options.detect_header_footer {
         assign_header_footer(&mut doc);
     }
@@ -2649,6 +2651,7 @@ mod tests {
                 chars,
                 blocks: vec![para_from_lines(lines)],
             }],
+            warnings: Vec::new(),
         }
     }
 
@@ -2946,6 +2949,7 @@ mod tests {
                 chars: p.chars,
                 blocks,
             }],
+            warnings: Vec::new(),
         }
     }
 
@@ -3030,7 +3034,7 @@ mod tests {
                 fonts: p.fonts,
                 chars: p.chars,
                 blocks,
-            }],
+            }], warnings: Vec::new(),
         };
         // 3 行ブロックがあること
         let multi = text_blocks(&doc.pages[0].blocks)
@@ -3072,7 +3076,7 @@ mod tests {
                 fonts: p.fonts,
                 chars: p.chars,
                 blocks,
-            }],
+            }], warnings: Vec::new(),
         };
         assign_headings(&mut doc);
         let kinds = text_kinds(&doc);
@@ -3104,7 +3108,7 @@ mod tests {
                 fonts: p.fonts,
                 chars: p.chars,
                 blocks,
-            }],
+            }], warnings: Vec::new(),
         };
         // 手動で Heading 相当の Text を足さず、表のみ
         assert!(text_blocks(&doc.pages[0].blocks).is_empty());
@@ -3142,7 +3146,7 @@ mod tests {
                 fonts: p.fonts,
                 chars: p.chars,
                 blocks,
-            }],
+            }], warnings: Vec::new(),
         };
         assign_headings(&mut doc);
         let kinds = text_kinds(&doc);
@@ -3179,6 +3183,7 @@ mod tests {
                 chars: vec![],
                 blocks,
             }],
+            warnings: Vec::new(),
         }
     }
 
@@ -3444,7 +3449,7 @@ mod tests {
                     chars: vec![],
                     blocks: vec![text_block(TextBlockKind::Paragraph, "p3")],
                 },
-            ],
+            ], warnings: Vec::new(),
         };
         let md = document_to_markdown(&doc, true);
         assert_eq!(md, "p1\n\np2\n\np3");
@@ -3453,7 +3458,7 @@ mod tests {
 
     #[test]
     fn markdown_empty_doc_and_empty_paragraph() {
-        let empty = DocDoc { pages: vec![] };
+        let empty = DocDoc { pages: vec![], warnings: Vec::new() };
         assert_eq!(document_to_markdown(&empty, true), "");
 
         let empty_pages = DocDoc {
@@ -3464,7 +3469,7 @@ mod tests {
                 fonts: vec![],
                 chars: vec![],
                 blocks: vec![],
-            }],
+            }], warnings: Vec::new(),
         };
         assert_eq!(document_to_markdown(&empty_pages, true), "");
 
@@ -3771,7 +3776,7 @@ mod tests {
                 fonts: p.fonts.clone(),
                 chars: p.chars.clone(),
                 blocks,
-            }],
+            }], warnings: Vec::new(),
         };
         assign_headings(&mut doc);
         let md = document_to_markdown(&doc, true);
@@ -3930,7 +3935,7 @@ mod tests {
             pages: vec![
                 furniture_page(1, 400.0, h, vec![h1, bd1], ca),
                 furniture_page(2, 400.0, h, vec![h2, bd2], cb),
-            ],
+            ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
         assert_eq!(
@@ -3952,7 +3957,7 @@ mod tests {
             pages: vec![
                 furniture_page(1, 400.0, h, vec![bd1, f1], ca),
                 furniture_page(2, 400.0, h, vec![bd2, f2], cb),
-            ],
+            ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
         let roles = roles_of(&doc);
@@ -3972,7 +3977,7 @@ mod tests {
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
             pages.push(furniture_page(pi + 1, 400.0, h, vec![a, b, body], chars));
         }
-        let mut doc = DocDoc { pages };
+        let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
         for page in &doc.pages {
             let roles: Vec<_> = page
@@ -3997,7 +4002,7 @@ mod tests {
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
             pages.push(furniture_page(pi + 1, 400.0, h, vec![a, b, body], chars));
         }
-        let mut doc = DocDoc { pages };
+        let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
         for page in &doc.pages {
             let roles: Vec<_> = page
@@ -4026,7 +4031,7 @@ mod tests {
             pages: vec![
                 furniture_page(1, 400.0, h, vec![a, ba], ca),
                 furniture_page(2, 400.0, h, vec![b, bb], cb),
-            ],
+            ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
         assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Header);
@@ -4043,7 +4048,7 @@ mod tests {
             pages: vec![
                 furniture_page(1, 400.0, h, vec![a, ba], ca),
                 furniture_page(2, 400.0, h, vec![b, bb], cb),
-            ],
+            ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
         assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Body);
@@ -4064,7 +4069,7 @@ mod tests {
             pages: vec![
                 furniture_page(1, 400.0, h, vec![a, ba], ca),
                 furniture_page(2, 400.0, h, vec![b, bb], cb),
-            ],
+            ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
         assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Body);
@@ -4083,7 +4088,7 @@ mod tests {
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
             pages.push(furniture_page(pi + 1, 400.0, h, vec![a, b, body], chars));
         }
-        let mut doc = DocDoc { pages };
+        let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
         // k=0 で A どうし一致、k=1 で B どうし（隣接 gap=10-25 負=重なり相当で OK）
         // top same: A bottom 25, B top 10 → gap = 10-25 = -15 ≤ 30
@@ -4103,7 +4108,7 @@ mod tests {
 
     #[test]
     fn furniture_empty_doc_and_empty_pages() {
-        let mut empty = DocDoc { pages: vec![] };
+        let mut empty = DocDoc { pages: vec![], warnings: Vec::new() };
         assign_header_footer(&mut empty);
         assert!(empty.pages.is_empty());
 
@@ -4111,7 +4116,7 @@ mod tests {
             pages: vec![
                 furniture_page(1, 400.0, 600.0, vec![], vec![]),
                 furniture_page(2, 400.0, 600.0, vec![], vec![]),
-            ],
+            ], warnings: Vec::new(),
         };
         assign_header_footer(&mut pages);
         assert!(roles_of(&pages).iter().all(|r| r.is_empty()));
@@ -4122,7 +4127,7 @@ mod tests {
         let mut chars = Vec::new();
         let h = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.0, &mut chars);
         let mut doc = DocDoc {
-            pages: vec![furniture_page(1, 400.0, 600.0, vec![h], chars)],
+            pages: vec![furniture_page(1, 400.0, 600.0, vec![h], chars)], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
         assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Body);
@@ -4138,7 +4143,7 @@ mod tests {
             pages: vec![
                 furniture_page(1, 400.0, 0.0, vec![a], ca),
                 furniture_page(2, 400.0, f64::NAN, vec![b], cb),
-            ],
+            ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
         assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Body);
@@ -4162,7 +4167,7 @@ mod tests {
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
             pages.push(furniture_page(pi + 1, 400.0, h, vec![body, f], chars));
         }
-        let mut doc = DocDoc { pages };
+        let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
         for page in &doc.pages {
             let footer = page.blocks.iter().find_map(|b| match b {
@@ -4182,7 +4187,7 @@ mod tests {
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
             pages.push(furniture_page(pi + 1, 400.0, h, vec![body, f], chars));
         }
-        let mut doc = DocDoc { pages };
+        let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
         // d=1: 骨格不一致で不成立。d=2: "X 1" vs "X 3" は骨格一致・値+2 で成立
         // 中央 "2 X" は救済（鏡映一致 + 値連続）
@@ -4210,7 +4215,7 @@ mod tests {
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
             pages.push(furniture_page(pi + 1, 400.0, h, vec![hd, body], chars));
         }
-        let mut doc = DocDoc { pages };
+        let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
         let once = roles_of(&doc);
         assign_header_footer(&mut doc);
@@ -4240,7 +4245,7 @@ mod tests {
                 chars,
             ));
         }
-        let mut doc = DocDoc { pages };
+        let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
         assign_headings(&mut doc);
         // ヘッダ除外後の mode は 10 → Title 18 は level 1
@@ -4355,7 +4360,7 @@ mod tests {
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
             pages.push(furniture_page(pi + 1, 400.0, h, vec![hd, body], chars));
         }
-        let mut doc = DocDoc { pages };
+        let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
         assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Header);
         assert_eq!(roles_of(&doc)[1][0], TextBlockRole::Header);
@@ -4495,6 +4500,7 @@ mod tests {
                     lines,
                 })],
             }],
+            warnings: Vec::new(),
         }
     }
 
@@ -4701,7 +4707,7 @@ mod tests {
                     rot: 0,
                     lines: vec![line],
                 })],
-            }],
+            }], warnings: Vec::new(),
         };
         // 復元不能のため TextBlock.text へフォールバック（強調なし）
         assert_eq!(document_to_markdown(&doc, true), "bold");

@@ -42,6 +42,8 @@ pub(crate) struct XRef {
     pub(super) cmap_cache: Arc<Mutex<HashMap<String, Arc<CMap>>>>,
     /// 文書内で共有する Form XObject 復号済み本文（参照番号 → 本文）
     pub(super) form_body_cache: Arc<Mutex<HashMap<u32, Arc<Vec<u8>>>>>,
+    /// 文書処理中に蓄積した警告
+    pub(super) warnings: Arc<Mutex<Vec<String>>>,
     /// スレッド別の取得中参照（循環検出）
     pending: Mutex<HashMap<std::thread::ThreadId, HashSet<Ref>>>,
     /// Standard セキュリティハンドラ（無ければ平文）
@@ -95,6 +97,7 @@ impl XRef {
             font_cache: Arc::new(Mutex::new(HashMap::new())),
             cmap_cache: Arc::new(Mutex::new(HashMap::new())),
             form_body_cache: Arc::new(Mutex::new(HashMap::new())),
+            warnings: Arc::new(Mutex::new(Vec::new())),
             pending: Mutex::new(HashMap::new()),
             cipher: None,
             encrypt_num: None,
@@ -442,6 +445,27 @@ impl XRef {
     /// 暗号ハンドラ（平文なら None）
     pub fn cipher(&self) -> Option<&CipherFactory> {
         self.cipher.as_ref()
+    }
+
+    /// 警告を1件追加する
+    pub(crate) fn push_warning(&self, msg: impl Into<String>) {
+        if let Ok(mut w) = self.warnings.lock() {
+            w.push(msg.into());
+        }
+    }
+
+    /// 蓄積した警告を取り出し、同じ内容の連続重複を除いて返す
+    pub(crate) fn take_warnings(&self) -> Vec<String> {
+        let Ok(mut w) = self.warnings.lock() else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = Vec::with_capacity(w.len());
+        for msg in w.drain(..) {
+            if !out.iter().any(|m| m == &msg) {
+                out.push(msg);
+            }
+        }
+        out
     }
 
     /// エントリ表（テスト・診断用）

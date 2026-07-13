@@ -2,6 +2,10 @@
 name = "reticella"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Extract tables and Markdown from text-embedded PDFs, with a built-in pure-Rust PDF reader adapted from Mozilla pdf.js."
+license = "Apache-2.0"
+readme = "README.md"
 
 [lib]
 name = "reticella"
@@ -23,26 +27,30 @@ required-features = ["reader"]
 
 [[example]]
 name = "text_probe"
-required-features = ["reader"]
+required-features = ["document"]
 
 [features]
-default = ["reader"]
-# 純Rustリーダーによる読み取り経路（既定で全言語 CMap を同梱）
-reader = [
-    "dep:flate2",
-    "dep:aes",
-    "dep:cbc",
-    "dep:md-5",
-    "dep:sha2",
-    "cmap-japan1",
-    "cmap-gb1",
-    "cmap-cns1",
-    "cmap-korea1",
+default = [
+    "document",
+    "cmap-gb1", "cmap-cns1", "cmap-japan1", "cmap-korea1",
 ]
-# 定義済み CMap の言語系統（空 feature。reader から個別に外せる）
+
+# Text views: coordinate-tagged chars, lines, and words
+text = []
+
+# PDF byte input: parse bytes into page parts and TextDoc
+reader = [
+    "text",
+    "dep:flate2", "dep:aes", "dep:cbc", "dep:md-5", "dep:sha2",
+]
+
+# Document model and Markdown output
+document = ["reader"]
+
+# Predefined CMap groups; effective only when `reader` is enabled
+cmap-gb1    = []
+cmap-cns1   = []
 cmap-japan1 = []
-cmap-gb1 = []
-cmap-cns1 = []
 cmap-korea1 = []
 
 [profile.release]

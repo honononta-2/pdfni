@@ -19,7 +19,9 @@ use crate::extract::{ExtractOptions, PagePart, extract_from_parts};
 use crate::model::Document;
 use crate::text::{TextDoc, TextPage};
 
-use content::{ContentCtx, extract_parts, extract_parts_and_text, extract_text};
+use content::{ContentCtx, extract_parts, extract_text};
+#[cfg(feature = "document")]
+use content::extract_parts_and_text;
 use pages::{collect_pages, decode_contents, view_height, view_width};
 use xref::XRef;
 
@@ -29,8 +31,18 @@ pub fn extract_from_bytes(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<Document> {
-    let pages = read_pages(bytes, password)?;
-    Ok(extract_from_parts(pages, options))
+    let xref = XRef::parse_with_password(bytes, password)?;
+    let page_infos = collect_pages(bytes, &xref)?;
+    let pages = crate::par::map_ordered(
+        page_infos,
+        || &xref,
+        |xref, _, p| build_page_part(p, bytes, xref),
+    )
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
+    let mut doc = extract_from_parts(pages, options);
+    doc.warnings = xref.take_warnings();
+    Ok(doc)
 }
 
 /// 純Rustリーダーによるバイト列からの座標付き文字抽出
@@ -45,7 +57,10 @@ pub fn extract_text_from_bytes(bytes: &[u8], password: Option<&str>) -> Result<T
     )
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
-    Ok(TextDoc { pages })
+    Ok(TextDoc {
+        pages,
+        warnings: xref.take_warnings(),
+    })
 }
 
 /// PDFバイト列からページ単位の parts を構築する
@@ -109,10 +124,13 @@ fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<Text
 }
 
 /// PDF バイト列からページ単位の parts と座標付き文字を 1 パスで構築する
+///
+/// 3 番目の戻り値は文書処理中に蓄積した警告
+#[cfg(feature = "document")]
 pub(crate) fn read_pages_and_text(
     bytes: &[u8],
     password: Option<&str>,
-) -> Result<(Vec<PagePart>, Vec<TextPage>)> {
+) -> Result<(Vec<PagePart>, Vec<TextPage>, Vec<String>)> {
     let xref = XRef::parse_with_password(bytes, password)?;
     let page_infos = collect_pages(bytes, &xref)?;
     let results: Vec<(PagePart, TextPage)> = crate::par::map_ordered(
@@ -122,10 +140,13 @@ pub(crate) fn read_pages_and_text(
     )
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
-    Ok(results.into_iter().unzip())
+    let warnings = xref.take_warnings();
+    let (parts, texts) = results.into_iter().unzip();
+    Ok((parts, texts, warnings))
 }
 
 /// ページ1枚分の parts と座標付き文字を 1 パスで構築する
+#[cfg(feature = "document")]
 fn build_page_part_and_text(
     p: pages::PageInfo,
     bytes: &[u8],

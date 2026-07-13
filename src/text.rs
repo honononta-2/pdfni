@@ -10,6 +10,8 @@ use crate::bidi::apply_bidi;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextDoc {
     pub pages: Vec<TextPage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// 1ページ分の座標付き文字

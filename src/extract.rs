@@ -945,6 +945,7 @@ pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Doc
     Document {
         source: "<parts>".to_string(),
         pages: out,
+        warnings: Vec::new(),
     }
 }
 
