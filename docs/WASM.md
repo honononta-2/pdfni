@@ -35,15 +35,20 @@ for the full feature layering and the CMap trimming warning.
 | --- | --- | --- |
 | `extract_tables(input_json)` | — (always available) | parts JSON → table `Document` JSON |
 | `extract_tables_from_pdf(bytes, options_json?, password?)` | `reader` | PDF bytes → table `Document` JSON |
-| `extract_text_from_pdf(bytes, password?)` | `reader` | PDF bytes → `TextDoc` JSON |
-| `extract_text_items_from_pdf(bytes, password?)` | `reader` | PDF bytes → pdf.js-like items per page |
-| `extract_text_lines_from_pdf(bytes, password?)` | `reader` | PDF bytes → line / word view per page |
+| `extract_text_from_pdf(bytes, password?, options_json?)` | `reader` | PDF bytes → `TextDoc` JSON |
+| `extract_text_items_from_pdf(bytes, password?, options_json?)` | `reader` | PDF bytes → pdf.js-like items per page |
+| `extract_text_lines_from_pdf(bytes, password?, options_json?)` | `reader` | PDF bytes → line / word view per page |
 | `extract_document_from_pdf(bytes, options_json?, password?)` | `document` | PDF bytes → `DocDoc` JSON (blocks + tables) |
 | `extract_markdown_from_pdf(bytes, options_json?, password?)` | `document` | PDF bytes → Markdown string |
 
 `options_json` accepts the same JSON that `ExtractOptions` deserializes on the
 Rust side (fields like `mode`, `detect_lists`, `escape_markdown`, `bidi`,
-`detect_header_footer`). Bidi is off in the `extract_text_items_from_pdf`
+`detect_header_footer`, and the `reader` section — see
+[ARCHITECTURE.md](ARCHITECTURE.md#resource-limits) for
+`reader.max_decoded_bytes`). The text helpers (`extract_text_from_pdf`,
+`extract_text_items_from_pdf`, `extract_text_lines_from_pdf`) take
+`options_json` as their last argument and only read the `reader` section.
+Bidi is off in the `extract_text_items_from_pdf`
 and `extract_text_lines_from_pdf` helpers — enable it via `options_json` on
 the document / Markdown paths, or use the Rust `_with` APIs directly.
 

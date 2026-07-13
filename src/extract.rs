@@ -80,6 +80,27 @@ pub enum DetectMode {
     Borderless,
 }
 
+/// ストリーム復号のチェーン累積出力の既定上限
+pub(crate) const DEFAULT_MAX_DECODED_BYTES: usize = 512 * 1024 * 1024;
+
+/// 読み取り層のパラメータ
+///
+/// parts 入力の経路では使われない
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ReaderSettings {
+    /// ストリーム復号のチェーン累積出力の上限バイト数
+    pub max_decoded_bytes: usize,
+}
+
+impl Default for ReaderSettings {
+    fn default() -> Self {
+        Self {
+            max_decoded_bytes: DEFAULT_MAX_DECODED_BYTES,
+        }
+    }
+}
+
 /// 抽出処理のパラメータ
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -88,6 +109,8 @@ pub struct ExtractOptions {
     pub lattice: LatticeSettings,
     pub hybrid: HybridSettings,
     pub text: TextSettings,
+    /// 読み取り層の設定
+    pub reader: ReaderSettings,
     /// ヘッダ・フッタ検出（既定は無効）
     pub detect_header_footer: bool,
     /// リスト検出（既定は有効）
@@ -116,6 +139,7 @@ impl Default for ExtractOptions {
             lattice: LatticeSettings::default(),
             hybrid: HybridSettings::default(),
             text: TextSettings::default(),
+            reader: ReaderSettings::default(),
             detect_header_footer: false,
             detect_lists: true,
             escape_markdown: true,

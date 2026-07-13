@@ -1122,7 +1122,7 @@ mod tests {
         };
         use super::super::filters::decode_stream;
         use super::super::parser::NullResolver;
-        decode_stream(data, &stm, &NullResolver, xref.cipher())
+        decode_stream(data, &stm, &NullResolver, xref.cipher(), xref.decode_limit())
             .expect("decode content stream")
     }
 

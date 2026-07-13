@@ -1612,6 +1612,9 @@ fn decode_stream_bytes(data: &[u8], stream: &Stream, xref: Option<&XRef>) -> Opt
         stream,
         &FetchResolver { xref, data },
         xref.and_then(|x| x.cipher()),
+        xref.map_or(crate::extract::DEFAULT_MAX_DECODED_BYTES, |x| {
+            x.decode_limit()
+        }),
     )
     .ok()
 }

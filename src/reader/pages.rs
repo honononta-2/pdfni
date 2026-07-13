@@ -289,7 +289,7 @@ pub(crate) fn decode_contents(data: &[u8], xref: &XRef, contents: &Object) -> Re
     let resolver = FetchResolver { xref, data };
 
     match contents {
-        Object::Stream(s) => decode_stream(data, s, &resolver, xref.cipher()),
+        Object::Stream(s) => decode_stream(data, s, &resolver, xref.cipher(), xref.decode_limit()),
         Object::Array(arr) => {
             let mut chunks = Vec::new();
             for item in arr {
@@ -297,7 +297,13 @@ pub(crate) fn decode_contents(data: &[u8], xref: &XRef, contents: &Object) -> Re
                 let Object::Stream(s) = &*obj else {
                     continue;
                 };
-                chunks.push(decode_stream(data, s, &resolver, xref.cipher())?);
+                chunks.push(decode_stream(
+                    data,
+                    s,
+                    &resolver,
+                    xref.cipher(),
+                    xref.decode_limit(),
+                )?);
             }
             // ストリーム間は空白1つで連結する
             Ok(chunks.join(&b' '))
@@ -649,5 +655,49 @@ mod tests {
         let xref = XRef::parse(&data).expect("parse");
         let pages = collect_pages(&data, &xref).expect("collect");
         assert_eq!(pages[0].view, [0.0, 0.0, 200.0, 300.0]);
+    }
+
+    /// options.reader.max_decoded_bytes が復号経路まで届いている
+    #[test]
+    fn decode_limit_option_reaches_filters() {
+        use flate2::Compression;
+        use flate2::write::ZlibEncoder;
+        use std::io::Write;
+
+        let plain = vec![b' '; 50_000];
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(&plain).unwrap();
+        let compressed = enc.finish().unwrap();
+
+        let mut b = PdfBuilder::new();
+        let contents = b.add_stream("/Filter /FlateDecode", &compressed);
+        let page = b.add_obj(
+            format!(
+                "<< /Type /Page /Parent 3 0 R /MediaBox [0 0 100 200] /Resources << >> /Contents {contents} 0 R >>"
+            )
+            .as_bytes(),
+        );
+        let pages = b.add_obj(
+            format!("<< /Type /Pages /Kids [{page} 0 R] /Count 1 >>").as_bytes(),
+        );
+        let catalog = b.add_obj(
+            format!("<< /Type /Catalog /Pages {pages} 0 R >>").as_bytes(),
+        );
+        let data = b.finish(catalog);
+
+        let defaults = crate::extract::ExtractOptions::default();
+        assert!(crate::reader::extract_from_bytes(&data, None, &defaults).is_ok());
+
+        let mut small = crate::extract::ExtractOptions::default();
+        small.reader.max_decoded_bytes = 1000;
+        assert!(crate::reader::extract_from_bytes(&data, None, &small).is_err());
+
+        assert!(crate::reader::extract_text_from_bytes(&data, None).is_ok());
+        let reader = crate::extract::ReaderSettings {
+            max_decoded_bytes: 1000,
+        };
+        assert!(
+            crate::reader::extract_text_from_bytes_with(&data, None, &reader).is_err()
+        );
     }
 }

@@ -40,14 +40,33 @@ pub fn extract_tables_from_pdf(
     serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// options_json から読み取り層の設定を取り出す
+///
+/// 検出系の項目は無視される。None・空文字は既定値
+#[cfg(feature = "reader")]
+fn reader_settings_from_json(
+    options_json: Option<String>,
+) -> Result<crate::extract::ReaderSettings, JsError> {
+    match options_json {
+        Some(s) if !s.is_empty() => {
+            let options: ExtractOptions =
+                serde_json::from_str(&s).map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(options.reader)
+        }
+        _ => Ok(crate::extract::ReaderSettings::default()),
+    }
+}
+
 /// PDF バイト列から座標付き文字を抽出し TextDoc の JSON を返す
 #[cfg(feature = "reader")]
 #[wasm_bindgen]
 pub fn extract_text_from_pdf(
     bytes: &[u8],
     password: Option<String>,
+    options_json: Option<String>,
 ) -> Result<String, JsError> {
-    let doc = crate::reader::extract_text_from_bytes(bytes, password.as_deref())
+    let reader = reader_settings_from_json(options_json)?;
+    let doc = crate::reader::extract_text_from_bytes_with(bytes, password.as_deref(), &reader)
         .map_err(|e| JsError::new(&e.to_string()))?;
     serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
 }
@@ -60,8 +79,10 @@ pub fn extract_text_from_pdf(
 pub fn extract_text_items_from_pdf(
     bytes: &[u8],
     password: Option<String>,
+    options_json: Option<String>,
 ) -> Result<String, JsError> {
-    let doc = crate::reader::extract_text_from_bytes(bytes, password.as_deref())
+    let reader = reader_settings_from_json(options_json)?;
+    let doc = crate::reader::extract_text_from_bytes_with(bytes, password.as_deref(), &reader)
         .map_err(|e| JsError::new(&e.to_string()))?;
     let pages: Vec<Vec<crate::text::TextItem>> = doc
         .pages
@@ -79,8 +100,10 @@ pub fn extract_text_items_from_pdf(
 pub fn extract_text_lines_from_pdf(
     bytes: &[u8],
     password: Option<String>,
+    options_json: Option<String>,
 ) -> Result<String, JsError> {
-    let doc = crate::reader::extract_text_from_bytes(bytes, password.as_deref())
+    let reader = reader_settings_from_json(options_json)?;
+    let doc = crate::reader::extract_text_from_bytes_with(bytes, password.as_deref(), &reader)
         .map_err(|e| JsError::new(&e.to_string()))?;
     let pages: Vec<Vec<crate::text::TextLine>> = doc
         .pages

@@ -678,7 +678,7 @@ pub fn extract_document_from_bytes(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<DocDoc> {
-    let (parts, text_pages, warnings) = read_pages_and_text(data, password)?;
+    let (parts, text_pages, warnings) = read_pages_and_text(data, password, &options.reader)?;
     let tables_doc = extract_from_parts(parts, options);
 
     let mut pages = Vec::with_capacity(text_pages.len());

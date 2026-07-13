@@ -15,7 +15,7 @@ mod parser;
 mod xref;
 
 use crate::error::Result;
-use crate::extract::{ExtractOptions, PagePart, extract_from_parts};
+use crate::extract::{ExtractOptions, PagePart, ReaderSettings, extract_from_parts};
 use crate::model::Document;
 use crate::text::{TextDoc, TextPage};
 
@@ -31,7 +31,7 @@ pub fn extract_from_bytes(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<Document> {
-    let xref = XRef::parse_with_password(bytes, password)?;
+    let xref = XRef::parse_with_limit(bytes, password, options.reader.max_decoded_bytes)?;
     let page_infos = collect_pages(bytes, &xref)?;
     let pages = crate::par::map_ordered(
         page_infos,
@@ -47,7 +47,16 @@ pub fn extract_from_bytes(
 
 /// 純Rustリーダーによるバイト列からの座標付き文字抽出
 pub fn extract_text_from_bytes(bytes: &[u8], password: Option<&str>) -> Result<TextDoc> {
-    let xref = XRef::parse_with_password(bytes, password)?;
+    extract_text_from_bytes_with(bytes, password, &ReaderSettings::default())
+}
+
+/// 読み取り層の設定付きの座標付き文字抽出
+pub fn extract_text_from_bytes_with(
+    bytes: &[u8],
+    password: Option<&str>,
+    reader: &ReaderSettings,
+) -> Result<TextDoc> {
+    let xref = XRef::parse_with_limit(bytes, password, reader.max_decoded_bytes)?;
     let page_infos = collect_pages(bytes, &xref)?;
     // XRef は Sync なので全スレッドで共有する
     let pages = crate::par::map_ordered(
@@ -65,8 +74,17 @@ pub fn extract_text_from_bytes(bytes: &[u8], password: Option<&str>) -> Result<T
 
 /// PDFバイト列からページ単位の parts を構築する
 pub fn read_pages(bytes: &[u8], password: Option<&str>) -> Result<Vec<PagePart>> {
+    read_pages_with(bytes, password, &ReaderSettings::default())
+}
+
+/// 読み取り層の設定付きの parts 構築
+pub fn read_pages_with(
+    bytes: &[u8],
+    password: Option<&str>,
+    reader: &ReaderSettings,
+) -> Result<Vec<PagePart>> {
     // 空パスワード → 引数パスワードは CipherFactory 内で試す
-    let xref = XRef::parse_with_password(bytes, password)?;
+    let xref = XRef::parse_with_limit(bytes, password, reader.max_decoded_bytes)?;
     let page_infos = collect_pages(bytes, &xref)?;
     // XRef は Sync なので全スレッドで共有する
     crate::par::map_ordered(
@@ -130,8 +148,9 @@ fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<Text
 pub(crate) fn read_pages_and_text(
     bytes: &[u8],
     password: Option<&str>,
+    reader: &ReaderSettings,
 ) -> Result<(Vec<PagePart>, Vec<TextPage>, Vec<String>)> {
-    let xref = XRef::parse_with_password(bytes, password)?;
+    let xref = XRef::parse_with_limit(bytes, password, reader.max_decoded_bytes)?;
     let page_infos = collect_pages(bytes, &xref)?;
     let results: Vec<(PagePart, TextPage)> = crate::par::map_ordered(
         page_infos,

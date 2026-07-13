@@ -50,6 +50,8 @@ pub(crate) struct XRef {
     cipher: Option<CipherFactory>,
     /// /Encrypt オブジェクト番号（復号対象外）
     encrypt_num: Option<u32>,
+    /// ストリーム復号のチェーン累積出力の上限バイト数
+    decode_limit: usize,
     /// indexObjects 救済で構築したか（テスト用）
     #[cfg(test)]
     recovered: bool,
@@ -79,11 +81,20 @@ impl XRef {
     /// 通常解析（startxref → テーブル/ストリーム）が失敗するか、
     /// 解析後に /Root → /Pages が引けない場合は indexObjects へフォールバックする
     pub fn parse_with_password(data: &[u8], password: Option<&str>) -> Result<XRef> {
-        match Self::parse_normal(data, password) {
+        Self::parse_with_limit(data, password, crate::extract::DEFAULT_MAX_DECODED_BYTES)
+    }
+
+    /// ストリーム復号の出力上限を指定して xref を構築する
+    pub fn parse_with_limit(
+        data: &[u8],
+        password: Option<&str>,
+        decode_limit: usize,
+    ) -> Result<XRef> {
+        match Self::parse_normal(data, password, decode_limit) {
             Ok(xref) if xref.has_usable_root(data) => Ok(xref),
             // パスワード誤りは構造救済の対象外
             Err(e @ Error::BadPassword) => Err(e),
-            _ => Self::index_objects(data, password),
+            _ => Self::index_objects(data, password, decode_limit),
         }
     }
 
@@ -101,18 +112,20 @@ impl XRef {
             pending: Mutex::new(HashMap::new()),
             cipher: None,
             encrypt_num: None,
+            decode_limit: crate::extract::DEFAULT_MAX_DECODED_BYTES,
             #[cfg(test)]
             recovered: false,
         }
     }
 
     /// startxref からの通常解析
-    fn parse_normal(data: &[u8], password: Option<&str>) -> Result<XRef> {
+    fn parse_normal(data: &[u8], password: Option<&str>, decode_limit: usize) -> Result<XRef> {
         let header_offset = find_pdf_header_offset(data)?;
         let body = &data[header_offset..];
         let start = find_startxref(body)?;
 
         let mut xref = Self::empty(header_offset);
+        xref.decode_limit = decode_limit;
 
         let mut queue: VecDeque<usize> = VecDeque::new();
         queue.push_back(start);
@@ -231,11 +244,12 @@ impl XRef {
     }
 
     /// 壊れた PDF を線形走査して xref を再構築する（pdf.js indexObjects 相当）
-    fn index_objects(data: &[u8], password: Option<&str>) -> Result<XRef> {
+    fn index_objects(data: &[u8], password: Option<&str>, decode_limit: usize) -> Result<XRef> {
         let header_offset = find_pdf_header_offset(data)?;
         let body = &data[header_offset..];
 
         let mut xref = Self::empty(header_offset);
+        xref.decode_limit = decode_limit;
         #[cfg(test)]
         {
             xref.recovered = true;
@@ -445,6 +459,11 @@ impl XRef {
     /// 暗号ハンドラ（平文なら None）
     pub fn cipher(&self) -> Option<&CipherFactory> {
         self.cipher.as_ref()
+    }
+
+    /// ストリーム復号のチェーン累積出力の上限バイト数
+    pub(crate) fn decode_limit(&self) -> usize {
+        self.decode_limit
     }
 
     /// 警告を1件追加する
@@ -697,7 +716,8 @@ impl XRef {
 
         let resolver = XRefResolver { xref: self, data };
         // ObjStm 本文はストリームとして復号。中身のオブジェクトは再復号しない
-        let decoded = decode_stream(data, &stream, &resolver, self.cipher.as_ref())?;
+        let decoded =
+            decode_stream(data, &stream, &resolver, self.cipher.as_ref(), self.decode_limit)?;
 
         // 先頭の `<num> <相対offset>` ペア N 個
         let mut lexer = Lexer::new_at(&decoded, 0);
@@ -966,7 +986,7 @@ impl XRef {
         };
 
         // xref ストリームは暗号化対象外
-        let decoded = decode_stream(body, stream, &NullResolver, None)?;
+        let decoded = decode_stream(body, stream, &NullResolver, None, self.decode_limit)?;
         let mut cursor = 0usize;
         let entry_width = type_w + offset_w + gen_w;
         // /W [0 0 0] はエントリ境界が取れず /Index 個数だけ空ループするため不正とする

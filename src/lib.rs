@@ -33,11 +33,15 @@ pub use document::{
 };
 pub use error::{Error, Result};
 pub use extract::{
-    DetectMode, EdgePart, ExtractOptions, GlyphPart, GraphicPart, PagePart, extract_from_parts,
+    DetectMode, EdgePart, ExtractOptions, GlyphPart, GraphicPart, PagePart, ReaderSettings,
+    extract_from_parts,
 };
 pub use model::{BBox, Cell, Document, Orientation, Page, Table};
 #[cfg(feature = "reader")]
-pub use reader::{extract_from_bytes, extract_text_from_bytes, read_pages};
+pub use reader::{
+    extract_from_bytes, extract_text_from_bytes, extract_text_from_bytes_with, read_pages,
+    read_pages_with,
+};
 #[cfg(feature = "text")]
 pub use text::{
     TextChar, TextDoc, TextFont, TextItem, TextLine, TextPage, TextWord, build_text_items,

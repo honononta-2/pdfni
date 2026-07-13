@@ -63,11 +63,28 @@ Errors:
 - Wrong or missing password → `Error::BadPassword`
 - Non-standard security handler → `Error::Reader("unknown encryption method: ...")`
 
+## Resource limits
+
+To defend against decompression bombs, the cumulative output of a stream's
+filter chain (Flate, LZW, RunLength, and any combination) is capped at
+512 MiB per stream by default. Exceeding the cap returns `Error::Reader`
+instead of exhausting memory; partial decoding of corrupt streams still works
+within the cap. Because the cap is cumulative, the stages of a multi-stage
+chain share one budget — each stage can produce less than the full cap — and
+as a side effect the transient peak memory while decoding one stream (the
+previous stage's output plus the current one's) also stays within roughly the
+cap. The cap is configurable via `ExtractOptions.reader
+.max_decoded_bytes` (Rust and `options_json` on wasm), or via the
+`ReaderSettings` argument of the `extract_text_from_bytes_with` /
+`read_pages_with` entry points.
+
 ## Parallelism
 
 On native, pages are processed in parallel (see `src/par.rs`). On wasm, pages
 are processed sequentially. The output order and content match across both
-targets — the wasm build is a strict subset of the native behavior.
+targets — the wasm build is a strict subset of the native behavior. Note that
+the decode cap above applies per stream, so peak memory scales with the
+number of worker threads on native.
 
 ## Directory layout
 

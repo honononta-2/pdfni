@@ -2092,6 +2092,9 @@ fn form_stream_body(
         stream,
         &resolver,
         ctx.xref.and_then(|x| x.cipher()),
+        ctx.xref.map_or(crate::extract::DEFAULT_MAX_DECODED_BYTES, |x| {
+            x.decode_limit()
+        }),
     ) {
         Ok(b) => b,
         // インライン Stream は data が本文そのものの場合あり

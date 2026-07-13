@@ -40,13 +40,15 @@ impl FilterKind {
 /// Stream の /Filter 連鎖を適用して復号済みバイト列を返す
 ///
 /// 暗号化がある場合はフィルタ適用前にストリーム本文を復号する。
-/// /Crypt が明示されているときは二重適用しない。xref ストリームは cipher=None で呼ぶ
+/// /Crypt が明示されているときは二重適用しない。xref ストリームは cipher=None で呼ぶ。
+/// limit はフィルタチェーン累積出力の上限バイト数
 #[allow(dead_code)]
 pub(crate) fn decode_stream(
     data: &[u8],
     stream: &Stream,
     resolver: &dyn Resolver,
     cipher: Option<&CipherFactory>,
+    limit: usize,
 ) -> Result<Vec<u8>> {
     let end = stream
         .start
@@ -129,10 +131,27 @@ pub(crate) fn decode_stream(
         }
     };
 
-    for (kind, params) in &stages {
-        decoded = apply_filter(&decoded, *kind, params.as_ref(), cipher, stream.crypto_ref)?;
-    }
+    apply_stages(decoded, &stages, cipher, stream.crypto_ref, limit)
+}
 
+/// フィルタ連鎖の適用
+///
+/// 伸長爆弾対策としてチェーン累積出力を budget で制限する
+fn apply_stages(
+    mut decoded: Vec<u8>,
+    stages: &[(FilterKind, Option<Dict>)],
+    cipher: Option<&CipherFactory>,
+    crypto_ref: Option<super::object::Ref>,
+    budget: usize,
+) -> Result<Vec<u8>> {
+    let mut remaining = budget;
+    for (kind, params) in stages {
+        decoded = apply_filter(&decoded, *kind, params.as_ref(), cipher, crypto_ref, remaining)?;
+        if decoded.len() > remaining {
+            return Err(Error::Reader("decoded stream output exceeds limit".into()));
+        }
+        remaining -= decoded.len();
+    }
     Ok(decoded)
 }
 
@@ -173,10 +192,11 @@ fn apply_filter(
     params: Option<&Dict>,
     cipher: Option<&CipherFactory>,
     crypto_ref: Option<super::object::Ref>,
+    limit: usize,
 ) -> Result<Vec<u8>> {
     match kind {
         FilterKind::Flate => {
-            let decoded = decode_flate(data);
+            let decoded = decode_flate(data, limit)?;
             apply_predictor_if_needed(decoded, params)
         }
         FilterKind::Lzw => {
@@ -184,12 +204,12 @@ fn apply_filter(
                 .and_then(|d| d.get("EarlyChange"))
                 .and_then(as_i64)
                 .unwrap_or(1);
-            let decoded = decode_lzw(data, early_change)?;
+            let decoded = decode_lzw(data, early_change, limit)?;
             apply_predictor_if_needed(decoded, params)
         }
         FilterKind::AsciiHex => Ok(decode_ascii_hex(data)),
         FilterKind::Ascii85 => Ok(decode_ascii85(data)),
-        FilterKind::RunLength => Ok(decode_run_length(data)),
+        FilterKind::RunLength => decode_run_length(data, limit),
         FilterKind::Crypt => {
             // 明示 /Crypt: 既定 StmF を先に掛けていない経路でここで復号
             let Some(factory) = cipher else {
@@ -219,53 +239,60 @@ fn as_i64(obj: &Object) -> Option<i64> {
 
 // --- FlateDecode ---
 
-/// 正当な入力を弾かない上限: 解凍出力の絶対上限（512 MiB）
-const MAX_DECODED_BYTES: u64 = 512 * 1024 * 1024;
-
 /// zlib → raw deflate の順で試し、失敗時は途中まで読めた分を返す
-fn decode_flate(data: &[u8]) -> Vec<u8> {
-    if let Some(out) = read_to_end_ok(ZlibDecoder::new(data)) {
-        return out;
+///
+/// 破損による途中終了は許容し、上限超過は Err にする
+fn decode_flate(data: &[u8], limit: usize) -> Result<Vec<u8>> {
+    if let Some(out) = read_to_end_ok(ZlibDecoder::new(data), limit)? {
+        return Ok(out);
     }
-    if let Some(out) = read_to_end_ok(DeflateDecoder::new(data)) {
-        return out;
+    if let Some(out) = read_to_end_ok(DeflateDecoder::new(data), limit)? {
+        return Ok(out);
     }
-    let partial = read_partial(ZlibDecoder::new(data));
+    let partial = read_partial(ZlibDecoder::new(data), limit)?;
     if !partial.is_empty() {
-        return partial;
+        return Ok(partial);
     }
-    read_partial(DeflateDecoder::new(data))
+    read_partial(DeflateDecoder::new(data), limit)
 }
 
-fn read_to_end_ok<R: Read>(r: R) -> Option<Vec<u8>> {
+/// 終端まで読めたら Some、読み取りエラーは None、上限超過は Err
+fn read_to_end_ok<R: Read>(r: R, limit: usize) -> Result<Option<Vec<u8>>> {
     let mut out = Vec::new();
-    r.take(MAX_DECODED_BYTES).read_to_end(&mut out).ok()?;
-    Some(out)
+    let take_len = (limit as u64).saturating_add(1);
+    match r.take(take_len).read_to_end(&mut out) {
+        Ok(_) if out.len() > limit => {
+            Err(Error::Reader("FlateDecode output exceeds limit".into()))
+        }
+        Ok(_) => Ok(Some(out)),
+        Err(_) => Ok(None),
+    }
 }
 
 /// 逐次読みで得られる分だけ保持する（壊れたストリーム耐性）
-fn read_partial<R: Read>(mut r: R) -> Vec<u8> {
+fn read_partial<R: Read>(mut r: R, limit: usize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut buf = [0u8; 4096];
-    let limit = MAX_DECODED_BYTES as usize;
     loop {
-        if out.len() >= limit {
-            break;
+        if out.len() > limit {
+            return Err(Error::Reader("FlateDecode output exceeds limit".into()));
         }
-        let want = (limit - out.len()).min(buf.len());
+        let want = (limit.saturating_add(1) - out.len()).min(buf.len());
         match r.read(&mut buf[..want]) {
             Ok(0) => break,
             Ok(n) => out.extend_from_slice(&buf[..n]),
             Err(_) => break,
         }
     }
-    out
+    Ok(out)
 }
 
 // --- LZWDecode ---
 
 /// LZW 復号（辞書 4096・コード長 9→12・Clear=256・EOD=257）
-fn decode_lzw(data: &[u8], early_change: i64) -> Result<Vec<u8>> {
+///
+/// 出力が limit を超えたら Err
+fn decode_lzw(data: &[u8], early_change: i64, limit: usize) -> Result<Vec<u8>> {
     let early_change = u32::from(early_change != 0);
     const MAX_DICT: usize = 4096;
     const CLEAR: u32 = 256;
@@ -344,6 +371,9 @@ fn decode_lzw(data: &[u8], early_change: i64) -> Result<Vec<u8>> {
             }
         }
         prev_code = code;
+        if current_sequence_length > limit.saturating_sub(out.len()) {
+            return Err(Error::Reader("LZWDecode output exceeds limit".into()));
+        }
         out.extend_from_slice(&current_sequence[..current_sequence_length]);
     }
 
@@ -475,7 +505,10 @@ pub(super) fn is_pdf_whitespace(b: u8) -> bool {
 
 // --- RunLengthDecode ---
 
-fn decode_run_length(data: &[u8]) -> Vec<u8> {
+/// RunLength 復号
+///
+/// 出力が limit を超えたら Err
+fn decode_run_length(data: &[u8], limit: usize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < data.len() {
@@ -487,10 +520,9 @@ fn decode_run_length(data: &[u8]) -> Vec<u8> {
         i += 1;
         if n < 128 {
             // 次の n+1 バイトをコピー
-            let len = n as usize + 1;
-            if i + len > data.len() {
-                out.extend_from_slice(&data[i..]);
-                break;
+            let len = (n as usize + 1).min(data.len() - i);
+            if len > limit.saturating_sub(out.len()) {
+                return Err(Error::Reader("RunLengthDecode output exceeds limit".into()));
             }
             out.extend_from_slice(&data[i..i + len]);
             i += len;
@@ -502,10 +534,13 @@ fn decode_run_length(data: &[u8]) -> Vec<u8> {
             let b = data[i];
             i += 1;
             let times = 257 - n as usize;
+            if times > limit.saturating_sub(out.len()) {
+                return Err(Error::Reader("RunLengthDecode output exceeds limit".into()));
+            }
             out.extend(std::iter::repeat(b).take(times));
         }
     }
-    out
+    Ok(out)
 }
 
 // --- Predictor ---
@@ -668,6 +703,7 @@ mod tests {
     use super::*;
     use super::super::object::Ref;
     use super::super::parser::{NullResolver, Resolver};
+    use crate::extract::DEFAULT_MAX_DECODED_BYTES as MAX_DECODED_BYTES;
     use flate2::Compression;
     use flate2::write::ZlibEncoder;
     use std::io::Write;
@@ -695,7 +731,7 @@ mod tests {
 
         let dict = dict_filter("FlateDecode");
         let (buf, stream) = make_stream(dict, &compressed);
-        let out = decode_stream(&buf, &stream, &NullResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, plain);
     }
 
@@ -708,7 +744,7 @@ mod tests {
         let mut dict = Dict::new();
         dict.set("F", Object::Name("Fl".into()));
         let (buf, stream) = make_stream(dict, &compressed);
-        let out = decode_stream(&buf, &stream, &NullResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, plain);
     }
 
@@ -724,10 +760,10 @@ mod tests {
         // ゴミを足す
         compressed.extend_from_slice(&[0xFF, 0x00, 0xAB]);
 
-        let partial = decode_flate(&compressed);
+        let partial = decode_flate(&compressed, MAX_DECODED_BYTES).unwrap();
         // 完全復元はできないが、何かは読めているか、少なくとも panic しない
         // 壊し方によっては空もあり得るが、通常は先頭付近が読める
-        let _ = partial;
+        let _ = &partial;
         // 明示: 完全一致はしない
         assert_ne!(partial, plain.to_vec());
     }
@@ -740,7 +776,7 @@ mod tests {
         enc.write_all(plain).unwrap();
         let mut compressed = enc.finish().unwrap();
         compressed.extend_from_slice(b"GARBAGE");
-        let out = decode_flate(&compressed);
+        let out = decode_flate(&compressed, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, plain);
     }
 
@@ -817,7 +853,7 @@ mod tests {
         parms.set("EarlyChange", Object::Int(1));
         dict.set("DecodeParms", Object::Dict(parms));
         let (buf, stream) = make_stream(dict, &compressed);
-        let out = decode_stream(&buf, &stream, &NullResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, plain);
     }
 
@@ -830,7 +866,7 @@ mod tests {
         parms.set("EarlyChange", Object::Int(0));
         dict.set("DecodeParms", Object::Dict(parms));
         let (buf, stream) = make_stream(dict, &compressed);
-        let out = decode_stream(&buf, &stream, &NullResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, plain);
     }
 
@@ -858,7 +894,7 @@ mod tests {
         let mut dict = Dict::new();
         dict.set("F", Object::Name("AHx".into()));
         let (buf, stream) = make_stream(dict, b"DEADBEEF>");
-        let out = decode_stream(&buf, &stream, &NullResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, vec![0xDE, 0xAD, 0xBE, 0xEF]);
     }
 
@@ -893,7 +929,7 @@ mod tests {
         let mut dict = Dict::new();
         dict.set("Filter", Object::Name("ASCII85Decode".into()));
         let (buf, stream) = make_stream(dict, b"9jqo^~>");
-        let out = decode_stream(&buf, &stream, &NullResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, b"Man ");
     }
 
@@ -907,7 +943,7 @@ mod tests {
             253, b'X', // repeat X × 4
             128, // EOD
         ];
-        assert_eq!(decode_run_length(&data), b"ABCXXXX");
+        assert_eq!(decode_run_length(&data, MAX_DECODED_BYTES).unwrap(), b"ABCXXXX");
     }
 
     #[test]
@@ -916,8 +952,76 @@ mod tests {
         dict.set("Filter", Object::Name("RunLengthDecode".into()));
         let data = [0, b'Z', 128]; // copy 1 byte 'Z'
         let (buf, stream) = make_stream(dict, &data);
-        let out = decode_stream(&buf, &stream, &NullResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, b"Z");
+    }
+
+    // ----- 出力上限 -----
+
+    #[test]
+    fn flate_limit_exceeded() {
+        let plain = vec![0u8; 10_000];
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(&plain).unwrap();
+        let compressed = enc.finish().unwrap();
+        // 正常ストリームでも上限を超えたら部分読みに落ちず Err
+        assert!(decode_flate(&compressed, 100).is_err());
+        assert_eq!(decode_flate(&compressed, 10_000).unwrap(), plain);
+    }
+
+    #[test]
+    fn lzw_limit_exceeded() {
+        let plain = b"A".repeat(1000);
+        let compressed = encode_lzw(&plain, 1);
+        assert!(decode_lzw(&compressed, 1, 100).is_err());
+        assert_eq!(decode_lzw(&compressed, 1, 1000).unwrap(), plain);
+    }
+
+    #[test]
+    fn run_length_limit_exceeded() {
+        // repeat 'A' × 128
+        let repeat = [129, b'A'];
+        assert!(decode_run_length(&repeat, 100).is_err());
+        assert_eq!(decode_run_length(&repeat, 128).unwrap().len(), 128);
+        // copy 128 bytes
+        let mut copy = vec![127u8];
+        copy.extend_from_slice(&[b'B'; 128]);
+        assert!(decode_run_length(&copy, 100).is_err());
+        assert_eq!(decode_run_length(&copy, 128).unwrap().len(), 128);
+    }
+
+    #[test]
+    fn chain_budget_is_cumulative() {
+        // RunLength → 256 バイトの hex 文字列 → AsciiHex → 128 バイト
+        let input = vec![129, b'3', 129, b'4'];
+        let stages = vec![
+            (FilterKind::RunLength, None),
+            (FilterKind::AsciiHex, None),
+        ];
+        // 累積 384 バイト: budget 512 なら通る
+        let out = apply_stages(input.clone(), &stages, None, None, 512).unwrap();
+        assert_eq!(out.len(), 128);
+        assert_eq!(out[0], 0x33);
+        assert_eq!(out[127], 0x44);
+        // budget 300 は 1 段目 256 で残り 44、2 段目 128 で超過
+        assert!(apply_stages(input, &stages, None, None, 300).is_err());
+    }
+
+    #[test]
+    fn chain_later_stage_gets_remaining_budget() {
+        // 1 段目: 128 バイトのリテラルコピー（64 組の反復指示）
+        // 2 段目: その指示を展開して 8192 バイト
+        let mut input = vec![127u8];
+        for _ in 0..64 {
+            input.extend_from_slice(&[129, b'B']);
+        }
+        let stages = vec![
+            (FilterKind::RunLength, None),
+            (FilterKind::RunLength, None),
+        ];
+        assert!(apply_stages(input.clone(), &stages, None, None, 1000).is_err());
+        let out = apply_stages(input, &stages, None, None, 8192 + 128).unwrap();
+        assert_eq!(out.len(), 8192);
     }
 
     // ----- PNG Predictor -----
@@ -938,7 +1042,7 @@ mod tests {
         let mut dict = dict_filter("FlateDecode");
         dict.set("DecodeParms", Object::Dict(parms));
         let (buf, stream) = make_stream(dict, &compressed);
-        decode_stream(&buf, &stream, &NullResolver, None).unwrap()
+        decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap()
     }
 
     #[test]
@@ -1002,7 +1106,7 @@ mod tests {
         let mut dict = dict_filter("FlateDecode");
         dict.set("DecodeParms", Object::Dict(parms));
         let (buf, stream) = make_stream(dict, &compressed);
-        let out = decode_stream(&buf, &stream, &NullResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, vec![10, 20, 30, 40]);
     }
 
@@ -1031,7 +1135,7 @@ mod tests {
             ]),
         );
         let (buf, stream) = make_stream(dict, &hex_bytes);
-        let out = decode_stream(&buf, &stream, &NullResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, plain);
     }
 
@@ -1067,7 +1171,7 @@ mod tests {
             Object::Array(vec![Object::Null, Object::Dict(flate_parms)]),
         );
         let (buf, stream) = make_stream(dict, hex.as_bytes());
-        let out = decode_stream(&buf, &stream, &NullResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, vec![10, 20, 30, 40]);
     }
 
@@ -1098,7 +1202,7 @@ mod tests {
         let mut dict = dict_filter("FlateDecode");
         dict.set("DecodeParms", Object::Ref(Ref::new(5, 0)));
         let (buf, stream) = make_stream(dict, &compressed);
-        let out = decode_stream(&buf, &stream, &MapResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &MapResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, vec![1, 3]);
     }
 
@@ -1106,7 +1210,7 @@ mod tests {
     fn unknown_filter_errors() {
         let dict = dict_filter("DCTDecode");
         let (buf, stream) = make_stream(dict, b"fake");
-        let err = decode_stream(&buf, &stream, &NullResolver, None).unwrap_err();
+        let err = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unsupported filter"), "{msg}");
     }
@@ -1115,7 +1219,7 @@ mod tests {
     fn no_filter_returns_raw() {
         let data = b"raw-bytes";
         let (buf, stream) = make_stream(Dict::new(), data);
-        let out = decode_stream(&buf, &stream, &NullResolver, None).unwrap();
+        let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
         assert_eq!(out, data);
     }
 }
