@@ -11,7 +11,7 @@ use super::data::bcmaps::bcmap_bytes;
 use super::lexer::{Cmd, Lexer, Op, Token};
 use crate::error::{Error, Result};
 
-/// 範囲展開の上限（DoS 対策、pdf.js MAX_MAP_RANGE）
+/// 1 範囲展開の上限（DoS 対策、pdf.js MAX_MAP_RANGE）
 const MAX_MAP_RANGE: u32 = 0x00FF_FFFF;
 
 /// CMap マップの値
@@ -37,11 +37,20 @@ pub(crate) struct CMap {
     identity: bool,
     /// usecmap で記録した親名（ロードは第2段階）
     use_cmap: Option<String>,
+    /// 疎マップの総エントリ数の上限
+    max_entries: usize,
+    /// 上限到達で挿入を打ち切ったフラグ
+    truncated: bool,
 }
 
 impl CMap {
-    /// 空の CMap
+    /// 空の CMap（上限なし。定義済み CMap 用）
     pub fn new() -> Self {
+        Self::with_limit(usize::MAX)
+    }
+
+    /// 上限を指定した空の CMap
+    pub fn with_limit(max_entries: usize) -> Self {
         Self {
             codespace_ranges: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             map: HashMap::new(),
@@ -49,6 +58,8 @@ impl CMap {
             name: String::new(),
             identity: false,
             use_cmap: None,
+            max_entries,
+            truncated: false,
         }
     }
 
@@ -103,6 +114,11 @@ impl CMap {
         self.identity
     }
 
+    /// 上限到達で挿入を打ち切ったか
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
     // 縦書き・連鎖・診断用の窓口（後段で使用）
     #[allow(dead_code)]
     pub fn use_cmap(&self) -> Option<&str> {
@@ -152,6 +168,9 @@ impl CMap {
                 self.map_one(key, value.clone());
             }
         });
+        if parent.truncated {
+            self.truncated = true;
+        }
     }
 
     /// 定義済み CMap を名前からロード
@@ -215,12 +234,19 @@ impl CMap {
 
     /// 疎マップへの1エントリ
     pub fn map_one(&mut self, src: u32, dst: MapValue) {
+        if !self.reserve_entries(1) {
+            return;
+        }
         self.map.insert(src, dst);
     }
 
     /// CID 範囲展開
     pub fn map_cid_range(&mut self, low: u32, high: u32, mut dst_low: u32) {
         if high < low || high - low > MAX_MAP_RANGE {
+            return;
+        }
+        let count = u64::from(high - low) + 1;
+        if !self.reserve_entries(count) {
             return;
         }
         for code in low..=high {
@@ -234,6 +260,10 @@ impl CMap {
         if high < low || high - low > MAX_MAP_RANGE || dst.is_empty() {
             return;
         }
+        let count = u64::from(high - low) + 1;
+        if !self.reserve_entries(count) {
+            return;
+        }
         for code in low..=high {
             self.map.insert(code, MapValue::Bytes(dst.clone()));
             increment_last_byte(&mut dst);
@@ -245,9 +275,24 @@ impl CMap {
         if high < low || high - low > MAX_MAP_RANGE {
             return;
         }
+        let count_range = u64::from(high - low) + 1;
+        let effective = count_range.min(array.len() as u64);
+        if !self.reserve_entries(effective) {
+            return;
+        }
         for (code, dst) in (low..=high).zip(array) {
             self.map.insert(code, MapValue::Bytes(dst.clone()));
         }
+    }
+
+    /// 予算内に `count` 件を追加できるか判定。不可なら truncated を立てて false
+    fn reserve_entries(&mut self, count: u64) -> bool {
+        let remaining = (self.max_entries as u64).saturating_sub(self.map.len() as u64);
+        if count > remaining {
+            self.truncated = true;
+            return false;
+        }
+        true
     }
 
     /// 疎マップ lookup（Bytes は借用、Identity の Cid のみ所有）
@@ -289,8 +334,11 @@ impl CMap {
     }
 
     /// 埋め込みテキスト形式 CMap をパース
-    pub fn parse_embedded(data: &[u8]) -> Self {
-        let mut cmap = Self::new();
+    ///
+    /// `max_entries` は疎マップの総エントリ数の上限。超過すると
+    /// 以降の挿入を打ち切り `truncated` を立てる
+    pub fn parse_embedded(data: &[u8], max_entries: usize) -> Self {
+        let mut cmap = Self::with_limit(max_entries);
         let mut lexer = Lexer::new(data);
         let mut previous: Option<Token> = None;
 
@@ -634,7 +682,7 @@ endcodespacerange
 endcidrange
 endcmap
 "#;
-        let cmap = CMap::parse_embedded(data);
+        let cmap = CMap::parse_embedded(data, crate::extract::DEFAULT_MAX_CMAP_ENTRIES);
         assert_eq!(cmap.lookup(0x41).as_deref(), Some(&MapValue::Cid(100)));
         assert_eq!(cmap.lookup(0x42).as_deref(), Some(&MapValue::Cid(101)));
         assert_eq!(cmap.lookup(0x43).as_deref(), Some(&MapValue::Cid(102)));
@@ -680,7 +728,7 @@ endbfchar
 endbfchar
 endcmap
 "#;
-        let cmap = CMap::parse_embedded(data);
+        let cmap = CMap::parse_embedded(data, crate::extract::DEFAULT_MAX_CMAP_ENTRIES);
         assert_eq!(bytes_str(&cmap, 0x01), "A");
         assert_eq!(bytes_str(&cmap, 0x10), "B");
         assert_eq!(bytes_str(&cmap, 0x11), "C");
@@ -745,7 +793,7 @@ begincmap
 endcidchar
 endcmap
 "#;
-        let cmap = CMap::parse_embedded(data);
+        let cmap = CMap::parse_embedded(data, crate::extract::DEFAULT_MAX_CMAP_ENTRIES);
         assert_eq!(cmap.use_cmap(), Some("90ms-RKSJ-H"));
         // codespace は親から継承
         assert!(cmap.has_codespace());
@@ -816,5 +864,113 @@ endcmap
         let _ = f;
         // 未同梱名
         assert!(bcmap_bytes("No-Such-CMap").is_none());
+    }
+
+    #[test]
+    fn max_entries_cuts_off_giant_bfrange() {
+        // <000000> <FFFFFF> <0000> の1範囲は上限直下で拒否され、確保が伸びない
+        let data = br#"
+begincmap
+1 begincodespacerange
+<000000> <FFFFFF>
+endcodespacerange
+1 beginbfrange
+<000000> <FFFFFF> <0000>
+endbfrange
+endcmap
+"#;
+        let cmap = CMap::parse_embedded(data, 1_000);
+        assert!(cmap.truncated());
+        assert!(cmap.map.len() <= 1_000);
+        // 範囲が MAX_MAP_RANGE ちょうど（16M）で予算 1000 → 範囲丸ごと拒否で0件
+        assert_eq!(cmap.map.len(), 0);
+    }
+
+    #[test]
+    fn max_entries_cuts_off_accumulating_ranges() {
+        // 100 件の範囲 <00xx00> <00xx63>（各100件）を並べる。上限 300 で3範囲分だけ通す
+        let mut s = String::from("begincmap\n1 begincodespacerange\n<000000> <FFFFFF>\nendcodespacerange\n");
+        for i in 0..10 {
+            s.push_str(&format!(
+                "1 beginbfrange\n<{:06X}> <{:06X}> <0041>\nendbfrange\n",
+                i * 0x100,
+                i * 0x100 + 99
+            ));
+        }
+        s.push_str("endcmap\n");
+        let cmap = CMap::parse_embedded(s.as_bytes(), 300);
+        assert!(cmap.truncated());
+        assert_eq!(cmap.map.len(), 300);
+    }
+
+    #[test]
+    fn max_entries_permits_within_budget() {
+        let data = br#"
+begincmap
+1 begincodespacerange
+<00> <FF>
+endcodespacerange
+1 beginbfrange
+<00> <7F> <0041>
+endbfrange
+endcmap
+"#;
+        let cmap = CMap::parse_embedded(data, 1_000);
+        assert!(!cmap.truncated());
+        assert_eq!(cmap.map.len(), 128);
+    }
+
+    #[test]
+    fn max_entries_cuts_off_bfchar_batch() {
+        // bfchar を大量に並べても map_one が上限で止まる
+        let mut s = String::from("begincmap\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n");
+        s.push_str("500 beginbfchar\n");
+        for i in 0..500u32 {
+            s.push_str(&format!("<{:04X}> <0041>\n", i));
+        }
+        s.push_str("endbfchar\nendcmap\n");
+        let cmap = CMap::parse_embedded(s.as_bytes(), 100);
+        assert!(cmap.truncated());
+        assert_eq!(cmap.map.len(), 100);
+    }
+
+    #[test]
+    fn max_entries_range_over_max_map_range_still_dropped() {
+        // MAX_MAP_RANGE 超え（>16M）は予算に関係なく従来どおり黙って捨てる
+        // ここでは 4byte 空間 <00000000> <02000000> を bfrange で渡す
+        let data = br#"
+begincmap
+1 begincodespacerange
+<00000000> <FFFFFFFF>
+endcodespacerange
+1 beginbfrange
+<00000000> <02000000> <0041>
+endbfrange
+endcmap
+"#;
+        // 上限は十分大きく設定
+        let cmap = CMap::parse_embedded(data, 100_000_000);
+        assert!(!cmap.truncated());
+        assert_eq!(cmap.map.len(), 0);
+    }
+
+    #[test]
+    fn extend_from_parent_propagates_truncated() {
+        // 親を truncated にして継承先も truncated が立つ
+        let data = br#"
+begincmap
+1 begincodespacerange
+<00> <FF>
+endcodespacerange
+1 beginbfrange
+<00> <7F> <0041>
+endbfrange
+endcmap
+"#;
+        let parent = CMap::parse_embedded(data, 10);
+        assert!(parent.truncated());
+        let mut child = CMap::with_limit(usize::MAX);
+        child.extend_from_parent(&parent);
+        assert!(child.truncated());
     }
 }

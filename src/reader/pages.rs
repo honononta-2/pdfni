@@ -695,6 +695,7 @@ mod tests {
         assert!(crate::reader::extract_text_from_bytes(&data, None).is_ok());
         let reader = crate::extract::ReaderSettings {
             max_decoded_bytes: 1000,
+            max_cmap_entries: crate::extract::DEFAULT_MAX_CMAP_ENTRIES,
         };
         assert!(
             crate::reader::extract_text_from_bytes_with(&data, None, &reader).is_err()

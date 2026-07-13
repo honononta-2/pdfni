@@ -926,16 +926,28 @@ fn load_encoding_cmap(
         }
         Object::Stream(s) => {
             let decoded = decode_stream_bytes(data, &s, xref).unwrap_or_default();
-            (
-                Arc::new(CMap::parse_embedded(&decoded)),
-                EncodingOrigin::Embedded,
-            )
+            let limit = cmap_entries_limit(xref);
+            let cmap = CMap::parse_embedded(&decoded, limit);
+            if cmap.truncated() {
+                warn(
+                    xref,
+                    "embedded /Encoding CMap exceeded entry limit; using Identity-H",
+                );
+                return (Arc::new(CMap::identity_h()), EncodingOrigin::Predefined);
+            }
+            (Arc::new(cmap), EncodingOrigin::Embedded)
         }
         _ => {
             warn(xref, "invalid /Encoding; treating as Identity-H");
             (Arc::new(CMap::identity_h()), EncodingOrigin::Predefined)
         }
     }
+}
+
+/// XRef から CMap エントリ数上限を取り出す（未設定時は既定値）
+fn cmap_entries_limit(xref: Option<&XRef>) -> usize {
+    xref.map(|x| x.cmap_entries_limit())
+        .unwrap_or(crate::extract::DEFAULT_MAX_CMAP_ENTRIES)
 }
 
 /// UCS2 コンパニオン CMap を条件に応じてロードする
@@ -1026,7 +1038,15 @@ fn load_tounicode(
             let Some(decoded) = decode_stream_bytes(data, &s, xref) else {
                 return ToUnicode::empty();
             };
-            let cmap = CMap::parse_embedded(&decoded);
+            let limit = cmap_entries_limit(xref);
+            let cmap = CMap::parse_embedded(&decoded, limit);
+            if cmap.truncated() {
+                warn(
+                    xref,
+                    "embedded ToUnicode CMap exceeded entry limit; discarding",
+                );
+                return ToUnicode::empty();
+            }
             if cmap.is_identity() || cmap.name() == "Identity-H" || cmap.name() == "Identity-V" {
                 return ToUnicode::Identity;
             }

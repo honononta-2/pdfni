@@ -83,6 +83,9 @@ pub enum DetectMode {
 /// ストリーム復号のチェーン累積出力の既定上限
 pub(crate) const DEFAULT_MAX_DECODED_BYTES: usize = 512 * 1024 * 1024;
 
+/// 埋め込み CMap の総エントリ数の既定上限
+pub(crate) const DEFAULT_MAX_CMAP_ENTRIES: usize = 1_048_576;
+
 /// 読み取り層のパラメータ
 ///
 /// parts 入力の経路では使われない
@@ -91,12 +94,15 @@ pub(crate) const DEFAULT_MAX_DECODED_BYTES: usize = 512 * 1024 * 1024;
 pub struct ReaderSettings {
     /// ストリーム復号のチェーン累積出力の上限バイト数
     pub max_decoded_bytes: usize,
+    /// 埋め込み CMap の総エントリ数の上限
+    pub max_cmap_entries: usize,
 }
 
 impl Default for ReaderSettings {
     fn default() -> Self {
         Self {
             max_decoded_bytes: DEFAULT_MAX_DECODED_BYTES,
+            max_cmap_entries: DEFAULT_MAX_CMAP_ENTRIES,
         }
     }
 }

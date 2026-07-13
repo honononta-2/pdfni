@@ -31,7 +31,7 @@ pub fn extract_from_bytes(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<Document> {
-    let xref = XRef::parse_with_limit(bytes, password, options.reader.max_decoded_bytes)?;
+    let xref = XRef::parse_with_limit(bytes, password, options.reader.max_decoded_bytes, options.reader.max_cmap_entries)?;
     let page_infos = collect_pages(bytes, &xref)?;
     let pages = crate::par::map_ordered(
         page_infos,
@@ -56,7 +56,7 @@ pub fn extract_text_from_bytes_with(
     password: Option<&str>,
     reader: &ReaderSettings,
 ) -> Result<TextDoc> {
-    let xref = XRef::parse_with_limit(bytes, password, reader.max_decoded_bytes)?;
+    let xref = XRef::parse_with_limit(bytes, password, reader.max_decoded_bytes, reader.max_cmap_entries)?;
     let page_infos = collect_pages(bytes, &xref)?;
     // XRef は Sync なので全スレッドで共有する
     let pages = crate::par::map_ordered(
@@ -84,7 +84,7 @@ pub fn read_pages_with(
     reader: &ReaderSettings,
 ) -> Result<Vec<PagePart>> {
     // 空パスワード → 引数パスワードは CipherFactory 内で試す
-    let xref = XRef::parse_with_limit(bytes, password, reader.max_decoded_bytes)?;
+    let xref = XRef::parse_with_limit(bytes, password, reader.max_decoded_bytes, reader.max_cmap_entries)?;
     let page_infos = collect_pages(bytes, &xref)?;
     // XRef は Sync なので全スレッドで共有する
     crate::par::map_ordered(
@@ -150,7 +150,7 @@ pub(crate) fn read_pages_and_text(
     password: Option<&str>,
     reader: &ReaderSettings,
 ) -> Result<(Vec<PagePart>, Vec<TextPage>, Vec<String>)> {
-    let xref = XRef::parse_with_limit(bytes, password, reader.max_decoded_bytes)?;
+    let xref = XRef::parse_with_limit(bytes, password, reader.max_decoded_bytes, reader.max_cmap_entries)?;
     let page_infos = collect_pages(bytes, &xref)?;
     let results: Vec<(PagePart, TextPage)> = crate::par::map_ordered(
         page_infos,

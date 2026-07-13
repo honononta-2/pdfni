@@ -52,6 +52,8 @@ pub(crate) struct XRef {
     encrypt_num: Option<u32>,
     /// ストリーム復号のチェーン累積出力の上限バイト数
     decode_limit: usize,
+    /// 埋め込み CMap の総エントリ数の上限
+    cmap_entries_limit: usize,
     /// indexObjects 救済で構築したか（テスト用）
     #[cfg(test)]
     recovered: bool,
@@ -81,20 +83,26 @@ impl XRef {
     /// 通常解析（startxref → テーブル/ストリーム）が失敗するか、
     /// 解析後に /Root → /Pages が引けない場合は indexObjects へフォールバックする
     pub fn parse_with_password(data: &[u8], password: Option<&str>) -> Result<XRef> {
-        Self::parse_with_limit(data, password, crate::extract::DEFAULT_MAX_DECODED_BYTES)
+        Self::parse_with_limit(
+            data,
+            password,
+            crate::extract::DEFAULT_MAX_DECODED_BYTES,
+            crate::extract::DEFAULT_MAX_CMAP_ENTRIES,
+        )
     }
 
-    /// ストリーム復号の出力上限を指定して xref を構築する
+    /// 復号出力・CMap エントリ数の上限を指定して xref を構築する
     pub fn parse_with_limit(
         data: &[u8],
         password: Option<&str>,
         decode_limit: usize,
+        cmap_entries_limit: usize,
     ) -> Result<XRef> {
-        match Self::parse_normal(data, password, decode_limit) {
+        match Self::parse_normal(data, password, decode_limit, cmap_entries_limit) {
             Ok(xref) if xref.has_usable_root(data) => Ok(xref),
             // パスワード誤りは構造救済の対象外
             Err(e @ Error::BadPassword) => Err(e),
-            _ => Self::index_objects(data, password, decode_limit),
+            _ => Self::index_objects(data, password, decode_limit, cmap_entries_limit),
         }
     }
 
@@ -113,19 +121,26 @@ impl XRef {
             cipher: None,
             encrypt_num: None,
             decode_limit: crate::extract::DEFAULT_MAX_DECODED_BYTES,
+            cmap_entries_limit: crate::extract::DEFAULT_MAX_CMAP_ENTRIES,
             #[cfg(test)]
             recovered: false,
         }
     }
 
     /// startxref からの通常解析
-    fn parse_normal(data: &[u8], password: Option<&str>, decode_limit: usize) -> Result<XRef> {
+    fn parse_normal(
+        data: &[u8],
+        password: Option<&str>,
+        decode_limit: usize,
+        cmap_entries_limit: usize,
+    ) -> Result<XRef> {
         let header_offset = find_pdf_header_offset(data)?;
         let body = &data[header_offset..];
         let start = find_startxref(body)?;
 
         let mut xref = Self::empty(header_offset);
         xref.decode_limit = decode_limit;
+        xref.cmap_entries_limit = cmap_entries_limit;
 
         let mut queue: VecDeque<usize> = VecDeque::new();
         queue.push_back(start);
@@ -244,12 +259,18 @@ impl XRef {
     }
 
     /// 壊れた PDF を線形走査して xref を再構築する（pdf.js indexObjects 相当）
-    fn index_objects(data: &[u8], password: Option<&str>, decode_limit: usize) -> Result<XRef> {
+    fn index_objects(
+        data: &[u8],
+        password: Option<&str>,
+        decode_limit: usize,
+        cmap_entries_limit: usize,
+    ) -> Result<XRef> {
         let header_offset = find_pdf_header_offset(data)?;
         let body = &data[header_offset..];
 
         let mut xref = Self::empty(header_offset);
         xref.decode_limit = decode_limit;
+        xref.cmap_entries_limit = cmap_entries_limit;
         #[cfg(test)]
         {
             xref.recovered = true;
@@ -480,6 +501,11 @@ impl XRef {
     /// ストリーム復号のチェーン累積出力の上限バイト数
     pub(crate) fn decode_limit(&self) -> usize {
         self.decode_limit
+    }
+
+    /// 埋め込み CMap の総エントリ数の上限
+    pub(crate) fn cmap_entries_limit(&self) -> usize {
+        self.cmap_entries_limit
     }
 
     /// 警告を1件追加する
