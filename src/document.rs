@@ -1422,16 +1422,20 @@ fn assign_lists_page(page: &mut DocPage) {
             DocBlock::Text(tb)
                 if tb.role == TextBlockRole::Body && tb.kind == TextBlockKind::Paragraph =>
             {
-                let mut lines = tb.lines;
+                let mut run: Vec<TextBlock> = vec![tb];
                 while let Some(DocBlock::Text(next)) = iter.peek() {
-                    if next.role != TextBlockRole::Body || next.kind != TextBlockKind::Paragraph {
+                    if next.role != TextBlockRole::Body
+                        || next.kind != TextBlockKind::Paragraph
+                        || next.dir != run[0].dir
+                        || next.rot != run[0].rot
+                    {
                         break;
                     }
                     if let Some(DocBlock::Text(next_tb)) = iter.next() {
-                        lines.extend(next_tb.lines);
+                        run.push(next_tb);
                     }
                 }
-                out.extend(segment_body_lines_for_lists(&page.chars, lines));
+                out.extend(detect_lists_in_run(run, &page.chars));
             }
             other => out.push(other),
         }
@@ -1457,24 +1461,31 @@ enum ListMarkerKind {
     Ordered { style: OrderedMarkerStyle, n: u32 },
 }
 
-/// 本文行のリスト分割
-fn segment_body_lines_for_lists(chars: &[TextChar], lines: Vec<TextLine>) -> Vec<DocBlock> {
+/// 連続ラン内のリスト検出と非成立部の元ブロック保持
+fn detect_lists_in_run(run: Vec<TextBlock>, chars: &[TextChar]) -> Vec<DocBlock> {
+    let mut lines: Vec<TextLine> = Vec::new();
+    let mut origin: Vec<usize> = Vec::new();
+    for (bi, block) in run.iter().enumerate() {
+        for line in &block.lines {
+            lines.push(line.clone());
+            origin.push(bi);
+        }
+    }
     let n = lines.len();
-    let mut i = 0;
-    let mut out = Vec::new();
-    let mut para_buf: Vec<TextLine> = Vec::new();
+    let mut consumed = vec![false; n];
+    let mut list_at: std::collections::HashMap<usize, TextBlock> = std::collections::HashMap::new();
 
+    let mut i = 0;
     while i < n {
         let Some(start_kind) = list_marker_kind(&lines[i]) else {
-            para_buf.push(lines[i].clone());
             i += 1;
             continue;
         };
-
         let run_left = lines[i].left;
         let ordered = matches!(start_kind, ListMarkerKind::Ordered { .. });
         let mut last_marker: Option<ListMarkerKind> = None;
         let mut items: Vec<Vec<TextLine>> = Vec::new();
+        let mut item_indices: Vec<Vec<usize>> = Vec::new();
         let mut j = i;
         while j < n {
             let Some(kind) = list_marker_kind(&lines[j]) else {
@@ -1490,42 +1501,73 @@ fn segment_body_lines_for_lists(chars: &[TextChar], lines: Vec<TextLine>) -> Vec
             let marker_left = lines[j].left;
             let marker_fs = line_rep_font_size(chars, &lines[j]);
             let mut item = vec![lines[j].clone()];
+            let mut idx = vec![j];
             j += 1;
             while j < n && list_marker_kind(&lines[j]).is_none() {
                 let prev = item.last().unwrap();
                 if is_hang_continuation(chars, prev, &lines[j], marker_left, marker_fs) {
                     item.push(lines[j].clone());
+                    idx.push(j);
                     j += 1;
                 } else {
                     break;
                 }
             }
             items.push(item);
+            item_indices.push(idx);
         }
 
         if items.len() >= 2 {
-            if !para_buf.is_empty() {
-                out.push(DocBlock::Text(make_text_block(std::mem::take(
-                    &mut para_buf,
-                ))));
+            let start_idx = item_indices[0][0];
+            for idxs in &item_indices {
+                for &fi in idxs {
+                    consumed[fi] = true;
+                }
             }
-            out.push(DocBlock::Text(make_list_block(items, ordered)));
+            list_at.insert(start_idx, make_list_block(items, ordered));
             i = j;
         } else {
-            for item in items {
-                para_buf.extend(item);
-            }
-            if j == i {
-                para_buf.push(lines[i].clone());
-                i += 1;
-            } else {
-                i = j;
-            }
+            i += 1;
         }
     }
 
-    if !para_buf.is_empty() {
-        out.push(DocBlock::Text(make_text_block(para_buf)));
+    let mut block_untouched = vec![true; run.len()];
+    for i in 0..n {
+        if consumed[i] {
+            block_untouched[origin[i]] = false;
+        }
+    }
+    let mut run_opt: Vec<Option<TextBlock>> = run.into_iter().map(Some).collect();
+
+    let mut out: Vec<DocBlock> = Vec::new();
+    let mut idx = 0;
+    while idx < n {
+        if consumed[idx] {
+            if let Some(lb) = list_at.remove(&idx) {
+                out.push(DocBlock::Text(lb));
+            }
+            idx += 1;
+            while idx < n && consumed[idx] && !list_at.contains_key(&idx) {
+                idx += 1;
+            }
+        } else {
+            let bi = origin[idx];
+            if block_untouched[bi] {
+                let block = run_opt[bi].take().expect("無傷ブロックは未取得");
+                let block_len = block.lines.len();
+                out.push(DocBlock::Text(block));
+                idx += block_len;
+            } else {
+                let mut group_lines: Vec<TextLine> = Vec::new();
+                while idx < n && !consumed[idx] && origin[idx] == bi {
+                    group_lines.push(lines[idx].clone());
+                    idx += 1;
+                }
+                if !group_lines.is_empty() {
+                    out.push(DocBlock::Text(make_text_block(group_lines)));
+                }
+            }
+        }
     }
     out
 }
@@ -2922,6 +2964,126 @@ mod tests {
         let kinds = text_kinds(&doc);
         let list = kinds.iter().find(|(t, _)| t.contains("BigA")).unwrap();
         assert_eq!(list.1, TextBlockKind::List { ordered: false });
+    }
+
+    /// マーカー無しブロックだけの Doc を組み立てる
+    fn doc_from_blocks(chars: Vec<TextChar>, blocks: Vec<DocBlock>) -> DocDoc {
+        DocDoc {
+            pages: vec![DocPage {
+                page_number: 1,
+                width: 600.0,
+                height: 800.0,
+                fonts: vec![],
+                chars,
+                blocks,
+            }],
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn assign_lists_preserves_non_marker_input_verbatim() {
+        // リストが 1 つも無い入力で assign_lists 前後の Doc JSON が完全一致することを確認する
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let l1 = push_list_line(&mut chars, &[("hello", 50.0)], 100.0, fs);
+        let l2 = push_list_line(&mut chars, &[("world", 50.0)], 115.0, fs);
+        let l3 = push_list_line(&mut chars, &[("goodbye", 50.0)], 200.0, fs);
+        let blocks = vec![
+            para_from_lines(vec![l1, l2]),
+            para_from_lines(vec![l3]),
+        ];
+        let mut doc = doc_from_blocks(chars, blocks);
+        let before = serde_json::to_string(&doc).unwrap();
+        assign_lists(&mut doc);
+        let after = serde_json::to_string(&doc).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn assign_lists_keeps_two_independent_paragraphs() {
+        // マーカーが 1 つだけ含まれても List 不成立なら元の段落境界を保つ
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let l1 = push_list_line(&mut chars, &[("first", 50.0)], 100.0, fs);
+        let l2 = push_list_line(&mut chars, &[("para", 50.0)], 115.0, fs);
+        let l3 = push_list_line(&mut chars, &[("second", 50.0)], 200.0, fs);
+        let l4 = push_list_line(&mut chars, &[("para", 50.0)], 215.0, fs);
+        let blocks = vec![
+            para_from_lines(vec![l1, l2]),
+            para_from_lines(vec![l3, l4]),
+        ];
+        let mut doc = doc_from_blocks(chars, blocks);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert_eq!(tb.len(), 2);
+        assert_eq!(tb[0].text, "first para");
+        assert_eq!(tb[1].text, "second para");
+    }
+
+    #[test]
+    fn heading_size_paragraph_survives_assign_lists() {
+        // タイトルサイズと本文サイズの独立ブロックを並べたページで、
+        // assign_lists がブロック境界を潰さず assign_headings がタイトルを Heading にする
+        let title_fs = 18.0;
+        let body_fs = 10.0;
+        let mut chars = Vec::new();
+        let title = push_list_line(&mut chars, &[("Title", 50.0)], 40.0, title_fs);
+        let b1 = push_list_line(&mut chars, &[("body1", 50.0)], 100.0, body_fs);
+        let b2 = push_list_line(&mut chars, &[("body2", 50.0)], 115.0, body_fs);
+        let blocks = vec![
+            para_from_lines(vec![title]),
+            para_from_lines(vec![b1, b2]),
+        ];
+        let mut doc = doc_from_blocks(chars, blocks);
+        assign_lists(&mut doc);
+        assign_headings(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert_eq!(tb.len(), 2);
+        assert_eq!(tb[0].kind, TextBlockKind::Heading { level: 1 });
+        assert_eq!(tb[0].text, "Title");
+        assert_eq!(tb[1].kind, TextBlockKind::Paragraph);
+    }
+
+    #[test]
+    fn list_run_breaks_on_rot_mismatch() {
+        // (dir, rot) が異なる隣接ブロックはランに含めない
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let mut a = push_list_line(&mut chars, &[("\u{2022}", 50.0), ("A", 60.0)], 100.0, fs);
+        let mut b = push_list_line(&mut chars, &[("\u{2022}", 50.0), ("B", 60.0)], 115.0, fs);
+        a.rot = 0;
+        b.rot = 90;
+        let blocks = vec![
+            para_from_lines(vec![a]),
+            para_from_lines(vec![b]),
+        ];
+        let mut doc = doc_from_blocks(chars, blocks);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert_eq!(tb.len(), 2);
+        assert!(tb.iter().all(|t| t.kind == TextBlockKind::Paragraph));
+    }
+
+    #[test]
+    fn list_splits_block_middle_around_list_span() {
+        // 1 ブロックの中央にリスト成立区間があるときブロックを前後に切る
+        let fs = 10.0;
+        let mut chars = Vec::new();
+        let intro = push_list_line(&mut chars, &[("intro", 50.0)], 100.0, fs);
+        let b1 = push_list_line(&mut chars, &[("\u{2022}", 50.0), ("A", 60.0)], 115.0, fs);
+        let b2 = push_list_line(&mut chars, &[("\u{2022}", 50.0), ("B", 60.0)], 130.0, fs);
+        let outro = push_list_line(&mut chars, &[("outro", 50.0)], 145.0, fs);
+        let mut doc = doc_from_para_lines(chars, vec![intro, b1, b2, outro]);
+        assign_lists(&mut doc);
+        let tb = text_blocks(&doc.pages[0].blocks);
+        assert_eq!(tb.len(), 3);
+        assert_eq!(tb[0].kind, TextBlockKind::Paragraph);
+        assert_eq!(tb[0].text, "intro");
+        assert_eq!(tb[1].kind, TextBlockKind::List { ordered: false });
+        assert_eq!(tb[1].text, "A\nB");
+        assert_eq!(tb[2].kind, TextBlockKind::Paragraph);
+        assert_eq!(tb[2].text, "outro");
     }
 
     /// 本文と候補見出しから DocDoc を組み立てる
