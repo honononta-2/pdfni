@@ -1128,14 +1128,20 @@ fn take_name(stack: &mut Vec<Object>) -> Option<String> {
     }
 }
 
+/// content stream 内の配列・辞書ネスト上限。stray closer は interpret の main loop が捨てる
+const MAX_STREAM_PARSE_DEPTH: usize = 200;
+
 /// 配列リテラルをパースする
-fn parse_array(lexer: &mut Lexer<'_>) -> Object {
+fn parse_array(lexer: &mut Lexer<'_>, depth: usize) -> Object {
+    if depth >= MAX_STREAM_PARSE_DEPTH {
+        return Object::Null;
+    }
     let mut arr = Vec::new();
     loop {
         match lexer.next_token() {
             Token::ArrayEnd | Token::Eof => break,
-            Token::ArrayStart => arr.push(parse_array(lexer)),
-            Token::DictStart => arr.push(parse_dict(lexer)),
+            Token::ArrayStart => arr.push(parse_array(lexer, depth + 1)),
+            Token::DictStart => arr.push(parse_dict(lexer, depth + 1)),
             Token::Int(n) => arr.push(Object::Int(n)),
             Token::Real(r) => arr.push(Object::Real(r)),
             Token::Str(s) => arr.push(Object::Str(s)),
@@ -1169,15 +1175,18 @@ fn parse_array(lexer: &mut Lexer<'_>) -> Object {
 }
 
 /// 辞書リテラルをパースする
-fn parse_dict(lexer: &mut Lexer<'_>) -> Object {
+fn parse_dict(lexer: &mut Lexer<'_>, depth: usize) -> Object {
+    if depth >= MAX_STREAM_PARSE_DEPTH {
+        return Object::Null;
+    }
     let mut dict = Dict::new();
     loop {
         match lexer.next_token() {
             Token::DictEnd | Token::Eof => break,
             Token::Name(key) => {
                 let value = match lexer.next_token() {
-                    Token::ArrayStart => parse_array(lexer),
-                    Token::DictStart => parse_dict(lexer),
+                    Token::ArrayStart => parse_array(lexer, depth + 1),
+                    Token::DictStart => parse_dict(lexer, depth + 1),
                     Token::Int(n) => Object::Int(n),
                     Token::Real(r) => Object::Real(r),
                     Token::Str(s) => Object::Str(s),
@@ -1194,10 +1203,10 @@ fn parse_dict(lexer: &mut Lexer<'_>) -> Object {
                 dict.set(key, value);
             }
             Token::ArrayStart => {
-                let _ = parse_array(lexer);
+                let _ = parse_array(lexer, depth + 1);
             }
             Token::DictStart => {
-                let _ = parse_dict(lexer);
+                let _ = parse_dict(lexer, depth + 1);
             }
             _ => {}
         }
@@ -1331,8 +1340,8 @@ impl Evaluator<'_, '_> {
                 Token::Real(r) => stack.push(Object::Real(r)),
                 Token::Str(s) => stack.push(Object::Str(s)),
                 Token::Name(n) => stack.push(Object::Name(n)),
-                Token::ArrayStart => stack.push(parse_array(&mut lexer)),
-                Token::DictStart => stack.push(parse_dict(&mut lexer)),
+                Token::ArrayStart => stack.push(parse_array(&mut lexer, 0)),
+                Token::DictStart => stack.push(parse_dict(&mut lexer, 0)),
                 Token::ArrayEnd | Token::DictEnd | Token::BraceStart | Token::BraceEnd => {
                     // 単独の区切りは無視
                 }
@@ -3469,5 +3478,47 @@ Q
         let texts: Vec<&str> = chars.iter().map(|c| c.text.as_str()).collect();
         assert_eq!(texts, vec!["A", "B", " ", "C", "D"], "got {texts:?}");
         assert!(chars[2].synthetic);
+    }
+
+    /// 深くネストした配列リテラルでスタックオーバーフローしない
+    #[test]
+    fn parse_array_deep_nest_does_not_overflow() {
+        let n = MAX_STREAM_PARSE_DEPTH + 100;
+        let mut src = Vec::with_capacity(n * 2 + 1);
+        for _ in 0..n {
+            src.push(b'[');
+        }
+        for _ in 0..n {
+            src.push(b']');
+        }
+        let mut lexer = Lexer::new(&src);
+        assert!(matches!(lexer.next_token(), Token::ArrayStart));
+        let obj = parse_array(&mut lexer, 0);
+        assert!(matches!(obj, Object::Array(_)));
+    }
+
+    /// 深くネストした辞書リテラルでスタックオーバーフローしない
+    #[test]
+    fn parse_dict_deep_nest_does_not_overflow() {
+        let n = MAX_STREAM_PARSE_DEPTH + 100;
+        let mut src = Vec::with_capacity(n * 6 + 2);
+        for _ in 0..n {
+            src.extend_from_slice(b"<</k ");
+        }
+        src.extend_from_slice(b"null ");
+        for _ in 0..n {
+            src.extend_from_slice(b">>");
+        }
+        let mut lexer = Lexer::new(&src);
+        assert!(matches!(lexer.next_token(), Token::DictStart));
+        let obj = parse_dict(&mut lexer, 0);
+        assert!(matches!(obj, Object::Dict(_)));
+    }
+
+    /// 上限ちょうどで内側が Null 化する
+    #[test]
+    fn parse_array_at_depth_limit_returns_null() {
+        let obj = parse_array(&mut Lexer::new(b"[1 2 3]"), MAX_STREAM_PARSE_DEPTH);
+        assert!(matches!(obj, Object::Null));
     }
 }
