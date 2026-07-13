@@ -1,12 +1,12 @@
 //! PDFから表を抽出しJSONを出すCLI
-//! 使い方: reticella [--mode auto|ruled|borderless] <input.pdf> [output.json] [password]
+//! 使い方: pdfni [--mode auto|ruled|borderless] <input.pdf> [output.json] [password]
 
 use anyhow::Result;
-use reticella::{DetectMode, ExtractOptions};
+use pdfni::{DetectMode, ExtractOptions};
 use std::env;
 
 fn usage() -> ! {
-    eprintln!("使い方: reticella [--mode auto|ruled|borderless] <input.pdf> [output.json] [password]");
+    eprintln!("使い方: pdfni [--mode auto|ruled|borderless] <input.pdf> [output.json] [password]");
     std::process::exit(2);
 }
 
@@ -36,7 +36,7 @@ fn main() -> Result<()> {
         ..ExtractOptions::default()
     };
     let bytes = std::fs::read(&input)?;
-    let mut doc = reticella::extract_from_bytes(&bytes, password.as_deref(), &options)?;
+    let mut doc = pdfni::extract_from_bytes(&bytes, password.as_deref(), &options)?;
     doc.source = input.clone();
     let json = serde_json::to_string_pretty(&doc)?;
 

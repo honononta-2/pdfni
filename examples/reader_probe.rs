@@ -1,6 +1,6 @@
 //! 純Rustリーダーの parts を pdfium_probe 同一スキーマで JSON 出力する
 
-use reticella::{GraphicPart, Orientation, read_pages};
+use pdfni::{GraphicPart, Orientation, read_pages};
 use serde::Serialize;
 
 #[derive(Serialize)]

@@ -1,4 +1,4 @@
-# reticella
+# pdfni
 
 A Rust library that extracts tables and Markdown from text-embedded PDFs.
 To pursue both accuracy and speed, it ships with its own pure-Rust PDF
@@ -35,7 +35,7 @@ for modes and encrypted PDFs.
 ### Rust
 
 ```rust
-use reticella::{extract_from_bytes, ExtractOptions};
+use pdfni::{extract_from_bytes, ExtractOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read("input.pdf")?;
@@ -54,7 +54,7 @@ For document blocks and Markdown, use `extract_document_from_bytes` and
 - [CLI usage](docs/CLI.md)
 - [WebAssembly (Node.js and browser)](docs/WASM.md)
 - [Architecture and internals](docs/ARCHITECTURE.md)
-- [API reference on docs.rs](https://docs.rs/reticella)
+- [API reference on docs.rs](https://docs.rs/pdfni)
 
 ## License
 

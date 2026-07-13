@@ -1,6 +1,6 @@
 # CLI
 
-The `reticella` binary extracts tables from a PDF and writes them as JSON.
+The `pdfni` binary extracts tables from a PDF and writes them as JSON.
 It requires the `reader` feature (enabled by default).
 
 ## Usage
@@ -43,4 +43,4 @@ The output is the same JSON shape returned by `extract_from_bytes` — a
 `Document { source, pages: [Page { page_number, width, height, tables: [Table { extraction_method, bbox, n_rows, n_cols, data }] }], warnings: [...] }`.
 Coordinates are top-down PDF points. The `warnings` field lists non-fatal
 reader diagnostics and is omitted from the JSON when empty. See the API
-reference on [docs.rs](https://docs.rs/reticella) for the full type definitions.
+reference on [docs.rs](https://docs.rs/pdfni) for the full type definitions.

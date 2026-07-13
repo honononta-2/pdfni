@@ -53,7 +53,7 @@ the crate root.
 
 ## Encrypted PDFs
 
-reticella implements the PDF Standard security handler for revisions R2 – R6
+pdfni implements the PDF Standard security handler for revisions R2 – R6
 with the `/V` values 1 / 2 / 4 / 5. This covers RC4 and AES-128 / AES-256.
 The optional `password` argument on the byte-input entry points is passed to
 the handler; an empty or missing password is tried first.

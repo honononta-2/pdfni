@@ -1,6 +1,6 @@
 //! 座標付き文字を JSON で出力する
 
-use reticella::{
+use pdfni::{
     build_text_items_with, build_text_lines_with, document_to_markdown,
     extract_document_from_bytes, extract_text_from_bytes, ExtractOptions,
 };
@@ -91,7 +91,7 @@ fn main() {
             } => escape_markdown,
             _ => true,
         };
-        let bidi = std::env::var_os("RETICELLA_BIDI").is_some();
+        let bidi = std::env::var_os("PDFNI_BIDI").is_some();
         let options = ExtractOptions {
             detect_header_footer: detect_hf,
             escape_markdown,
@@ -155,7 +155,7 @@ fn main() {
         }
     };
 
-    let bidi = std::env::var_os("RETICELLA_BIDI").is_some();
+    let bidi = std::env::var_os("PDFNI_BIDI").is_some();
 
     // lines は JSON と件数表示で使い回す
     let lines_pages = match mode {

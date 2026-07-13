@@ -1,5 +1,5 @@
 [package]
-name = "reticella"
+name = "pdfni"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
@@ -8,12 +8,12 @@ license = "Apache-2.0"
 readme = "README.md"
 
 [lib]
-name = "reticella"
+name = "pdfni"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib"]
 
 [[bin]]
-name = "reticella"
+name = "pdfni"
 path = "src/bin/main.rs"
 required-features = ["reader"]
 

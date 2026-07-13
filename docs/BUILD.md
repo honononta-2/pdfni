@@ -18,7 +18,7 @@ document / Markdown pipeline, and all bundled CJK CMap groups.
 
 ## Feature flags
 
-reticella is organized into layered features. Higher layers pull in the layers
+pdfni is organized into layered features. Higher layers pull in the layers
 below them, so you only need to enable the top layer you want.
 
 | Feature | Enables | Depends on |

@@ -1,6 +1,6 @@
 # WebAssembly (Node.js and browser)
 
-reticella exposes the same detection and extraction paths through
+pdfni exposes the same detection and extraction paths through
 `wasm-bindgen`. The exports available depend on which features are enabled at
 build time.
 

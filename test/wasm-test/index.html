@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>reticella browser test</title>
+  <title>pdfni browser test</title>
   <style>
     body { font-family: sans-serif; margin: 2rem; max-width: 900px; }
     h1 { font-size: 1.3rem; }
@@ -16,7 +16,7 @@
   </style>
 </head>
 <body>
-  <h1>reticella browser test</h1>
+  <h1>pdfni browser test</h1>
 
   <section>
     <h2>reader route (pure Rust wasm)</h2>
@@ -29,7 +29,7 @@
   </section>
 
   <script type="module">
-    import init, { extract_tables_from_pdf } from './pkg/reticella.js';
+    import init, { extract_tables_from_pdf } from './pkg/pdfni.js';
 
     function fmt(doc) {
       const summary = doc.pages.map(p =>

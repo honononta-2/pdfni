@@ -1,6 +1,6 @@
 //! Smoke test: print page count, size, glyph and edge counts via reader.
 
-use reticella::read_pages;
+use pdfni::read_pages;
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
