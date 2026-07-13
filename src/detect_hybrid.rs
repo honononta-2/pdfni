@@ -231,6 +231,15 @@ fn detect_region<F: Fn(&BBox) -> String>(
     })
 }
 
+/// 区切り座標列を非減少に補正する
+fn monotonize(bounds: &mut [f64]) {
+    for i in 1..bounds.len() {
+        if bounds[i] < bounds[i - 1] {
+            bounds[i] = bounds[i - 1];
+        }
+    }
+}
+
 /// 罫線位置から区切り座標列を作る
 /// 文字が最外の線からはみ出す場合は端に仮想の区切りを足す
 fn line_bounds(mut pos: Vec<f64>, lo: f64, hi: f64) -> Vec<f64> {
@@ -363,6 +372,7 @@ fn refine_row_bounds(
         }
     }
     out.push(*bounds.last().unwrap());
+    monotonize(&mut out);
     out
 }
 
@@ -397,5 +407,42 @@ fn row_cluster_bounds(
         bounds.push((bot[w[0]] + top[w[1]]) / 2.0);
     }
     bounds.push(hi + 0.5);
+    monotonize(&mut bounds);
     bounds
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(text: &str, x0: f64, x1: f64, top: f64, bottom: f64) -> Seg {
+        Seg {
+            text: text.to_string(),
+            bbox: BBox { x0, top, x1, bottom },
+        }
+    }
+
+    /// 背の高いグリフを含む入力で行クラスタ境界が非減少に保たれる
+    #[test]
+    fn row_cluster_bounds_is_monotonic_with_drop_cap() {
+        let segs = vec![
+            seg("a", 20.0, 30.0, 0.0, 10.0),
+            seg("b", 20.0, 30.0, 20.0, 30.0),
+            seg("c", 20.0, 30.0, 40.0, 50.0),
+            seg("d", 20.0, 30.0, 60.0, 70.0),
+            seg("D", 0.0, 15.0, 0.0, 100.0),
+        ];
+        let members: Vec<usize> = (0..segs.len()).collect();
+        let bounds = row_cluster_bounds(&segs, &members, 0.0, 100.0, Some(10.0));
+        for w in bounds.windows(2) {
+            assert!(w[0] <= w[1], "bounds not monotonic: {:?}", bounds);
+        }
+    }
+
+    #[test]
+    fn monotonize_flattens_inversions() {
+        let mut v = vec![-0.5, 5.0, 60.0, 35.0, 55.0, 100.5];
+        monotonize(&mut v);
+        assert_eq!(v, vec![-0.5, 5.0, 60.0, 60.0, 60.0, 100.5]);
+    }
 }
