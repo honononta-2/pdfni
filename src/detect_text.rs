@@ -498,6 +498,12 @@ fn build_table(
         return None;
     }
 
+    // 充填率の上界による早期棄却 非空 text を持つ active セグ数は filled の上界
+    let nonempty = active.iter().filter(|&&i| !segs[i].text.is_empty()).count();
+    if (nonempty as f64) < s.min_fill * (n_rows as f64) * (n_cols as f64) {
+        return None;
+    }
+
     let band_of = |x: f64| -> usize {
         bands
             .iter()
@@ -537,7 +543,7 @@ fn build_table(
     }
 
     let filled = grid_text.iter().flatten().filter(|t| !t.is_empty()).count();
-    if (filled as f64) < s.min_fill * (n_rows * n_cols) as f64 {
+    if (filled as f64) < s.min_fill * (n_rows as f64) * (n_cols as f64) {
         return None;
     }
 
@@ -648,6 +654,28 @@ mod tests {
         assert_eq!(ids[0], ids[1]);
         assert_eq!(ids[2], ids[3]);
         assert_ne!(ids[0], ids[2]);
+    }
+
+    /// 対角配置で n_rows×n_cols が nonempty を大きく超える入力を早期に棄却する
+    #[test]
+    fn build_table_rejects_sparse_grid_before_allocation() {
+        let n = 20usize;
+        let mut segs = Vec::new();
+        for k in 0..n {
+            segs.push(Seg {
+                text: "x".to_string(),
+                bbox: BBox {
+                    x0: (k as f64) * 20.0,
+                    top: (k as f64) * 10.0,
+                    x1: (k as f64) * 20.0 + 10.0,
+                    bottom: (k as f64) * 10.0 + 8.0,
+                },
+            });
+        }
+        let active: Vec<usize> = (0..n).collect();
+        let row_ids: Vec<usize> = (0..n).collect();
+        let s = TextSettings::default();
+        assert!(build_table(&segs, &active, &row_ids, n, &s).is_none());
     }
 
     #[test]

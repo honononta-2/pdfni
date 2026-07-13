@@ -55,13 +55,19 @@ impl Default for HybridSettings {
 
 /// 片軸罫線方式による1ページの表検出
 /// `fill` はセル矩形内のテキストを返すクロージャ
-pub fn detect<F: Fn(&BBox) -> String>(
+/// `nonws_centers` は矩形内の非空白グリフの中心座標列を返すクロージャ
+pub fn detect<F, G>(
     segs: &[Seg],
     edges: &[Edge],
     fill: &F,
+    nonws_centers: &G,
     s: &HybridSettings,
     scale: Option<f64>,
-) -> Vec<Table> {
+) -> Vec<Table>
+where
+    F: Fn(&BBox) -> String,
+    G: Fn(&BBox) -> Vec<(f64, f64)>,
+{
     if segs.is_empty() || edges.is_empty() {
         return Vec::new();
     }
@@ -76,7 +82,7 @@ pub fn detect<F: Fn(&BBox) -> String>(
 
     let mut tables = Vec::new();
     for members in split_regions(segs, scale) {
-        if let Some(t) = detect_region(segs, &members, &joined, fill, s, scale) {
+        if let Some(t) = detect_region(segs, &members, &joined, fill, nonws_centers, s, scale) {
             tables.push(t);
         }
     }
@@ -125,14 +131,19 @@ fn split_regions(segs: &[Seg], scale: Option<f64>) -> Vec<Vec<usize>> {
 
 /// 1領域からの表検出
 /// 片軸のみに区切り線が揃う場合だけ表を組み立てる
-fn detect_region<F: Fn(&BBox) -> String>(
+fn detect_region<F, G>(
     segs: &[Seg],
     members: &[usize],
     edges: &[Edge],
     fill: &F,
+    nonws_centers: &G,
     s: &HybridSettings,
     scale: Option<f64>,
-) -> Option<Table> {
+) -> Option<Table>
+where
+    F: Fn(&BBox) -> String,
+    G: Fn(&BBox) -> Vec<(f64, f64)>,
+{
     let mut bbox = segs[*members.first()?].bbox;
     for &i in &members[1..] {
         bbox = BBox {
@@ -185,6 +196,29 @@ fn detect_region<F: Fn(&BBox) -> String>(
         return None;
     }
 
+    // 充填率の上界による早期棄却 非空白グリフ中心の占有セル数は filled の上界
+    let outer = BBox {
+        x0: col_bounds[0],
+        top: row_bounds[0],
+        x1: *col_bounds.last().unwrap(),
+        bottom: *row_bounds.last().unwrap(),
+    };
+    let mut occupied: HashSet<(usize, usize)> = HashSet::new();
+    for (cx, cy) in nonws_centers(&outer) {
+        let ri = row_bounds.partition_point(|&b| b <= cy);
+        if ri == 0 || ri > n_rows {
+            continue;
+        }
+        let ci = col_bounds.partition_point(|&b| b <= cx);
+        if ci == 0 || ci > n_cols {
+            continue;
+        }
+        occupied.insert((ri - 1, ci - 1));
+    }
+    if (occupied.len() as f64) < s.min_fill * (n_rows as f64) * (n_cols as f64) {
+        return None;
+    }
+
     let mut data = Vec::with_capacity(n_rows);
     let mut filled = 0usize;
     for r in 0..n_rows {
@@ -204,7 +238,7 @@ fn detect_region<F: Fn(&BBox) -> String>(
         }
         data.push(row);
     }
-    if (filled as f64) < s.min_fill * (n_rows * n_cols) as f64 {
+    if (filled as f64) < s.min_fill * (n_rows as f64) * (n_cols as f64) {
         return None;
     }
     // 文章セル比率による棄却
@@ -444,5 +478,38 @@ mod tests {
         let mut v = vec![-0.5, 5.0, 60.0, 35.0, 55.0, 100.5];
         monotonize(&mut v);
         assert_eq!(v, vec![-0.5, 5.0, 60.0, 60.0, 60.0, 100.5]);
+    }
+
+    /// nonws グリフ中心が皆無なら全セル fill を通さずに棄却する
+    #[test]
+    fn detect_region_rejects_when_no_nonws_centers() {
+        let segs = vec![
+            seg("a", 0.0, 10.0, 0.0, 10.0),
+            seg("b", 0.0, 10.0, 20.0, 30.0),
+            seg("c", 0.0, 10.0, 40.0, 50.0),
+            seg("d", 0.0, 10.0, 60.0, 70.0),
+        ];
+        let members: Vec<usize> = (0..segs.len()).collect();
+        let edges = vec![
+            Edge {
+                x0: 5.0,
+                x1: 5.0,
+                top: 0.0,
+                bottom: 70.0,
+                orientation: Orientation::Vertical,
+            },
+            Edge {
+                x0: 12.0,
+                x1: 12.0,
+                top: 0.0,
+                bottom: 70.0,
+                orientation: Orientation::Vertical,
+            },
+        ];
+        let fill = |_: &BBox| "x".to_string();
+        let nonws_centers = |_: &BBox| Vec::<(f64, f64)>::new();
+        let s = HybridSettings::default();
+        let result = detect_region(&segs, &members, &edges, &fill, &nonws_centers, &s, Some(10.0));
+        assert!(result.is_none());
     }
 }

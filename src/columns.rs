@@ -1,5 +1,7 @@
 //! 段組検出の領域分割
 
+use std::collections::HashSet;
+
 /// X分割の valley 最小幅（pt）
 const X_VALLEY_MIN_WIDTH: f64 = 10.0;
 /// X分割の側の最小行数
@@ -404,11 +406,53 @@ fn promote_f_prime(
     body_lines
 }
 
+/// 合流後の1候補 (a, b, F) の受理判定と全幅マークの更新
+fn evaluate_fw_candidate(
+    parts: &[Participant],
+    line_words: &[Vec<usize>],
+    region_lines: usize,
+    ids: &[usize],
+    a: f64,
+    b: f64,
+    f: &[usize],
+    remove: &mut [bool],
+    fw_mark: &mut [bool],
+) -> bool {
+    if f.is_empty() {
+        return false;
+    }
+    let fw_body = promote_f_prime(parts, f, line_words, remove);
+    if region_lines > 0 {
+        let ratio = fw_body as f64 / region_lines as f64;
+        if ratio > FULLWIDTH_LINE_RATIO_MAX {
+            return false;
+        }
+    }
+    let remain: Vec<usize> = ids.iter().copied().filter(|&id| !remove[id]).collect();
+    let intervals = project_intervals(parts, &remain, true);
+    if intervals.len() < 2 {
+        return false;
+    }
+    let band_in_valley = valleys_from_intervals(&intervals)
+        .into_iter()
+        .any(|v| v.width() >= Y_GUTTER_MIN_WIDTH && v.start <= a && v.end >= b);
+    if !band_in_valley {
+        return false;
+    }
+    for (id, &rm) in remove.iter().enumerate() {
+        if rm {
+            fw_mark[id] = true;
+        }
+    }
+    true
+}
+
 fn try_y_split(parts: &[Participant], ids: &[usize]) -> Option<Valley> {
     let line_words = build_line_words(parts, ids);
     let region_lines = body_line_count_indexed(&line_words);
 
     let mut ends = Vec::new();
+    let mut events: Vec<(f64, i32, usize)> = Vec::new();
     for &id in ids {
         let p = &parts[id];
         if !is_valid_bbox(p) {
@@ -416,89 +460,90 @@ fn try_y_split(parts: &[Participant], ids: &[usize]) -> Option<Valley> {
         }
         ends.push(p.left);
         ends.push(p.right);
+        events.push((p.left, 1, id));
+        events.push((p.right, -1, id));
     }
     ends.sort_by(|a, b| a.total_cmp(b));
     ends.dedup_by(|a, b| a.total_cmp(b) == std::cmp::Ordering::Equal);
     if ends.len() < 2 {
         return None;
     }
-
-    // 原子帯ごとの F(B)
-    let mut band_fs: Vec<(f64, f64, Vec<usize>)> = Vec::new();
-    for w in ends.windows(2) {
-        let a = w[0];
-        let b = w[1];
-        if b.total_cmp(&a) != std::cmp::Ordering::Greater {
-            continue;
-        }
-        let mut f = Vec::new();
-        for &id in ids {
-            let p = &parts[id];
-            if !is_valid_bbox(p) {
-                continue;
-            }
-            // 重なり幅が許容を超える場合のみ交差（微小はみ出しを除外）
-            let overlap = p.right.min(b) - p.left.max(a);
-            if overlap > FW_CROSS_TOLERANCE {
-                f.push(id);
-            }
-        }
-        band_fs.push((a, b, f));
-    }
-
-    // 同じ F の隣接原子帯を合併して一度だけ評価
-    let mut candidates: Vec<(f64, f64, Vec<usize>)> = Vec::new();
-    let mut i = 0;
-    while i < band_fs.len() {
-        let a = band_fs[i].0;
-        let f = band_fs[i].2.clone();
-        let mut b = band_fs[i].1;
-        let mut j = i + 1;
-        while j < band_fs.len() && band_fs[j].2 == f {
-            b = band_fs[j].1;
-            j += 1;
-        }
-        candidates.push((a, b, f));
-        i = j;
-    }
+    events.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let n_parts = parts.len();
     let mut remove = vec![false; n_parts];
     let mut fw_mark = vec![false; n_parts];
     let mut accepted_any = false;
 
-    for (a, b, f) in &candidates {
-        if f.is_empty() {
+    // 原子帯の F(B) をイベントスイープで差分更新し 合流した候補をその場で評価
+    let mut active: HashSet<usize> = HashSet::new();
+    let mut event_idx = 0usize;
+    let mut cur_a: f64 = 0.0;
+    let mut cur_b: f64 = 0.0;
+    let mut cur_f: Vec<usize> = Vec::new();
+    let mut has_cur = false;
+
+    for w in ends.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        if b.total_cmp(&a) != std::cmp::Ordering::Greater {
             continue;
         }
-        let fw_body = promote_f_prime(parts, f, &line_words, &mut remove);
-        // 候補ごとの行比検査（除去テストより先）
-        if region_lines > 0 {
-            let ratio = fw_body as f64 / region_lines as f64;
-            if ratio > FULLWIDTH_LINE_RATIO_MAX {
-                continue;
+        while event_idx < events.len()
+            && events[event_idx].0.total_cmp(&a) != std::cmp::Ordering::Greater
+        {
+            let (_, delta, id) = events[event_idx];
+            if delta > 0 {
+                active.insert(id);
+            } else {
+                active.remove(&id);
             }
+            event_idx += 1;
         }
-        let remain: Vec<usize> = ids
-            .iter()
-            .copied()
-            .filter(|&id| !remove[id])
-            .collect();
-        let intervals = project_intervals(parts, &remain, true);
-        if intervals.len() < 2 {
+        // 帯幅が許容以下なら現行の overlap 判定と等価に F を空扱い
+        let f: Vec<usize> = if b - a > FW_CROSS_TOLERANCE {
+            ids.iter().copied().filter(|id| active.contains(id)).collect()
+        } else {
+            Vec::new()
+        };
+        if has_cur && f == cur_f {
+            cur_b = b;
             continue;
         }
-        let band_in_valley = valleys_from_intervals(&intervals).into_iter().any(|v| {
-            v.width() >= Y_GUTTER_MIN_WIDTH && v.start <= *a && v.end >= *b
-        });
-        if band_in_valley {
+        if has_cur
+            && evaluate_fw_candidate(
+                parts,
+                &line_words,
+                region_lines,
+                ids,
+                cur_a,
+                cur_b,
+                &cur_f,
+                &mut remove,
+                &mut fw_mark,
+            )
+        {
             accepted_any = true;
-            for (id, &rm) in remove.iter().enumerate() {
-                if rm {
-                    fw_mark[id] = true;
-                }
-            }
         }
+        cur_a = a;
+        cur_b = b;
+        cur_f = f;
+        has_cur = true;
+    }
+    if has_cur
+        && evaluate_fw_candidate(
+            parts,
+            &line_words,
+            region_lines,
+            ids,
+            cur_a,
+            cur_b,
+            &cur_f,
+            &mut remove,
+            &mut fw_mark,
+        )
+    {
+        accepted_any = true;
     }
     if !accepted_any {
         return None;

@@ -1197,6 +1197,21 @@ fn detect_tables(
     let index = CharIndex::new(chars);
     let bidi = options.bidi;
     let fill = |b: &BBox| cell_text(chars, &index, b, bidi);
+    // 矩形内の非空白グリフの中心座標列 hybrid の充填率上界に使う
+    let nonws_centers = |b: &BBox| -> Vec<(f64, f64)> {
+        index
+            .in_box(chars, b)
+            .into_iter()
+            .filter_map(|i| {
+                let g = &chars[i];
+                if g.ch.is_whitespace() {
+                    None
+                } else {
+                    Some((g.bbox.cx(), g.bbox.cy()))
+                }
+            })
+            .collect()
+    };
     let use_lattice = options.mode != DetectMode::Borderless;
     let use_hybrid = options.mode == DetectMode::Auto;
     let use_text = options.mode != DetectMode::Ruled;
@@ -1234,7 +1249,7 @@ fn detect_tables(
         .collect();
 
     let mut hybrid_tables = if use_hybrid {
-        detect_hybrid::detect(&segs, edges, &fill, &options.hybrid, scale)
+        detect_hybrid::detect(&segs, edges, &fill, &nonws_centers, &options.hybrid, scale)
     } else {
         Vec::new()
     };
