@@ -258,6 +258,10 @@ impl XRef {
         let mut trailers: Vec<usize> = Vec::new();
         let mut xref_stms: Vec<usize> = Vec::new();
         let mut position = 0usize;
+        // find_bytes_from の走査は残ファイル全長に比例するため
+        // 前方に対象が無いと確認できた後は再探索を打ち切る
+        let mut trailer_absent = false;
+        let mut startxref_absent = false;
 
         while position < body.len() {
             let ch = body[position];
@@ -279,15 +283,27 @@ impl XRef {
 
             if token_is_keyword(token, b"xref") {
                 // trailer キーワードまで進めて位置を記録
-                if let Some(tpos) = find_bytes_from(body, position, b"trailer") {
+                let tpos = if trailer_absent {
+                    None
+                } else {
+                    find_bytes_from(body, position, b"trailer")
+                };
+                if let Some(tpos) = tpos {
                     trailers.push(tpos);
                     position = tpos;
-                    if let Some(sx) = find_bytes_from(body, position, b"startxref") {
+                    let sx = if startxref_absent {
+                        None
+                    } else {
+                        find_bytes_from(body, position, b"startxref")
+                    };
+                    if let Some(sx) = sx {
                         position = sx + b"startxref".len();
                     } else {
+                        startxref_absent = true;
                         position = tpos + b"trailer".len();
                     }
                 } else {
+                    trailer_absent = true;
                     position += token.len().max(1);
                 }
             } else if let Some((num, generation, token_len)) = parse_obj_header_token(token) {
@@ -1117,10 +1133,20 @@ fn read_be(data: &[u8], offset: usize, width: usize) -> Result<u32> {
 
 // --- indexObjects 用スキャナ ---
 
-/// LF / CR / `<` 手前までのトークン（pdf.js readToken 相当）
+/// LF / CR / `<` 手前までのトークン（pdf.js readToken 相当）に対する読み出し窓の上限
+///
+/// 呼び出し先はキーワード（xref/trailer, 先頭 4〜7 バイト）と
+/// `<num> <gen> obj` ヘッダ（u32 最大 10 桁 + u16 最大 5 桁 + 空白 + "obj" ≒ 20 バイト）だけを見る
+/// 実装契約上、64 バイトあれば正当な識別に足りる
+const MAX_SCAN_TOKEN_LEN: usize = 64;
+
+/// LF / CR / `<` 手前までのトークン（pdf.js readToken 相当。無制限だと壊れた入力で O(n²) になるため上限を入れる）
 fn read_scan_token(data: &[u8], offset: usize) -> &[u8] {
+    let hard_end = offset
+        .saturating_add(MAX_SCAN_TOKEN_LEN)
+        .min(data.len());
     let mut end = offset;
-    while end < data.len() {
+    while end < hard_end {
         let ch = data[end];
         if ch == b'\n' || ch == b'\r' || ch == b'<' {
             break;
@@ -1856,5 +1882,105 @@ mod tests {
         assert!(xref.has_usable_root(&data));
         // 通常経路では obj0 が free として載る
         assert!(matches!(xref.entry(0), Some(XrefEntry::Free)));
+    }
+
+    /// 巨大な数字連続で `find_obj_content_end` が O(n²) にならないこと
+    #[test]
+    fn recovery_giant_digit_run_completes() {
+        // startxref を欠落させて recovery に必ず落とす
+        let base = build_one_page_pdf();
+        let sx = base
+            .windows(9)
+            .rposition(|w| w == b"startxref")
+            .expect("startxref");
+        let mut end = sx + 9;
+        while end < base.len() && base[end] != b'%' {
+            end += 1;
+        }
+
+        let mut data = Vec::with_capacity(base.len() + 1_000_000);
+        data.extend_from_slice(&base[..sx]);
+        // 追加オブジェクト内に改行なしの巨大数字列を仕込む
+        data.extend_from_slice(b"4 0 obj\n");
+        data.extend(std::iter::repeat(b'9').take(1_000_000));
+        data.extend_from_slice(b"\nendobj\n");
+        data.extend_from_slice(&base[end..]);
+
+        let start = std::time::Instant::now();
+        let xref = XRef::parse(&data).expect("parse via recovery");
+        let elapsed = start.elapsed();
+        assert!(xref.is_recovered());
+        // 修正前は O(n²) で数秒〜数十秒級。マシン差を吸収するため広めに 10 秒で判定
+        assert!(
+            elapsed.as_secs() < 10,
+            "recovery should be near-linear, took {elapsed:?}"
+        );
+        // 元の Catalog は依然として取れる
+        assert!(xref.has_usable_root(&data));
+    }
+
+    /// 空白区切りの数字連続でも O(n²) にならないこと
+    #[test]
+    fn recovery_space_separated_digits_completes() {
+        let base = build_one_page_pdf();
+        let sx = base
+            .windows(9)
+            .rposition(|w| w == b"startxref")
+            .expect("startxref");
+        let mut end = sx + 9;
+        while end < base.len() && base[end] != b'%' {
+            end += 1;
+        }
+
+        let mut data = Vec::with_capacity(base.len() + 1_200_000);
+        data.extend_from_slice(&base[..sx]);
+        data.extend_from_slice(b"4 0 obj\n");
+        // "9 " を大量に並べる。各数字位置で read_scan_token が末尾まで走ると O(n²)
+        for _ in 0..500_000 {
+            data.extend_from_slice(b"9 ");
+        }
+        data.extend_from_slice(b"\nendobj\n");
+        data.extend_from_slice(&base[end..]);
+
+        let start = std::time::Instant::now();
+        let xref = XRef::parse(&data).expect("parse via recovery");
+        let elapsed = start.elapsed();
+        assert!(xref.is_recovered());
+        assert!(
+            elapsed.as_secs() < 10,
+            "space-separated digits should be near-linear, took {elapsed:?}"
+        );
+        assert!(xref.has_usable_root(&data));
+    }
+
+    /// trailer なしで `xref` キーワードを大量に並べても O(n²) にならないこと
+    #[test]
+    fn recovery_repeated_xref_without_trailer_completes() {
+        let mut data = Vec::with_capacity(1_200_000);
+        data.extend_from_slice(b"%PDF-1.4\n");
+        // 最小の Catalog / Pages を先に置く
+        let o1 = data.len();
+        data.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let o2 = data.len();
+        data.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+        // trailer を欠いた `xref\n` を大量に並べる
+        for _ in 0..200_000 {
+            data.extend_from_slice(b"xref\n");
+        }
+        // 末尾には壊れた startxref を置き、recovery に落とす
+        data.extend_from_slice(b"startxref\n0\n%%EOF\n");
+        let _ = (o1, o2);
+
+        let start = std::time::Instant::now();
+        let xref = XRef::parse(&data).expect("parse via recovery");
+        let elapsed = start.elapsed();
+        assert!(xref.is_recovered());
+        assert!(
+            elapsed.as_secs() < 10,
+            "repeated xref without trailer should be near-linear, took {elapsed:?}"
+        );
+        // 先頭の Catalog はスキャン序盤で拾えている
+        let root = xref.fetch(Ref::new(1, 0), &data).expect("catalog");
+        assert!(matches!(root, Object::Dict(_)));
     }
 }
