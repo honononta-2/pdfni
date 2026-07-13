@@ -7,7 +7,7 @@ Generated artifacts are not committed; produce them with the steps below.
 
 ## 1. Build the wasm bindings
 
-From the crate root (`reticella/`):
+From the crate root (`pdfni/`):
 
 ```sh
 wasm-pack build --release --target web --out-dir test/wasm-test/pkg --no-default-features --features reader
