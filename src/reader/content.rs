@@ -22,6 +22,14 @@ const EPS: f64 = 0.8;
 /// Form XObject のネスト上限。正当な入力を弾かない上限
 const MAX_FORM_DEPTH: usize = 20;
 
+/// q/Q グラフィック状態スタックの深さ上限
+/// Adobe PDF Reference の実装限界 28 に十分な余裕を持たせつつ mupdf の 2048 より小さく取る
+const MAX_GSTACK_DEPTH: usize = 128;
+
+/// Tf 名前 → フォントの memo エントリ数上限
+/// 正当な文書のフォント辞書規模を大きく上回る余裕をとりつつ非有界成長を防ぐ
+const MAX_FONT_MEMO_ENTRIES: usize = 256;
+
 /// Form 解決用の文脈（xref が無い単体テストでは None）
 pub(crate) struct ContentCtx<'a> {
     pub data: &'a [u8],
@@ -1285,6 +1293,8 @@ struct Frame<'r> {
     stack: Vec<Object>,
     ctm: [f64; 6],
     gstack: Vec<([f64; 6], TextState)>,
+    /// gstack 上限を超えて push を打ち切った q の数。対の Q で先に消費する
+    gstack_overflow: usize,
     path: PathBuilder,
     text: TextState,
     /// この resources スコープ内の Tf 名前 → フォント
@@ -1323,6 +1333,7 @@ impl Evaluator<'_, '_> {
             stack: Vec::new(),
             ctm: ctm0,
             gstack: Vec::new(),
+            gstack_overflow: 0,
             path: PathBuilder::new(),
             text: TextState::new(),
             font_memo: HashMap::new(),
@@ -1383,6 +1394,7 @@ impl Evaluator<'_, '_> {
             stack,
             ctm,
             gstack,
+            gstack_overflow,
             path,
             text,
             font_memo,
@@ -1392,9 +1404,18 @@ impl Evaluator<'_, '_> {
         } = frame;
         match op {
             // グラフィックス状態（テキスト状態も保存・復元する。アンダーフローは無視）
-            Op::LowerQ => gstack.push((*ctm, text.clone())),
+            // 上限超過の q はスキップカウンタで数え、対の Q で消費して外側の対応を保つ
+            Op::LowerQ => {
+                if gstack.len() < MAX_GSTACK_DEPTH {
+                    gstack.push((*ctm, text.clone()));
+                } else {
+                    *gstack_overflow += 1;
+                }
+            }
             Op::Q => {
-                if let Some((m, t)) = gstack.pop() {
+                if *gstack_overflow > 0 {
+                    *gstack_overflow -= 1;
+                } else if let Some((m, t)) = gstack.pop() {
                     *ctm = m;
                     *text = t;
                 }
@@ -1480,11 +1501,14 @@ impl Evaluator<'_, '_> {
                 if let Some(sz) = take_nums::<1>(stack) {
                     if let Some(name) = take_name(stack) {
                         text.font_size = sz[0];
+                        // memo が上限に達したら insert しない。未知名は都度 lookup_font で解決する
                         let font = match font_memo.get(&name) {
                             Some(f) => Arc::clone(f),
                             None => {
                                 let f = lookup_font(resources, &name, self.ctx.data, self.ctx.xref);
-                                font_memo.insert(name.clone(), Arc::clone(&f));
+                                if font_memo.len() < MAX_FONT_MEMO_ENTRIES {
+                                    font_memo.insert(name.clone(), Arc::clone(&f));
+                                }
                                 f
                             }
                         };
@@ -3523,5 +3547,88 @@ Q
     fn parse_array_at_depth_limit_returns_null() {
         let obj = parse_array(&mut Lexer::new(b"[1 2 3]"), MAX_STREAM_PARSE_DEPTH);
         assert!(matches!(obj, Object::Null));
+    }
+
+    /// gstack 上限を超える q と対の Q でスタックオーバーフローせず、後続の描画も走る
+    #[test]
+    fn gstack_overflow_survives_and_paints_after() {
+        let n = MAX_GSTACK_DEPTH + 100;
+        let mut src: Vec<u8> = Vec::with_capacity(n * 4 + 32);
+        for _ in 0..n {
+            src.extend_from_slice(b"q ");
+        }
+        for _ in 0..n {
+            src.extend_from_slice(b"Q ");
+        }
+        src.extend_from_slice(b"10 20 50 50 re S");
+        let edges = edges_of(&src, default_view());
+        assert_eq!(edges.len(), 4);
+    }
+
+    /// 上限超過ネストの外側の save/restore が保存され、外側の Q で ctm が正しく戻る
+    #[test]
+    fn gstack_overflow_preserves_outer_save_on_restore() {
+        let mut src: Vec<u8> = Vec::new();
+        src.extend_from_slice(b"1 0 0 1 10 0 cm ");
+        src.extend_from_slice(b"q ");
+        src.extend_from_slice(b"1 0 0 1 500 0 cm ");
+        let n = MAX_GSTACK_DEPTH + 1;
+        for _ in 0..n {
+            src.extend_from_slice(b"q ");
+        }
+        for _ in 0..n {
+            src.extend_from_slice(b"Q ");
+        }
+        src.extend_from_slice(b"Q ");
+        src.extend_from_slice(b"0 20 100 20 re S");
+        let edges = edges_of(&src, default_view());
+        assert_eq!(edges.len(), 4);
+        // ctm = translate(10, 0) が復元されている
+        // rect (x=0, y=20, w=100, h=20) → PDF y 下辺 20 上辺 40。top-down は view.top(200)-y
+        assert!(find_edge(
+            &edges,
+            Orientation::Horizontal,
+            10.0,
+            110.0,
+            180.0,
+            180.0
+        ));
+        assert!(find_edge(
+            &edges,
+            Orientation::Horizontal,
+            10.0,
+            110.0,
+            160.0,
+            160.0
+        ));
+        assert!(find_edge(
+            &edges,
+            Orientation::Vertical,
+            10.0,
+            10.0,
+            160.0,
+            180.0
+        ));
+        assert!(find_edge(
+            &edges,
+            Orientation::Vertical,
+            110.0,
+            110.0,
+            160.0,
+            180.0
+        ));
+    }
+
+    /// resources に無い Tf 名前を上限を超える数だけ与えても panic しない
+    #[test]
+    fn font_memo_overflow_survives_when_tf_name_not_in_resources() {
+        let n = MAX_FONT_MEMO_ENTRIES + 50;
+        let mut src: Vec<u8> = b"BT ".to_vec();
+        for i in 0..n {
+            src.extend_from_slice(format!("/F{i} 12 Tf ").as_bytes());
+        }
+        src.extend_from_slice(b"ET");
+        let edges = edges_of(&src, default_view());
+        assert!(edges.is_empty());
     }
 }
