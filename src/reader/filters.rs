@@ -197,7 +197,7 @@ fn apply_filter(
     match kind {
         FilterKind::Flate => {
             let decoded = decode_flate(data, limit)?;
-            apply_predictor_if_needed(decoded, params)
+            apply_predictor_if_needed(decoded, params, limit)
         }
         FilterKind::Lzw => {
             let early_change = params
@@ -205,7 +205,7 @@ fn apply_filter(
                 .and_then(as_i64)
                 .unwrap_or(1);
             let decoded = decode_lzw(data, early_change, limit)?;
-            apply_predictor_if_needed(decoded, params)
+            apply_predictor_if_needed(decoded, params, limit)
         }
         FilterKind::AsciiHex => Ok(decode_ascii_hex(data)),
         FilterKind::Ascii85 => Ok(decode_ascii85(data)),
@@ -545,7 +545,7 @@ fn decode_run_length(data: &[u8], limit: usize) -> Result<Vec<u8>> {
 
 // --- Predictor ---
 
-fn apply_predictor_if_needed(data: Vec<u8>, params: Option<&Dict>) -> Result<Vec<u8>> {
+fn apply_predictor_if_needed(data: Vec<u8>, params: Option<&Dict>, limit: usize) -> Result<Vec<u8>> {
     let Some(params) = params else {
         return Ok(data);
     };
@@ -553,10 +553,10 @@ fn apply_predictor_if_needed(data: Vec<u8>, params: Option<&Dict>) -> Result<Vec
     if predictor <= 1 {
         return Ok(data);
     }
-    apply_predictor(&data, params, predictor)
+    apply_predictor(&data, params, predictor, limit)
 }
 
-fn apply_predictor(data: &[u8], params: &Dict, predictor: i64) -> Result<Vec<u8>> {
+fn apply_predictor(data: &[u8], params: &Dict, predictor: i64, limit: usize) -> Result<Vec<u8>> {
     if predictor != 2 && !(10..=15).contains(&predictor) {
         return Err(Error::Reader(format!(
             "unsupported predictor: {predictor}"
@@ -584,6 +584,22 @@ fn apply_predictor(data: &[u8], params: &Dict, predictor: i64) -> Result<Vec<u8>
         .and_then(|v| v.checked_add(7))
         .map(|v| v >> 3)
         .ok_or_else(overflow)?;
+
+    // DecodeParms 由来の行幅で伸長爆弾を作らせない
+    if row_bytes > limit {
+        return Err(Error::Reader("predictor row size exceeds limit".into()));
+    }
+
+    // TIFF 1 行 = row_bytes / PNG 1 行 = 1 + row_bytes バイト
+    // 完全行が 1 本も入らない宣言は空 Vec で打ち切り、DecodeParms 由来の巨大バッファ確保を避ける
+    let stride = if predictor == 2 {
+        row_bytes
+    } else {
+        row_bytes.saturating_add(1)
+    };
+    if data.len() < stride {
+        return Ok(Vec::new());
+    }
 
     if predictor == 2 {
         if bits != 8 {
@@ -1107,6 +1123,105 @@ mod tests {
         dict.set("DecodeParms", Object::Dict(parms));
         let (buf, stream) = make_stream(dict, &compressed);
         let out = decode_stream(&buf, &stream, &NullResolver, None, MAX_DECODED_BYTES).unwrap();
+        assert_eq!(out, vec![10, 20, 30, 40]);
+    }
+
+    // ----- Predictor DoS ガード -----
+
+    /// DecodeParms だけを組んでプレディクタ経路を直接呼ぶ
+    fn parms(predictor: i64, columns: i64, colors: i64, bits: i64) -> Dict {
+        let mut d = Dict::new();
+        d.set("Predictor", Object::Int(predictor));
+        d.set("Columns", Object::Int(columns));
+        d.set("Colors", Object::Int(colors));
+        d.set("BitsPerComponent", Object::Int(bits));
+        d
+    }
+
+    #[test]
+    fn png_predictor_columns_larger_than_data_returns_empty() {
+        // Columns 100 万 × Colors=1 × Bits=8 → row_bytes = 1 MiB（limit 内）
+        // A のゲートで空 Vec が返り、巨大 scratch を確保しない
+        let data = [1u8, 2, 3, 4, 5];
+        let p = parms(15, 1_000_000, 1, 8);
+        let out = apply_predictor(&data, &p, 15, MAX_DECODED_BYTES).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn tiff_predictor_columns_larger_than_data_returns_empty() {
+        let data = [1u8, 2, 3, 4, 5];
+        let p = parms(2, 1_000_000, 1, 8);
+        let out = apply_predictor(&data, &p, 2, MAX_DECODED_BYTES).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn png_predictor_columns_beyond_limit_errors() {
+        // Columns 10 億 → row_bytes ≈ 1 GiB > MAX_DECODED_BYTES → B の Err
+        let data = [1u8, 2, 3, 4, 5];
+        let p = parms(15, 1_000_000_000, 1, 8);
+        let err = apply_predictor(&data, &p, 15, MAX_DECODED_BYTES).unwrap_err();
+        assert!(err.to_string().contains("exceeds limit"), "{err}");
+    }
+
+    #[test]
+    fn png_predictor_boundary_filter_byte_missing() {
+        // row_bytes = 4、data.len() = 4（フィルタ種 1 バイトが不足）→ 空
+        // ここで 2 * row_bytes の scratch を確保させないのが本件の要点
+        let data = [10u8, 20, 30, 40];
+        let p = parms(15, 4, 1, 8);
+        let out = apply_predictor(&data, &p, 15, MAX_DECODED_BYTES).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn png_predictor_boundary_one_row_exact() {
+        // data.len() = 1 + row_bytes = 5 でちょうど 1 行復号できる
+        let data = [0u8, 10, 20, 30, 40]; // filter=0 (None)
+        let p = parms(15, 4, 1, 8);
+        let out = apply_predictor(&data, &p, 15, MAX_DECODED_BYTES).unwrap();
+        assert_eq!(out, vec![10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn tiff_predictor_boundary_one_row_exact() {
+        // data.len() == row_bytes で 1 行 TIFF が通ること（境界を厳密不等号で守る）
+        let data = [10u8, 10, 10, 10];
+        let p = parms(2, 4, 1, 8);
+        let out = apply_predictor(&data, &p, 2, MAX_DECODED_BYTES).unwrap();
+        assert_eq!(out, vec![10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn tiff_predictor_boundary_less_than_one_row() {
+        let data = [10u8, 10, 10]; // row_bytes = 4 未満
+        let p = parms(2, 4, 1, 8);
+        let out = apply_predictor(&data, &p, 2, MAX_DECODED_BYTES).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn predictor_row_size_exceeds_limit_errors() {
+        // row_bytes = 1000、limit = 500 → Err
+        let data = vec![0u8; 2000];
+        let p = parms(15, 1000, 1, 8);
+        let err = apply_predictor(&data, &p, 15, 500).unwrap_err();
+        assert!(err.to_string().contains("exceeds limit"), "{err}");
+
+        // TIFF 側も同様
+        let p = parms(2, 1000, 1, 8);
+        let err = apply_predictor(&data, &p, 2, 500).unwrap_err();
+        assert!(err.to_string().contains("exceeds limit"), "{err}");
+    }
+
+    #[test]
+    fn predictor_row_size_equal_limit_passes() {
+        // row_bytes == limit は通す（限界いっぱいでも合法）
+        // Columns=4, 1 行 TIFF → 4 バイト出力
+        let data = [10u8, 10, 10, 10];
+        let p = parms(2, 4, 1, 8);
+        let out = apply_predictor(&data, &p, 2, 4).unwrap();
         assert_eq!(out, vec![10, 20, 30, 40]);
     }
 
