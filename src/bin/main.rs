@@ -1,17 +1,39 @@
 //! PDFから表を抽出しJSONを出すCLI
-//! 使い方: pdfni [--mode auto|ruled|borderless] <input.pdf> [output.json] [password]
+//! 使い方: pdfni [--mode auto|ruled|borderless] [--password-stdin] <input.pdf> [output.json]
 
 use anyhow::Result;
 use pdfni::{DetectMode, ExtractOptions};
 use std::env;
+use std::io::{BufRead, IsTerminal};
 
 fn usage() -> ! {
-    eprintln!("使い方: pdfni [--mode auto|ruled|borderless] <input.pdf> [output.json] [password]");
+    eprintln!(
+        "使い方: pdfni [--mode auto|ruled|borderless] [--password-stdin] <input.pdf> [output.json]"
+    );
     std::process::exit(2);
+}
+
+// stdin の 1 行目をパスワードとして読む。末尾の \n / \r\n は 1 回だけ除去
+fn read_password_from_stdin() -> Result<String> {
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        eprintln!("--password-stdin was given but stdin is a TTY; pipe or redirect the password");
+        std::process::exit(2);
+    }
+    let mut line = String::new();
+    stdin.lock().read_line(&mut line)?;
+    if line.ends_with('\n') {
+        line.pop();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+    }
+    Ok(line)
 }
 
 fn main() -> Result<()> {
     let mut mode = DetectMode::Auto;
+    let mut password_stdin = false;
     let mut positional = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(a) = args.next() {
@@ -22,6 +44,8 @@ fn main() -> Result<()> {
                 Some("borderless") => DetectMode::Borderless,
                 _ => usage(),
             };
+        } else if a == "--password-stdin" {
+            password_stdin = true;
         } else {
             positional.push(a);
         }
@@ -29,7 +53,15 @@ fn main() -> Result<()> {
     let mut positional = positional.into_iter();
     let input = positional.next().unwrap_or_else(|| usage());
     let output = positional.next();
-    let password = positional.next();
+    if positional.next().is_some() {
+        usage();
+    }
+
+    let password = if password_stdin {
+        Some(read_password_from_stdin()?)
+    } else {
+        None
+    };
 
     let options = ExtractOptions {
         mode,

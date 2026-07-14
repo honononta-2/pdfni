@@ -4,72 +4,92 @@ use pdfni::{
     build_text_items_with, build_text_lines_with, document_to_markdown,
     extract_document_from_bytes, extract_text_from_bytes, ExtractOptions,
 };
+use std::io::{BufRead, IsTerminal};
 
-fn main() {
-    let mut args = std::env::args().skip(1);
-    let input = args.next().unwrap_or_else(|| {
-        eprintln!(
-            "usage: text_probe <input.pdf> [lines|items|doc|md|mdnoesc|dochf|mdhf] [output.json] [password]"
-        );
+fn usage_and_exit() -> ! {
+    eprintln!(
+        "usage: text_probe [--password-stdin] <input.pdf> [lines|items|doc|md|mdnoesc|dochf|mdhf] [output.json]"
+    );
+    std::process::exit(2);
+}
+
+// stdin の 1 行目をパスワードとして読む。末尾の \n / \r\n は 1 回だけ除去
+fn read_password_from_stdin() -> String {
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        eprintln!("--password-stdin was given but stdin is a TTY; pipe or redirect the password");
         std::process::exit(2);
-    });
-
-    let mut mode = Mode::Chars;
-    let mut out_path = None;
-    let mut password = None;
-
-    if let Some(a) = args.next() {
-        match a.as_str() {
-            "items" => {
-                mode = Mode::Items;
-                out_path = args.next();
-                password = args.next();
-            }
-            "lines" => {
-                mode = Mode::Lines;
-                out_path = args.next();
-                password = args.next();
-            }
-            "doc" => {
-                mode = Mode::Doc { detect_hf: false };
-                out_path = args.next();
-                password = args.next();
-            }
-            "md" => {
-                mode = Mode::Md {
-                    detect_hf: false,
-                    escape_markdown: true,
-                };
-                out_path = args.next();
-                password = args.next();
-            }
-            "mdnoesc" => {
-                mode = Mode::Md {
-                    detect_hf: false,
-                    escape_markdown: false,
-                };
-                out_path = args.next();
-                password = args.next();
-            }
-            "dochf" => {
-                mode = Mode::Doc { detect_hf: true };
-                out_path = args.next();
-                password = args.next();
-            }
-            "mdhf" => {
-                mode = Mode::Md {
-                    detect_hf: true,
-                    escape_markdown: true,
-                };
-                out_path = args.next();
-                password = args.next();
-            }
-            _ => {
-                out_path = Some(a);
-                password = args.next();
-            }
+    }
+    let mut line = String::new();
+    if let Err(e) = stdin.lock().read_line(&mut line) {
+        eprintln!("failed to read password from stdin: {e}");
+        std::process::exit(1);
+    }
+    if line.ends_with('\n') {
+        line.pop();
+        if line.ends_with('\r') {
+            line.pop();
         }
     }
+    line
+}
+
+fn main() {
+    let mut password_stdin = false;
+    let mut positional: Vec<String> = Vec::new();
+    for a in std::env::args().skip(1) {
+        if a == "--password-stdin" {
+            password_stdin = true;
+        } else {
+            positional.push(a);
+        }
+    }
+
+    let mut it = positional.into_iter();
+    let input = it.next().unwrap_or_else(|| usage_and_exit());
+
+    // 2 個目は既知モード名なら mode、それ以外は出力パスとして解釈する互換挙動
+    let (mode, out_path) = match it.next() {
+        Some(a) => match a.as_str() {
+            "items" => (Mode::Items, it.next()),
+            "lines" => (Mode::Lines, it.next()),
+            "doc" => (Mode::Doc { detect_hf: false }, it.next()),
+            "md" => (
+                Mode::Md {
+                    detect_hf: false,
+                    escape_markdown: true,
+                },
+                it.next(),
+            ),
+            "mdnoesc" => (
+                Mode::Md {
+                    detect_hf: false,
+                    escape_markdown: false,
+                },
+                it.next(),
+            ),
+            "dochf" => (Mode::Doc { detect_hf: true }, it.next()),
+            "mdhf" => (
+                Mode::Md {
+                    detect_hf: true,
+                    escape_markdown: true,
+                },
+                it.next(),
+            ),
+            _ => (Mode::Chars, Some(a)),
+        },
+        None => (Mode::Chars, None),
+    };
+
+    if it.next().is_some() {
+        usage_and_exit();
+    }
+
+    let password = if password_stdin {
+        Some(read_password_from_stdin())
+    } else {
+        None
+    };
 
     let bytes = match std::fs::read(&input) {
         Ok(b) => b,

@@ -1187,4 +1187,27 @@ mod tests {
             "expected BadPassword, got {err}"
         );
     }
+
+    // 手動確認用の暗号化 PDF を tmp に吐き出す
+    #[test]
+    #[ignore]
+    fn dump_encrypted_fixture() {
+        let dir = std::env::temp_dir();
+        let cases = [
+            ("pdfni_enc_r4_aes_empty.pdf", build_encrypted_pdf_r4_aes(b"")),
+            (
+                "pdfni_enc_r4_aes_secret.pdf",
+                build_encrypted_pdf_r4_aes(b"secret"),
+            ),
+            (
+                "pdfni_enc_r6_secret.pdf",
+                build_encrypted_pdf_r6(b"secret"),
+            ),
+        ];
+        for (name, data) in cases {
+            let path = dir.join(name);
+            std::fs::write(&path, &data).unwrap();
+            eprintln!("wrote {}", path.display());
+        }
+    }
 }

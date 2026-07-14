@@ -6,11 +6,13 @@ It requires the `reader` feature (enabled by default).
 ## Usage
 
 ```sh
-cargo run --release -- [--mode auto|ruled|borderless] <input.pdf> [output.json] [password]
+cargo run --release -- [--mode auto|ruled|borderless] [--password-stdin] <input.pdf> [output.json]
 ```
 
 - Omit `output.json` to print to stdout.
-- Pass the PDF password as the last argument for encrypted PDFs.
+- For encrypted PDFs, pass `--password-stdin` and feed the password on stdin as
+  a single line. Only the first line is read; the trailing `\n` or `\r\n` is
+  stripped. Piping or redirection is required (an interactive TTY is rejected).
 
 ## Modes
 
@@ -33,8 +35,11 @@ cargo run --release -- input.pdf output.json
 # Ruled tables only, print to stdout
 cargo run --release -- --mode ruled input.pdf
 
-# Encrypted PDF with a password
-cargo run --release -- input.pdf output.json 'secret'
+# Encrypted PDF with a password (fed on stdin)
+printf %s 'secret' | cargo run --release -- --password-stdin input.pdf output.json
+
+# Or from a file
+cargo run --release -- --password-stdin input.pdf output.json < password.txt
 ```
 
 ## Output
