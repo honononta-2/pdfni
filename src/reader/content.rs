@@ -177,6 +177,7 @@ pub(crate) fn extract_parts(
         edges: &mut edges,
         graphics: &mut graphics,
         visiting: &mut visiting,
+        form_depth: 0,
         text_sink: None,
         collect_paths: true,
         collect_glyphs: true,
@@ -255,6 +256,7 @@ pub(crate) fn extract_text(
         edges: &mut edges,
         graphics: &mut graphics,
         visiting: &mut visiting,
+        form_depth: 0,
         text_sink: Some(&mut sink),
         collect_paths: false,
         collect_glyphs: false,
@@ -287,6 +289,7 @@ pub(crate) fn extract_parts_and_text(
         edges: &mut edges,
         graphics: &mut graphics,
         visiting: &mut visiting,
+        form_depth: 0,
         text_sink: Some(&mut sink),
         collect_paths: true,
         collect_glyphs: true,
@@ -1281,6 +1284,8 @@ struct Evaluator<'a, 'b> {
     edges: &'a mut Vec<EdgePart>,
     graphics: &'a mut Vec<GraphicPart>,
     visiting: &'a mut HashSet<Ref>,
+    /// Form 再帰の現在深さ 間接参照 inline 双方
+    form_depth: usize,
     text_sink: Option<&'a mut TextSink>,
     /// edges/graphics を集める
     collect_paths: bool,
@@ -2017,8 +2022,8 @@ fn glyph_box(
 
 impl Evaluator<'_, '_> {
     fn do_form_xobject(&mut self, name: &str, ctm: [f64; 6], resources: &Dict) {
-        // ネスト段数が上限以上なら再帰しない
-        if self.visiting.len() >= MAX_FORM_DEPTH {
+        // ネスト段数が上限以上なら再帰しない 間接参照 inline 双方
+        if self.form_depth >= MAX_FORM_DEPTH {
             return;
         }
 
@@ -2044,7 +2049,9 @@ impl Evaluator<'_, '_> {
             return;
         }
 
+        self.form_depth += 1;
         self.run_form_xobject(entry, ref_id, ctm, resources);
+        self.form_depth -= 1;
 
         if let Some(r) = ref_id {
             self.visiting.remove(&r);
@@ -2510,6 +2517,74 @@ Q
         assert!(approx(edges[0].left, 30.0));
         assert!(approx(edges[0].right, 50.0));
         assert!(approx(edges[0].top, 160.0));
+    }
+
+    /// inline Form の自己参照が深さ上限で打ち切られスタックが尽きない
+    #[test]
+    fn form_xobject_inline_self_reference_bounded() {
+        // Form 本文が自身を Do する inline Form
+        let form_body = b"/Fm1 Do";
+        let mut form_dict = Dict::new();
+        form_dict.set("Subtype", Object::Name("Form".into()));
+        form_dict.set("Length", Object::Int(form_body.len() as i64));
+        let stream = Stream::new(form_dict, 0, form_body.len());
+
+        let mut xo = Dict::new();
+        xo.set("Fm1", Object::Stream(stream));
+        let mut resources = Dict::new();
+        resources.set("XObject", Object::Dict(xo));
+
+        let edges = extract_edges(
+            b"/Fm1 Do",
+            &resources,
+            default_view(),
+            ContentCtx {
+                data: form_body,
+                xref: None,
+            },
+        );
+        assert!(edges.is_empty());
+    }
+
+    /// inline Form の深いネストが深さ上限で打ち切られスタックが尽きない
+    #[test]
+    fn form_xobject_inline_deep_chain_bounded() {
+        // Fm1..Fm25 の inline Form を連結
+        // Fm_i 本文が Fm_{i+1} Do
+        // Fm25 本文は空
+        let n: usize = MAX_FORM_DEPTH + 5;
+        let mut data: Vec<u8> = Vec::new();
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for i in 1..n {
+            let start = data.len();
+            let body = format!("/Fm{} Do", i + 1);
+            data.extend_from_slice(body.as_bytes());
+            ranges.push((start, body.len()));
+        }
+        let last_start = data.len();
+        ranges.push((last_start, 0));
+
+        let mut xo = Dict::new();
+        for (i, (start, len)) in ranges.iter().enumerate() {
+            let mut form_dict = Dict::new();
+            form_dict.set("Subtype", Object::Name("Form".into()));
+            form_dict.set("Length", Object::Int(*len as i64));
+            let stream = Stream::new(form_dict, *start, *len);
+            xo.set(format!("Fm{}", i + 1), Object::Stream(stream));
+        }
+        let mut resources = Dict::new();
+        resources.set("XObject", Object::Dict(xo));
+
+        let edges = extract_edges(
+            b"/Fm1 Do",
+            &resources,
+            default_view(),
+            ContentCtx {
+                data: &data,
+                xref: None,
+            },
+        );
+        assert!(edges.is_empty());
     }
 
     /// BI...EI スキップ後の演算子が処理される
