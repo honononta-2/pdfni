@@ -246,6 +246,14 @@ fn intersections_to_cells(map: &HashMap<(i64, i64), Xsec>) -> Vec<BBox> {
     let mut points: Vec<(i64, i64)> = map.keys().copied().collect();
     points.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
+    // 交点を列と行で索引 走査済みの pt より後の候補を接尾辞スライスで取り出す
+    let mut by_x: HashMap<i64, Vec<(i64, i64)>> = HashMap::new();
+    let mut by_y: HashMap<i64, Vec<(i64, i64)>> = HashMap::new();
+    for &p in &points {
+        by_x.entry(p.0).or_default().push(p);
+        by_y.entry(p.1).or_default().push(p);
+    }
+
     let connects = |p1: &(i64, i64), p2: &(i64, i64)| -> bool {
         let a = &map[p1];
         let b = &map[p2];
@@ -259,17 +267,20 @@ fn intersections_to_cells(map: &HashMap<(i64, i64), Xsec>) -> Vec<BBox> {
     };
 
     let mut cells = Vec::new();
-    for i in 0..points.len() {
-        let pt = points[i];
-        let rest = &points[i + 1..];
-        let below: Vec<(i64, i64)> = rest.iter().copied().filter(|q| q.0 == pt.0).collect();
-        let right: Vec<(i64, i64)> = rest.iter().copied().filter(|q| q.1 == pt.1).collect();
+    for &pt in &points {
+        let col = &by_x[&pt.0];
+        let col_start = col.partition_point(|q| q.1 <= pt.1);
+        let below = &col[col_start..];
 
-        'outer: for bp in &below {
+        let row = &by_y[&pt.1];
+        let row_start = row.partition_point(|q| q.0 <= pt.0);
+        let right = &row[row_start..];
+
+        'outer: for bp in below {
             if !connects(&pt, bp) {
                 continue;
             }
-            for rp in &right {
+            for rp in right {
                 if !connects(&pt, rp) {
                     continue;
                 }
