@@ -902,7 +902,11 @@ impl XRef {
                             "Invalid XRef table: wrong types in subsection header".into(),
                         ));
                     };
-                    if first_raw < 0 || count_raw < 0 {
+                    if first_raw < 0
+                        || count_raw < 0
+                        || first_raw > i64::from(u32::MAX)
+                        || count_raw > i64::from(u32::MAX)
+                    {
                         return Err(Error::Reader(
                             "Invalid XRef table: wrong types in subsection header".into(),
                         ));
@@ -942,7 +946,11 @@ impl XRef {
                             first = 0;
                         }
 
-                        let num = first + i;
+                        let num = first.checked_add(i).ok_or_else(|| {
+                            Error::Reader(format!(
+                                "Invalid entry in XRef subsection: {first}, {count}"
+                            ))
+                        })?;
                         if self.entries.contains_key(&num) {
                             continue;
                         }
@@ -1000,17 +1008,22 @@ impl XRef {
                 return Err(Error::Reader("Invalid XRef entry fields length".into()));
             }
         };
-        let type_w = as_nonneg_usize(&w[0]).ok_or_else(|| {
+        let type_w = as_xref_field_width(&w[0]).ok_or_else(|| {
             Error::Reader("Invalid XRef entry fields length".into())
         })?;
-        let offset_w = as_nonneg_usize(&w[1]).ok_or_else(|| {
+        let offset_w = as_xref_field_width(&w[1]).ok_or_else(|| {
             Error::Reader("Invalid XRef entry fields length".into())
         })?;
-        let gen_w = as_nonneg_usize(&w[2]).ok_or_else(|| {
+        let gen_w = as_xref_field_width(&w[2]).ok_or_else(|| {
             Error::Reader("Invalid XRef entry fields length".into())
         })?;
 
-        let size = dict_int(&stream.dict, "Size").unwrap_or(0).max(0) as usize;
+        // /Index 省略時は Size を全域として使うため u32 範囲に収める
+        let size_i = dict_int(&stream.dict, "Size").unwrap_or(0).max(0);
+        if size_i > i64::from(u32::MAX) {
+            return Err(Error::Reader("Invalid XRef range fields".into()));
+        }
+        let size = size_i as u32;
         let index_pairs: Vec<(u32, u32)> = match stream.dict.get("Index") {
             Some(Object::Array(arr)) => arr
                 .chunks_exact(2)
@@ -1024,13 +1037,16 @@ impl XRef {
                     Ok((first, n))
                 })
                 .collect::<Result<_>>()?,
-            _ => vec![(0, size as u32)],
+            _ => vec![(0, size)],
         };
 
         // xref ストリームは暗号化対象外
         let decoded = decode_stream(body, stream, &NullResolver, None, self.decode_limit)?;
         let mut cursor = 0usize;
-        let entry_width = type_w + offset_w + gen_w;
+        let entry_width = type_w
+            .checked_add(offset_w)
+            .and_then(|v| v.checked_add(gen_w))
+            .ok_or_else(|| Error::Reader("Invalid XRef entry fields length".into()))?;
         // /W [0 0 0] はエントリ境界が取れず /Index 個数だけ空ループするため不正とする
         if entry_width == 0 {
             return Err(Error::Reader("Invalid XRef entry fields length".into()));
@@ -1038,7 +1054,10 @@ impl XRef {
 
         for (first, n) in index_pairs {
             for i in 0..n {
-                if entry_width > 0 && cursor + entry_width > decoded.len() {
+                let end = cursor
+                    .checked_add(entry_width)
+                    .ok_or_else(|| Error::Reader("Invalid XRef stream data".into()))?;
+                if end > decoded.len() {
                     return Err(Error::Reader("Invalid XRef stream data".into()));
                 }
                 let type_val = if type_w == 0 {
@@ -1046,13 +1065,13 @@ impl XRef {
                 } else {
                     read_be(&decoded, cursor, type_w)?
                 };
-                cursor += type_w;
-                let field2 = read_be(&decoded, cursor, offset_w)?;
-                cursor += offset_w;
-                let field3 = read_be(&decoded, cursor, gen_w)?;
-                cursor += gen_w;
+                let field2 = read_be(&decoded, cursor + type_w, offset_w)?;
+                let field3 = read_be(&decoded, cursor + type_w + offset_w, gen_w)?;
+                cursor = end;
 
-                let num = first + i;
+                let num = first
+                    .checked_add(i)
+                    .ok_or_else(|| Error::Reader("Invalid XRef range fields".into()))?;
                 if self.entries.contains_key(&num) {
                     continue;
                 }
@@ -1127,10 +1146,12 @@ fn dict_int(dict: &Dict, key: &str) -> Option<i64> {
     }
 }
 
-fn as_nonneg_usize(obj: &Object) -> Option<usize> {
+/// /W 要素の解釈 実用上限を超える値は拒否
+fn as_xref_field_width(obj: &Object) -> Option<usize> {
+    const MAX_W: i64 = 8;
     match obj {
-        Object::Int(n) if *n >= 0 => Some(*n as usize),
-        Object::Real(n) if *n >= 0.0 => Some(*n as usize),
+        Object::Int(n) if *n >= 0 && *n <= MAX_W => Some(*n as usize),
+        Object::Real(n) if *n >= 0.0 && *n <= MAX_W as f64 => Some(*n as usize),
         _ => None,
     }
 }
@@ -1138,7 +1159,7 @@ fn as_nonneg_usize(obj: &Object) -> Option<usize> {
 fn as_nonneg_u32(obj: &Object) -> Option<u32> {
     match obj {
         Object::Int(n) if *n >= 0 && *n <= i64::from(u32::MAX) => Some(*n as u32),
-        Object::Real(n) if *n >= 0.0 => Some(*n as u32),
+        Object::Real(n) if *n >= 0.0 && *n <= f64::from(u32::MAX) => Some(*n as u32),
         _ => None,
     }
 }
@@ -1147,14 +1168,20 @@ fn read_be(data: &[u8], offset: usize, width: usize) -> Result<u32> {
     if width == 0 {
         return Ok(0);
     }
-    if offset + width > data.len() {
+    if width > 8 {
         return Err(Error::Reader("Invalid XRef stream data".into()));
     }
-    let mut v = 0u32;
-    for j in 0..width {
-        v = (v << 8) | u32::from(data[offset + j]);
+    let end = offset
+        .checked_add(width)
+        .ok_or_else(|| Error::Reader("Invalid XRef stream data".into()))?;
+    if end > data.len() {
+        return Err(Error::Reader("Invalid XRef stream data".into()));
     }
-    Ok(v)
+    let mut v = 0u64;
+    for j in 0..width {
+        v = (v << 8) | u64::from(data[offset + j]);
+    }
+    u32::try_from(v).map_err(|_| Error::Reader("Invalid XRef stream data".into()))
 }
 
 // --- indexObjects 用スキャナ ---
@@ -1977,6 +2004,151 @@ mod tests {
             "space-separated digits should be near-linear, took {elapsed:?}"
         );
         assert!(xref.has_usable_root(&data));
+    }
+
+    /// /W 各要素は非負整数の実用上限（8）内でのみ受理
+    #[test]
+    fn xref_stream_w_i64_max_errors() {
+        let mut dict = Dict::new();
+        dict.set("Type", Object::Name("XRef".into()));
+        dict.set("Size", Object::Int(1));
+        dict.set(
+            "W",
+            Object::Array(vec![
+                Object::Int(i64::MAX),
+                Object::Int(i64::MAX),
+                Object::Int(i64::MAX),
+            ]),
+        );
+        let stream = Stream::new(dict, 0, 0);
+        let mut xref = XRef::empty(0);
+        assert!(matches!(
+            xref.read_xref_stream(&[], &stream),
+            Err(Error::Reader(_))
+        ));
+    }
+
+    /// /W 要素の実用上限超は拒否
+    #[test]
+    fn xref_stream_w_beyond_max_errors() {
+        let mut dict = Dict::new();
+        dict.set("Type", Object::Name("XRef".into()));
+        dict.set("Size", Object::Int(1));
+        dict.set(
+            "W",
+            Object::Array(vec![Object::Int(1), Object::Int(4), Object::Int(100)]),
+        );
+        let stream = Stream::new(dict, 0, 0);
+        let mut xref = XRef::empty(0);
+        assert!(matches!(
+            xref.read_xref_stream(&[], &stream),
+            Err(Error::Reader(_))
+        ));
+    }
+
+    /// /W [1 8 2] のゼロ詰め 8 バイト幅は受理
+    #[test]
+    fn xref_stream_w_eight_byte_offset_accepts() {
+        let raw = vec![
+            1, // type = uncompressed
+            0, 0, 0, 0, 0, 0, 0, 42, // 8 バイト offset
+            0, 0, // 2 バイト gen
+        ];
+        let mut dict = Dict::new();
+        dict.set("Type", Object::Name("XRef".into()));
+        dict.set("Size", Object::Int(1));
+        dict.set(
+            "W",
+            Object::Array(vec![Object::Int(1), Object::Int(8), Object::Int(2)]),
+        );
+        let stream = Stream::new(dict, 0, raw.len());
+        let mut xref = XRef::empty(0);
+        xref.read_xref_stream(&raw, &stream)
+            .expect("W=[1,8,2] should be accepted");
+        assert!(matches!(
+            xref.entries.get(&0),
+            Some(XrefEntry::Uncompressed {
+                offset: 42,
+                generation: 0
+            })
+        ));
+    }
+
+    /// 幅 8 のフィールドに u32 に収まらない値が入ると Err
+    #[test]
+    fn xref_stream_eight_byte_over_u32_errors() {
+        let raw = vec![
+            1, // type
+            0, 0, 0, 1, 0, 0, 0, 0, // 8 バイト offset = 0x1_0000_0000 (u32::MAX + 1)
+            0, 0, // gen
+        ];
+        let mut dict = Dict::new();
+        dict.set("Type", Object::Name("XRef".into()));
+        dict.set("Size", Object::Int(1));
+        dict.set(
+            "W",
+            Object::Array(vec![Object::Int(1), Object::Int(8), Object::Int(2)]),
+        );
+        let stream = Stream::new(dict, 0, raw.len());
+        let mut xref = XRef::empty(0);
+        assert!(matches!(
+            xref.read_xref_stream(&raw, &stream),
+            Err(Error::Reader(_))
+        ));
+    }
+
+    /// /Index [u32::MAX 2] は first+i が u32 で overflow して Err
+    #[test]
+    fn xref_stream_index_first_overflow_errors() {
+        let raw = vec![1, 0, 0, 1, 1, 0];
+        let mut dict = Dict::new();
+        dict.set("Type", Object::Name("XRef".into()));
+        dict.set("Size", Object::Int(2));
+        dict.set(
+            "W",
+            Object::Array(vec![Object::Int(1), Object::Int(1), Object::Int(1)]),
+        );
+        dict.set(
+            "Index",
+            Object::Array(vec![
+                Object::Int(i64::from(u32::MAX)),
+                Object::Int(2),
+            ]),
+        );
+        let stream = Stream::new(dict, 0, raw.len());
+        let mut xref = XRef::empty(0);
+        assert!(matches!(
+            xref.read_xref_stream(&raw, &stream),
+            Err(Error::Reader(_))
+        ));
+    }
+
+    /// テーブル subsection ヘッダの first が u32 範囲外なら Err
+    #[test]
+    fn xref_table_subsection_first_over_u32_errors() {
+        let body = b"xref\n4294967296 1\n0000000000 00000 n \ntrailer\n<< >>\n";
+        let mut xref = XRef::empty(0);
+        assert!(matches!(
+            xref.read_xref_table(body, 0),
+            Err(Error::Reader(_))
+        ));
+    }
+
+    /// テーブル subsection の first+i が u32 overflow で Err
+    #[test]
+    fn xref_table_subsection_num_overflow_errors() {
+        let body = b"xref\n4294967295 2\n0000000000 65535 f \n0000000010 00000 n \ntrailer\n<< >>\n";
+        let mut xref = XRef::empty(0);
+        assert!(matches!(
+            xref.read_xref_table(body, 0),
+            Err(Error::Reader(_))
+        ));
+    }
+
+    /// read_be は width 実用上限超で Err
+    #[test]
+    fn read_be_width_over_max_errors() {
+        assert!(read_be(&[0u8; 16], 0, 9).is_err());
     }
 
     /// trailer なしで `xref` キーワードを大量に並べても O(n²) にならないこと
