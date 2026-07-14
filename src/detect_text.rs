@@ -325,12 +325,14 @@ fn bands_match(a: &[(f64, f64)], b: &[(f64, f64)]) -> bool {
 
 /// 文字整列方式による1ページの表検出
 pub fn detect(segs: &[Seg], s: &TextSettings, scale: Option<f64>) -> Vec<Table> {
-    if segs.len() < s.min_table_segs {
+    // 最小個数ゲートは 1 以上として扱う
+    let min_segs = s.min_table_segs.max(1);
+    if segs.len() < min_segs {
         return Vec::new();
     }
 
     let active = connected_set(segs, s.align_tol);
-    if active.len() < s.min_table_segs {
+    if active.len() < min_segs {
         return Vec::new();
     }
 
@@ -444,7 +446,7 @@ pub fn detect(segs: &[Seg], s: &TextSettings, scale: Option<f64>) -> Vec<Table> 
             .filter(|&(_, &r)| in_group[r])
             .map(|(&i, _)| i)
             .collect();
-        if group_active.len() < s.min_table_segs {
+        if group_active.len() < min_segs {
             continue;
         }
 

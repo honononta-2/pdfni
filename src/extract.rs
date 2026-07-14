@@ -223,35 +223,51 @@ impl CharIndex {
     }
 }
 
-/// x ソート済み行で、空白の直前・直後の非空白が接触しているか
-fn ws_between_touching_solids_x(line: &[(usize, &Glyph)], ws_pos: usize) -> bool {
-    let mut prev_end = None;
-    for i in (0..ws_pos).rev() {
+/// x ソート済み行で、各空白位置が直前・直後の非空白の間に載っているかを一括判定する
+///
+/// 非空白位置は常に false。空白位置は現行 ws_between_touching_solids_x と同一の
+/// 「直前・直後の最近傍非空白」比較を返す
+fn touching_ws_flags(line: &[(usize, &Glyph)]) -> Vec<bool> {
+    let n = line.len();
+    let mut prev_end: Vec<Option<f64>> = vec![None; n];
+    let mut next_start: Vec<Option<f64>> = vec![None; n];
+
+    let mut last: Option<f64> = None;
+    for i in 0..n {
+        prev_end[i] = last;
         let g = line[i].1;
         if !g.ch.is_whitespace() {
-            prev_end = Some(g.bbox.x0.max(g.bbox.x1));
-            break;
+            last = Some(g.bbox.x0.max(g.bbox.x1));
         }
     }
-    let mut next_start = None;
-    for i in (ws_pos + 1)..line.len() {
+    let mut last: Option<f64> = None;
+    for i in (0..n).rev() {
+        next_start[i] = last;
         let g = line[i].1;
         if !g.ch.is_whitespace() {
-            next_start = Some(g.bbox.x0.min(g.bbox.x1));
-            break;
+            last = Some(g.bbox.x0.min(g.bbox.x1));
         }
     }
-    match (prev_end, next_start) {
-        (Some(l1), Some(r0)) => l1 >= r0 - 0.01,
-        _ => false,
-    }
+
+    (0..n)
+        .map(|i| {
+            if !line[i].1.ch.is_whitespace() {
+                return false;
+            }
+            match (prev_end[i], next_start[i]) {
+                (Some(l1), Some(r0)) => l1 >= r0 - 0.01,
+                _ => false,
+            }
+        })
+        .collect()
 }
 
 /// 行グリフを x 順に連結（接触する非空白の間の空白は除く）
 fn join_line_glyphs(line: &[(usize, &Glyph)]) -> String {
+    let intrusive = touching_ws_flags(line);
     let mut s = String::new();
     for (i, (_, g)) in line.iter().enumerate() {
-        if g.ch.is_whitespace() && ws_between_touching_solids_x(line, i) {
+        if g.ch.is_whitespace() && intrusive[i] {
             continue;
         }
         s.push(g.ch);
@@ -387,16 +403,15 @@ fn build_segments(chars: &[Glyph], scale: Option<f64>) -> Vec<Seg> {
         let mut bb: Option<BBox> = None;
         let mut last_x1 = f64::NEG_INFINITY;
         let line_refs: Vec<(usize, &Glyph)> = line.iter().map(|&i| (i, &chars[i])).collect();
-        for &i in &line {
+        let intrusive = touching_ws_flags(&line_refs);
+        for (pos, &i) in line.iter().enumerate() {
             let g = &chars[i];
             if bb.is_some() && g.bbox.x0 - last_x1 > seg_gap {
                 push_seg(&mut segs, &mut text, &mut bb);
             }
             if g.ch.is_whitespace() {
                 // 接触する非空白の間の空白は文字にしない
-                let pos = line_refs.iter().position(|(j, _)| *j == i);
-                let intrusive = pos.is_some_and(|p| ws_between_touching_solids_x(&line_refs, p));
-                if !intrusive && bb.is_some() {
+                if !intrusive[pos] && bb.is_some() {
                     text.push(g.ch);
                 }
             } else {
@@ -1022,7 +1037,9 @@ fn detect_page(pi: usize, part: PagePart, options: &ExtractOptions) -> Page {
             .iter()
             .filter(|g| !g.upright && g.rot == rot)
             .collect();
-        if group.iter().filter(|g| !g.ch.is_whitespace()).count() < options.text.min_table_segs {
+        if group.iter().filter(|g| !g.ch.is_whitespace()).count()
+            < options.text.min_table_segs.max(1)
+        {
             continue;
         }
         let (w, h) = (part.width, part.height);
@@ -1609,5 +1626,69 @@ mod tests {
         assert_eq!(t.data[1][1].text, "bc");
         assert_eq!(t.data[1][1].bbox.x1, 150.0);
         assert_eq!(t.data[1][2].bbox.width(), 0.0);
+    }
+
+    fn part_with(glyphs: Vec<GlyphPart>) -> PagePart {
+        PagePart {
+            width: 200.0,
+            height: 200.0,
+            glyphs,
+            edges: Vec::new(),
+            norm_rotate: 0,
+            graphics: Vec::new(),
+        }
+    }
+
+    fn upright_glyph(ch: char, left: f64, right: f64, top: f64, bottom: f64) -> GlyphPart {
+        GlyphPart {
+            ch,
+            left,
+            right,
+            top,
+            bottom,
+            font_size: None,
+            upright: true,
+            rot: 0,
+        }
+    }
+
+    fn zero_min_options() -> ExtractOptions {
+        let mut o = ExtractOptions::default();
+        o.text.min_table_segs = 0;
+        o
+    }
+
+    /// min_table_segs = 0 must not panic on an empty page
+    #[test]
+    fn extract_from_parts_zero_min_table_segs_empty_page_survives() {
+        let doc = extract_from_parts(vec![part_with(Vec::new())], &zero_min_options());
+        assert_eq!(doc.pages.len(), 1);
+        assert!(doc.pages[0].tables.is_empty());
+    }
+
+    /// min_table_segs = 0 must not panic on a page with a single glyph where
+    /// connected_set drains active to empty (row/col alignment count < 2)
+    #[test]
+    fn extract_from_parts_zero_min_table_segs_single_glyph_survives() {
+        let glyphs = vec![upright_glyph('a', 10.0, 15.0, 10.0, 18.0)];
+        let doc = extract_from_parts(vec![part_with(glyphs)], &zero_min_options());
+        assert_eq!(doc.pages.len(), 1);
+        assert!(doc.pages[0].tables.is_empty());
+    }
+
+    /// min_table_segs = 0 must not panic on a normal upright-only page through
+    /// the rotation loop where each rotated group is empty
+    #[test]
+    fn extract_from_parts_zero_min_table_segs_upright_only_rotation_survives() {
+        let mut glyphs = Vec::new();
+        for r in 0..4 {
+            for c in 0..3 {
+                let x0 = 10.0 + 20.0 * c as f64;
+                let y0 = 10.0 + 10.0 * r as f64;
+                glyphs.push(upright_glyph('x', x0, x0 + 5.0, y0, y0 + 8.0));
+            }
+        }
+        let doc = extract_from_parts(vec![part_with(glyphs)], &zero_min_options());
+        assert_eq!(doc.pages.len(), 1);
     }
 }

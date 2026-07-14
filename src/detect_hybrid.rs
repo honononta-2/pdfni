@@ -177,12 +177,14 @@ where
         .map(|e| e.x0)
         .collect();
 
-    let (row_bounds, col_bounds) = if hs.len() >= s.min_lines && vs.len() < s.min_lines {
+    // 罫線本数の最小ゲートは 1 以上として扱う
+    let min_lines = s.min_lines.max(1);
+    let (row_bounds, col_bounds) = if hs.len() >= min_lines && vs.len() < min_lines {
         let cols = band_bounds(segs, members, bbox.x0, bbox.x1, s);
         let lines = line_bounds(hs, bbox.top, bbox.bottom);
         let rows = refine_row_bounds(segs, members, lines, &cols, scale);
         (rows, cols)
-    } else if vs.len() >= s.min_lines && hs.len() < s.min_lines {
+    } else if vs.len() >= min_lines && hs.len() < min_lines {
         let rows = row_cluster_bounds(segs, members, bbox.top, bbox.bottom, scale);
         let cols = line_bounds(vs, bbox.x0, bbox.x1);
         (rows, cols)
@@ -478,6 +480,45 @@ mod tests {
         let mut v = vec![-0.5, 5.0, 60.0, 35.0, 55.0, 100.5];
         monotonize(&mut v);
         assert_eq!(v, vec![-0.5, 5.0, 60.0, 60.0, 60.0, 100.5]);
+    }
+
+    /// min_lines = 0 でも罫線本数ゲートを 1 として扱い hybrid が検出される
+    #[test]
+    fn detect_region_zero_min_lines_enters_branch() {
+        let segs = vec![
+            seg("a", 0.0, 10.0, 0.0, 10.0),
+            seg("b", 15.0, 25.0, 0.0, 10.0),
+            seg("c", 0.0, 10.0, 20.0, 30.0),
+            seg("d", 15.0, 25.0, 20.0, 30.0),
+        ];
+        let members: Vec<usize> = (0..segs.len()).collect();
+        let edges = vec![
+            Edge {
+                x0: 12.0,
+                x1: 12.0,
+                top: 0.0,
+                bottom: 30.0,
+                orientation: Orientation::Vertical,
+            },
+            Edge {
+                x0: 22.0,
+                x1: 22.0,
+                top: 0.0,
+                bottom: 30.0,
+                orientation: Orientation::Vertical,
+            },
+        ];
+        let fill = |_: &BBox| "x".to_string();
+        let nonws_centers =
+            |_: &BBox| vec![(5.0, 5.0), (18.0, 5.0), (5.0, 25.0), (18.0, 25.0)];
+        let mut s = HybridSettings::default();
+        s.min_lines = 0;
+        let result =
+            detect_region(&segs, &members, &edges, &fill, &nonws_centers, &s, Some(10.0));
+        assert!(
+            result.is_some(),
+            "min_lines=0 must be normalized to 1 and enter the vertical branch"
+        );
     }
 
     /// nonws グリフ中心が皆無なら全セル fill を通さずに棄却する
