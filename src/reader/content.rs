@@ -19,6 +19,10 @@ use super::xref::XRef;
 /// 軸平行判定の許容差（pt）
 const EPS: f64 = 0.8;
 
+/// パス全長に占める非軸平行セグメント弦長の比率がこの値未満のパスは graphics に登録しない
+/// 角丸矩形の四隅や塗り罫線の太さ分の短辺をチャート要素と区別する
+const GRAPHICS_MIN_FRAC: f64 = 0.25;
+
 /// Form XObject のネスト上限。正当な入力を弾かない上限
 const MAX_FORM_DEPTH: usize = 20;
 
@@ -983,7 +987,8 @@ fn axis_edge(a: (f64, f64), b: (f64, f64), view: [f64; 4]) -> Option<EdgePart> {
 
 /// パスを辺化しバッファを空にする
 ///
-/// 軸平行にならない線分と曲線はパス1回分の外接矩形として graphics に集約する
+/// 軸平行にならない線分と曲線はパス1回分の外接矩形として graphics に集約する。
+/// 弦長比率で軸平行辺が支配的なパスは角丸矩形などの罫線描画とみなし集約しない
 fn finalize_path(
     path: &mut PathBuilder,
     filled: bool,
@@ -998,13 +1003,22 @@ fn finalize_path(
     let apply = |x: f64, y: f64| apply_ctm(ctm, x, y);
     let (ox, oy) = (view[0], view[3]);
     let mut gbox: Option<[f64; 4]> = None;
-    let grow = |a: (f64, f64), b: (f64, f64), gbox: &mut Option<[f64; 4]>| {
+    let mut axis_len = 0.0;
+    let mut gbox_len = 0.0;
+    // 軸平行なら辺に、そうでなければ gbox に集約し弦長を分類別に積む
+    let mut emit = |a: (f64, f64), b: (f64, f64), curve: bool| {
+        if !curve && let Some(e) = axis_edge(a, b, view) {
+            axis_len += (a.0 - b.0).hypot(a.1 - b.1);
+            edges.push(e);
+            return;
+        }
         if (a.0 - b.0).abs() <= 0.01 && (a.1 - b.1).abs() <= 0.01 {
             return;
         }
+        gbox_len += (a.0 - b.0).hypot(a.1 - b.1);
         let (l, r) = (a.0.min(b.0) - ox, a.0.max(b.0) - ox);
         let (t, bo) = (oy - a.1.max(b.1), oy - a.1.min(b.1));
-        *gbox = Some(match gbox {
+        gbox = Some(match gbox {
             Some(g) => [g[0].min(l), g[1].min(t), g[2].max(r), g[3].max(bo)],
             None => [l, t, r, bo],
         });
@@ -1019,11 +1033,7 @@ fn finalize_path(
                 let pt = apply(x, y);
                 if filled {
                     if let (Some(s), Some(p)) = (sub_start, prev) {
-                        if let Some(e) = axis_edge(p, s, view) {
-                            edges.push(e);
-                        } else {
-                            grow(p, s, &mut gbox);
-                        }
+                        emit(p, s, false);
                     }
                 }
                 sub_start = Some(pt);
@@ -1032,28 +1042,20 @@ fn finalize_path(
             Seg::LineTo(x, y) => {
                 let pt = apply(x, y);
                 if let Some(p) = prev {
-                    if let Some(e) = axis_edge(p, pt, view) {
-                        edges.push(e);
-                    } else {
-                        grow(p, pt, &mut gbox);
-                    }
+                    emit(p, pt, false);
                 }
                 prev = Some(pt);
             }
             Seg::CurveTo(x, y) => {
                 let pt = apply(x, y);
                 if let Some(p) = prev {
-                    grow(p, pt, &mut gbox);
+                    emit(p, pt, true);
                 }
                 prev = Some(pt);
             }
             Seg::Close => {
                 if let (Some(s), Some(p)) = (sub_start, prev) {
-                    if let Some(e) = axis_edge(p, s, view) {
-                        edges.push(e);
-                    } else {
-                        grow(p, s, &mut gbox);
-                    }
+                    emit(p, s, false);
                     prev = Some(s);
                 }
             }
@@ -1062,19 +1064,18 @@ fn finalize_path(
 
     if filled {
         if let (Some(s), Some(p)) = (sub_start, prev) {
-            if let Some(e) = axis_edge(p, s, view) {
-                edges.push(e);
-            } else {
-                grow(p, s, &mut gbox);
-            }
+            emit(p, s, false);
         }
     }
-    if let Some(g) = gbox {
+    if let Some(g) = gbox
+        && gbox_len >= (axis_len + gbox_len) * GRAPHICS_MIN_FRAC
+    {
         graphics.push(GraphicPart {
             left: g[0],
             top: g[1],
             right: g[2],
             bottom: g[3],
+            curve_len: gbox_len,
         });
     }
 }
@@ -2189,6 +2190,19 @@ mod tests {
         )
     }
 
+    fn parts_of(contents: &[u8], view: [f64; 4]) -> ExtractedParts {
+        extract_parts(
+            contents,
+            &Dict::new(),
+            view,
+            ContentCtx {
+                data: &[],
+                xref: None,
+            },
+            0,
+        )
+    }
+
     fn default_view() -> [f64; 4] {
         [0.0, 0.0, 200.0, 200.0]
     }
@@ -2462,6 +2476,40 @@ Q
         let edges = edges_of(b"0 0 m 0.5 10 l S", default_view());
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].orientation, Orientation::Vertical);
+    }
+
+    /// 角丸矩形は軸平行辺が支配的なので graphics に登録しない
+    #[test]
+    fn rounded_rect_not_graphic() {
+        // 100x55 の角丸矩形 r=5。四隅のみ曲線で辺は軸平行
+        let body = b"10 60 m 10 15 l 10 12 12 10 15 10 c 105 10 l 108 10 110 12 110 15 c \
+                     110 60 l 110 63 108 65 105 65 c 15 65 l 12 65 10 63 10 60 c h f";
+        let parts = parts_of(body, default_view());
+        assert!(parts.graphics.is_empty(), "got {:?}", parts.graphics);
+        assert_eq!(parts.edges.len(), 4, "got {:?}", parts.edges);
+    }
+
+    /// 曲線・斜め線が主体のパスは従来どおり graphics に登録する
+    #[test]
+    fn curve_and_diagonal_paths_still_graphic() {
+        let parts = parts_of(b"10 10 m 30 40 50 40 70 40 c 90 40 110 10 130 10 c S", default_view());
+        assert_eq!(parts.graphics.len(), 1, "got {:?}", parts.graphics);
+        let g = &parts.graphics[0];
+        assert!(approx(g.left, 10.0) && approx(g.right, 130.0));
+        assert!(approx(g.top, 160.0) && approx(g.bottom, 190.0));
+        assert!(g.curve_len > 100.0, "curve_len={}", g.curve_len);
+
+        let parts = parts_of(b"0 0 m 100 100 l S", default_view());
+        assert_eq!(parts.graphics.len(), 1, "got {:?}", parts.graphics);
+    }
+
+    /// 太さが許容差以下の塗り罫線は短辺を含んでも graphics に登録しない
+    #[test]
+    fn thin_filled_rule_not_graphic() {
+        let parts = parts_of(b"10 100 100 0.8 re f", default_view());
+        assert!(parts.graphics.is_empty(), "got {:?}", parts.graphics);
+        // 長辺2本は従来どおり辺化される
+        assert_eq!(parts.edges.len(), 2, "got {:?}", parts.edges);
     }
 
     /// n は辺にしない

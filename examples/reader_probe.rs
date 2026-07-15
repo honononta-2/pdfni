@@ -32,6 +32,8 @@ struct Graphic {
     x1: f64,
     top: f64,
     bottom: f64,
+    /// Total chord length of non-axis-parallel segments
+    curve_len: f64,
 }
 
 #[derive(Serialize)]
@@ -109,6 +111,7 @@ fn main() {
                     x1: g.right,
                     top: g.top,
                     bottom: g.bottom,
+                    curve_len: g.curve_len,
                 })
                 .collect(),
             edges: p

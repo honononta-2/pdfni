@@ -65,6 +65,9 @@ pub struct GraphicPart {
     pub right: f64,
     pub top: f64,
     pub bottom: f64,
+    /// 非軸平行セグメントの弦長合計。0 はセル横断線の判定を発動しない
+    #[serde(default)]
+    pub curve_len: f64,
 }
 
 /// 実行する検出方式の選択
@@ -1094,8 +1097,11 @@ fn detect_page(pi: usize, part: PagePart, options: &ExtractOptions) -> Page {
             }
         }
     }
-    // チャート領域(曲線・斜め線に覆われた領域)の候補を棄却する
-    tables.retain(|t| graphics_coverage(&t.bbox, &part.graphics) < GRAPHICS_COVER_MAX);
+    // チャート領域(曲線・斜め線に覆われた領域、セルを横切る線を含む領域)の候補を棄却する
+    tables.retain(|t| {
+        graphics_coverage(&t.bbox, &part.graphics) < GRAPHICS_COVER_MAX
+            && !has_cell_crossing_line(t, &part.graphics)
+    });
     tables.sort_by(|a, b| {
         a.bbox
             .top
@@ -1155,6 +1161,91 @@ fn norm_box(b: &BBox, rot: i32, w: f64, h: f64) -> BBox {
 
 /// グラフィック被覆率がこの値以上の表候補はチャート領域として棄却する
 const GRAPHICS_COVER_MAX: f64 = 0.5;
+
+/// 線が外接矩形を実際に走っていると判定する弦長比の下限
+///
+/// 直線は 1.0、角丸の弧やジッタだけで外接矩形が広がったパスは 0.1 前後
+const LINE_TRAVERSAL_MIN: f64 = 0.7;
+
+/// 非直線の線がセルを横切ったとみなす行数・列数の下限
+///
+/// 結合セル1つ分(2セル)に収まる装飾は許容する
+const LINE_CROSS_MIN_CELLS: usize = 3;
+
+/// 複数セルを横切る非直線の線を含む候補の判定
+///
+/// 罫線は軸平行の直線でセル内容はセル内に収まるため
+/// どちらでもあり得ない線を含む候補はチャート・図領域とみなす(specs/15)
+fn has_cell_crossing_line(t: &Table, graphics: &[GraphicPart]) -> bool {
+    let overlap = |a0: f64, a1: f64, b0: f64, b1: f64| (a1.min(b1) - a0.max(b0)).max(0.0);
+    let nonempty = |c: &Cell| c.bbox.width() > 0.0 || c.bbox.height() > 0.0;
+
+    // 候補のセル格子から列・行の中心を作る(空セルは除く)
+    let mut col_centers: Vec<f64> = Vec::with_capacity(t.n_cols);
+    for j in 0..t.n_cols {
+        let mut iv: Option<(f64, f64)> = None;
+        for row in &t.data {
+            if let Some(c) = row.get(j)
+                && nonempty(c)
+            {
+                iv = Some(match iv {
+                    Some((a, b)) => (a.min(c.bbox.x0), b.max(c.bbox.x1)),
+                    None => (c.bbox.x0, c.bbox.x1),
+                });
+            }
+        }
+        if let Some((a, b)) = iv {
+            col_centers.push((a + b) / 2.0);
+        }
+    }
+    let mut row_centers: Vec<f64> = Vec::with_capacity(t.data.len());
+    for row in &t.data {
+        let mut iv: Option<(f64, f64)> = None;
+        for c in row {
+            if nonempty(c) {
+                iv = Some(match iv {
+                    Some((a, b)) => (a.min(c.bbox.top), b.max(c.bbox.bottom)),
+                    None => (c.bbox.top, c.bbox.bottom),
+                });
+            }
+        }
+        if let Some((a, b)) = iv {
+            row_centers.push((a + b) / 2.0);
+        }
+    }
+
+    graphics.iter().any(|g| {
+        let (gl, gr) = (g.left.min(g.right), g.left.max(g.right));
+        let (gt, gb) = (g.top.min(g.bottom), g.top.max(g.bottom));
+        // 走行性: 弦長が外接矩形の長辺を実際に走っている
+        let long = (gr - gl).max(gb - gt);
+        if long <= 0.0 || g.curve_len < LINE_TRAVERSAL_MIN * long {
+            return false;
+        }
+        // 内包性: 候補との交差が面積の過半(退化した薄い線は極小幅で扱う)
+        let (w, h) = ((gr - gl).max(0.01), (gb - gt).max(0.01));
+        let ix = overlap(gl, gl + w, t.bbox.x0, t.bbox.x1);
+        let iy = overlap(gt, gt + h, t.bbox.top, t.bbox.bottom);
+        if ix * iy < 0.5 * w * h {
+            return false;
+        }
+        // 非セル内容: いずれかのセルに9割以上収まるものはセル内容として許容
+        let in_cell = t.data.iter().flatten().any(|c| {
+            nonempty(c) && {
+                let cx = overlap(gl, gl + w, c.bbox.x0, c.bbox.x1);
+                let cy = overlap(gt, gt + h, c.bbox.top, c.bbox.bottom);
+                cx * cy >= 0.9 * w * h
+            }
+        });
+        if in_cell {
+            return false;
+        }
+        // セル横断: 3列以上の列中心または3行以上の行中心を覆う
+        let cols = col_centers.iter().filter(|&&x| gl <= x && x <= gr).count();
+        let rows = row_centers.iter().filter(|&&y| gt <= y && y <= gb).count();
+        cols >= LINE_CROSS_MIN_CELLS || rows >= LINE_CROSS_MIN_CELLS
+    })
+}
 
 /// 表bboxのうちグラフィック矩形に覆われる割合
 ///
@@ -1389,6 +1480,7 @@ mod tests {
             right: 101.0,
             top: -1.0,
             bottom: 101.0,
+            curve_len: 0.0,
         }];
         assert_eq!(graphics_coverage(&b, &full), 1.0);
         let strip = vec![GraphicPart {
@@ -1396,9 +1488,73 @@ mod tests {
             right: 20.0,
             top: 0.0,
             bottom: 100.0,
+            curve_len: 0.0,
         }];
         assert_eq!(graphics_coverage(&b, &strip), 0.2);
         assert_eq!(graphics_coverage(&b, &[]), 0.0);
+    }
+
+    /// セル横断線の棄却判定(specs/15 §2-2)
+    #[test]
+    fn cell_crossing_line_detection() {
+        // 4行3列 300x80 の格子
+        let cell = |x0: f64, top: f64, x1: f64, bottom: f64| Cell {
+            text: "x".into(),
+            bbox: BBox {
+                x0,
+                top,
+                x1,
+                bottom,
+            },
+        };
+        let data: Vec<Vec<Cell>> = (0..4)
+            .map(|r| {
+                (0..3)
+                    .map(|c| {
+                        cell(
+                            c as f64 * 100.0,
+                            r as f64 * 20.0,
+                            (c + 1) as f64 * 100.0,
+                            (r + 1) as f64 * 20.0,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        let t = Table {
+            extraction_method: "lattice",
+            bbox: BBox {
+                x0: 0.0,
+                top: 0.0,
+                x1: 300.0,
+                bottom: 80.0,
+            },
+            n_rows: 4,
+            n_cols: 3,
+            data,
+        };
+        let g = |left: f64, top: f64, right: f64, bottom: f64, curve_len: f64| GraphicPart {
+            left,
+            right,
+            top,
+            bottom,
+            curve_len,
+        };
+        // 3列の中心を横切る走行線 → 棄却
+        assert!(has_cell_crossing_line(&t, &[g(10.0, 25.0, 290.0, 45.0, 300.0)]));
+        // 3行の中心を縦に横切る走行線 → 棄却
+        assert!(has_cell_crossing_line(&t, &[g(120.0, 5.0, 180.0, 75.0, 80.0)]));
+        // セル内に収まる装飾は走行しても許容
+        assert!(!has_cell_crossing_line(&t, &[g(10.0, 25.0, 90.0, 35.0, 90.0)]));
+        // 閉じた微小図形(点リーダー等)はセル境界上でも中心を覆えず許容
+        assert!(!has_cell_crossing_line(&t, &[g(150.0, 29.0, 151.0, 30.0, 3.0)]));
+        assert!(!has_cell_crossing_line(&t, &[g(99.5, 29.0, 100.5, 30.0, 3.0)]));
+        // 全域を覆うが走行しない外接矩形(角丸の弧由来)は対象外
+        assert!(!has_cell_crossing_line(&t, &[g(0.0, 0.0, 300.0, 80.0, 20.0)]));
+        // curve_len 未供給(0)の旧 parts は発動しない
+        assert!(!has_cell_crossing_line(&t, &[g(10.0, 25.0, 290.0, 45.0, 0.0)]));
+        // 候補の外に大半がある線は巻き込まない
+        assert!(!has_cell_crossing_line(&t, &[g(10.0, 70.0, 290.0, 200.0, 300.0)]));
     }
 
     #[test]
