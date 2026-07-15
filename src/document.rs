@@ -155,7 +155,7 @@ pub fn assign_headings(doc: &mut DocDoc) {
 }
 
 /// 文書モデルを Markdown 文字列へ直列化する（§6）
-pub fn document_to_markdown(doc: &DocDoc, escape_markdown: bool) -> String {
+pub(crate) fn document_to_markdown(doc: &DocDoc, escape_markdown: bool) -> String {
     let mut parts = Vec::new();
     for page in &doc.pages {
         for block in &page.blocks {
@@ -670,6 +670,16 @@ pub(crate) fn sanitize_md_text(text: &str) -> String {
 /// Markdown 直列化で空白へ置換する制御文字か
 fn is_md_control_char(c: char) -> bool {
     matches!(c, '\u{0000}'..='\u{001F}' | '\u{2028}' | '\u{2029}')
+}
+
+/// PDF バイト列から Markdown 文字列を1発で生成する
+pub fn extract_markdown_from_bytes(
+    data: &[u8],
+    password: Option<&str>,
+    options: &ExtractOptions,
+) -> Result<String> {
+    let doc = extract_document_from_bytes(data, password, options)?;
+    Ok(document_to_markdown(&doc, options.escape_markdown))
 }
 
 /// PDF バイト列から見出し推定済みの文書モデルを構築する（§1・§4-1）

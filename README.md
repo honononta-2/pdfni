@@ -45,8 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-For document blocks and Markdown, use `extract_document_from_bytes` and
-`document_to_markdown` (requires the `document` feature — enabled by default).
+For document blocks use `extract_document_from_bytes`, and for Markdown use
+`extract_markdown_from_bytes` (requires the `document` feature — enabled by default).
 
 ## Documentation
 

@@ -7,7 +7,7 @@ use crate::model::{BBox, Cell, Edge, Orientation, Table};
 use std::collections::HashSet;
 
 /// 検出パラメータ
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct HybridSettings {
     pub snap_tol: f64,

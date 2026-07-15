@@ -29,7 +29,8 @@ pub use detect_text::TextSettings;
 #[cfg(feature = "document")]
 pub use document::{
     DocBlock, DocDoc, DocPage, TextBlock, TextBlockKind, TextBlockRole, assign_header_footer,
-    assign_headings, assign_lists, build_blocks, document_to_markdown, extract_document_from_bytes,
+    assign_headings, assign_lists, build_blocks, extract_document_from_bytes,
+    extract_markdown_from_bytes,
 };
 pub use error::{Error, Result};
 pub use extract::{
@@ -39,8 +40,8 @@ pub use extract::{
 pub use model::{BBox, Cell, Document, Orientation, Page, Table};
 #[cfg(feature = "reader")]
 pub use reader::{
-    extract_from_bytes, extract_text_from_bytes, extract_text_from_bytes_with, read_pages,
-    read_pages_with,
+    PartsView, ReaderDump, ReaderDumpPage, TextView, extract_from_bytes, extract_text_from_bytes,
+    extract_text_from_bytes_with, read_pages, read_pages_full, read_pages_full_with, read_pages_with,
 };
 #[cfg(feature = "text")]
 pub use text::{

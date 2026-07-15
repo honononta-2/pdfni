@@ -4,17 +4,22 @@
 
 ```
 PDF bytes
-  → pure-Rust reader (glyphs, edges, graphics; optional text chars)
-  → table detect: lattice → hybrid → text (by DetectMode)
-  → Document JSON
+  → pure-Rust reader (glyphs, edges, graphics; text chars)
+      ├→ read_pages_full        → ReaderDump (parts + text) JSON
+      ├→ extract_from_bytes     → Document (tables) JSON
+      ├→ extract_document_from_bytes → DocDoc (blocks + tables) JSON
+      └→ extract_markdown_from_bytes → Markdown string
 
   ↘ TextDoc → items / lines
-  ↘ DocDoc (blocks + tables) → Markdown
 ```
 
-The document entry point (`extract_document_from_bytes`) builds the parts for
-table detection and the coordinate-tagged text in a single content-stream pass
-per page, so the underlying reader is not run twice.
+Each byte-input entry point covers one output level and is a one-shot API:
+`read_pages_full` returns the reader's full dump (parts + text) in one pass,
+`extract_from_bytes` runs table detection, `extract_document_from_bytes` adds
+block-level structure (headings / lists / header / footer), and
+`extract_markdown_from_bytes` finishes with Markdown. The document and Markdown
+entries share the single content-stream pass through the reader so it is not
+run twice.
 
 ## Coordinates
 

@@ -61,7 +61,8 @@ codegen-units = 1
 anyhow = "1.0.102"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: parts JSON 経由の f64 をビット完全に読み戻すため
+serde_json = { version = "1", features = ["float_roundtrip"] }
 # FlateDecode 用。既定バックエンドは純Rustのため wasm32 でもビルド可能
 flate2 = { version = "1", optional = true }
 # PDF Standard セキュリティハンドラ用（reader のみ）

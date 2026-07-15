@@ -1,8 +1,8 @@
 //! 座標付き文字を JSON で出力する
 
 use pdfni::{
-    build_text_items_with, build_text_lines_with, document_to_markdown,
-    extract_document_from_bytes, extract_text_from_bytes, ExtractOptions,
+    build_text_items_with, build_text_lines_with, extract_document_from_bytes,
+    extract_markdown_from_bytes, extract_text_from_bytes, ExtractOptions,
 };
 use std::io::{BufRead, IsTerminal};
 
@@ -118,40 +118,33 @@ fn main() {
             bidi,
             ..ExtractOptions::default()
         };
-        let doc = match extract_document_from_bytes(&bytes, password.as_deref(), &options) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("extract failed: {e}");
-                std::process::exit(1);
-            }
-        };
-
-        let output = match mode {
-            Mode::Doc { .. } => match serde_json::to_string_pretty(&doc) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("serialize failed: {e}");
-                    std::process::exit(1);
-                }
-            },
-            Mode::Md {
-                escape_markdown, ..
-            } => document_to_markdown(&doc, escape_markdown),
-            _ => unreachable!(),
-        };
-
-        if let Some(path) = out_path {
-            if let Err(e) = std::fs::write(&path, &output) {
-                eprintln!("failed to write {path}: {e}");
-                std::process::exit(1);
-            }
-            eprintln!("=> {path}");
-        } else {
-            println!("{output}");
-        }
 
         match mode {
-            Mode::Doc { .. } | Mode::Md { .. } => {
+            Mode::Doc { .. } => {
+                let doc =
+                    match extract_document_from_bytes(&bytes, password.as_deref(), &options) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("extract failed: {e}");
+                            std::process::exit(1);
+                        }
+                    };
+                let output = match serde_json::to_string_pretty(&doc) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("serialize failed: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                if let Some(path) = out_path {
+                    if let Err(e) = std::fs::write(&path, &output) {
+                        eprintln!("failed to write {path}: {e}");
+                        std::process::exit(1);
+                    }
+                    eprintln!("=> {path}");
+                } else {
+                    println!("{output}");
+                }
                 for (i, pg) in doc.pages.iter().enumerate() {
                     eprintln!(
                         "  page {i} {:.0}x{:.0} fonts={} blocks={}",
@@ -161,6 +154,28 @@ fn main() {
                         pg.blocks.len()
                     );
                 }
+            }
+            Mode::Md { .. } => {
+                let md =
+                    match extract_markdown_from_bytes(&bytes, password.as_deref(), &options) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("extract failed: {e}");
+                            std::process::exit(1);
+                        }
+                    };
+                if let Some(path) = out_path {
+                    if let Err(e) = std::fs::write(&path, &md) {
+                        eprintln!("failed to write {path}: {e}");
+                        std::process::exit(1);
+                    }
+                    eprintln!("=> {path}");
+                } else {
+                    println!("{md}");
+                }
+                let bytes = md.len();
+                let lines = md.lines().count();
+                eprintln!("  markdown bytes={bytes} lines={lines}");
             }
             _ => unreachable!(),
         }

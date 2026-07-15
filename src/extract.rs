@@ -5,10 +5,10 @@ use crate::detect_hybrid::{self, HybridSettings};
 use crate::detect_lattice::{self, LatticeSettings};
 use crate::detect_text::{self, Seg, TextSettings};
 use crate::model::{BBox, Cell, Document, Edge, Glyph, Orientation, Page, Table};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// 外部リーダーから受け取る1ページ分の文字と線分
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PagePart {
     pub width: f64,
     pub height: f64,
@@ -24,7 +24,7 @@ pub struct PagePart {
 }
 
 /// 外部リーダーから受け取る1文字
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlyphPart {
     pub ch: char,
     pub left: f64,
@@ -47,7 +47,7 @@ fn upright_default() -> bool {
 }
 
 /// 外部リーダーから受け取る軸平行な線分
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgePart {
     pub orientation: Orientation,
     pub left: f64,
@@ -59,7 +59,7 @@ pub struct EdgePart {
 /// 外部リーダーから受け取る非罫線グラフィックの外接矩形
 ///
 /// 曲線や斜め線を含むパス1回の描画につき1個。チャート領域の判定材料
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphicPart {
     pub left: f64,
     pub right: f64,
@@ -68,7 +68,7 @@ pub struct GraphicPart {
 }
 
 /// 実行する検出方式の選択
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DetectMode {
     /// 3方式すべて
@@ -89,7 +89,7 @@ pub(crate) const DEFAULT_MAX_CMAP_ENTRIES: usize = 1_048_576;
 /// 読み取り層のパラメータ
 ///
 /// parts 入力の経路では使われない
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReaderSettings {
     /// ストリーム復号のチェーン累積出力の上限バイト数
@@ -108,7 +108,7 @@ impl Default for ReaderSettings {
 }
 
 /// 抽出処理のパラメータ
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExtractOptions {
     pub mode: DetectMode,

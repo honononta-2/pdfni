@@ -10,7 +10,7 @@ pub struct Seg {
 }
 
 /// 検出パラメータ
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct TextSettings {
     pub align_tol: f64,

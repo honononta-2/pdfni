@@ -133,7 +133,7 @@ pub fn extract_document_from_pdf(
     serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// PDF バイト列から文書モデルを抽出し Markdown 文字列を返す
+/// PDF バイト列から Markdown 文字列を返す
 #[cfg(feature = "document")]
 #[wasm_bindgen]
 pub fn extract_markdown_from_pdf(
@@ -147,12 +147,7 @@ pub fn extract_markdown_from_pdf(
         }
         _ => ExtractOptions::default(),
     };
-    let doc =
-        crate::document::extract_document_from_bytes(bytes, password.as_deref(), &options)
-            .map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(crate::document::document_to_markdown(
-        &doc,
-        options.escape_markdown,
-    ))
+    crate::document::extract_markdown_from_bytes(bytes, password.as_deref(), &options)
+        .map_err(|e| JsError::new(&e.to_string()))
 }
 

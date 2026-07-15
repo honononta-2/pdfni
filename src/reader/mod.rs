@@ -14,14 +14,16 @@ mod pages;
 mod parser;
 mod xref;
 
-use crate::error::Result;
-use crate::extract::{ExtractOptions, PagePart, ReaderSettings, extract_from_parts};
-use crate::model::Document;
-use crate::text::{TextDoc, TextPage};
+use serde::Serialize;
 
-use content::{ContentCtx, extract_parts, extract_text};
-#[cfg(feature = "document")]
-use content::extract_parts_and_text;
+use crate::error::Result;
+use crate::extract::{
+    EdgePart, ExtractOptions, GlyphPart, GraphicPart, PagePart, ReaderSettings, extract_from_parts,
+};
+use crate::model::Document;
+use crate::text::{TextChar, TextDoc, TextFont, TextPage};
+
+use content::{ContentCtx, extract_parts, extract_parts_and_text, extract_text};
 use pages::{collect_pages, decode_contents, view_height, view_width};
 use xref::XRef;
 
@@ -144,7 +146,6 @@ fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<Text
 /// PDF バイト列からページ単位の parts と座標付き文字を 1 パスで構築する
 ///
 /// 3 番目の戻り値は文書処理中に蓄積した警告
-#[cfg(feature = "document")]
 pub(crate) fn read_pages_and_text(
     bytes: &[u8],
     password: Option<&str>,
@@ -165,7 +166,6 @@ pub(crate) fn read_pages_and_text(
 }
 
 /// ページ1枚分の parts と座標付き文字を 1 パスで構築する
-#[cfg(feature = "document")]
 fn build_page_part_and_text(
     p: pages::PageInfo,
     bytes: &[u8],
@@ -204,4 +204,70 @@ fn build_page_part_and_text(
         chars: text.chars,
     };
     Ok((part, tp))
+}
+
+/// リーダーが1回のパスで出せる全情報のダンプ
+#[derive(Debug, Clone, Serialize)]
+pub struct ReaderDump {
+    pub pages: Vec<ReaderDumpPage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// ダンプ1ページ分の情報
+#[derive(Debug, Clone, Serialize)]
+pub struct ReaderDumpPage {
+    pub width: f64,
+    pub height: f64,
+    pub norm_rotate: i32,
+    pub text: TextView,
+    pub parts: PartsView,
+}
+
+/// テキスト系ビュー
+#[derive(Debug, Clone, Serialize)]
+pub struct TextView {
+    pub fonts: Vec<TextFont>,
+    pub chars: Vec<TextChar>,
+}
+
+/// parts 系ビュー
+#[derive(Debug, Clone, Serialize)]
+pub struct PartsView {
+    pub glyphs: Vec<GlyphPart>,
+    pub edges: Vec<EdgePart>,
+    pub graphics: Vec<GraphicPart>,
+}
+
+/// リーダーの全情報をバイト列から1パスで抽出する
+pub fn read_pages_full(bytes: &[u8], password: Option<&str>) -> Result<ReaderDump> {
+    read_pages_full_with(bytes, password, &ReaderSettings::default())
+}
+
+/// 読み取り層の設定付きの全情報抽出
+pub fn read_pages_full_with(
+    bytes: &[u8],
+    password: Option<&str>,
+    reader: &ReaderSettings,
+) -> Result<ReaderDump> {
+    let (parts, texts, warnings) = read_pages_and_text(bytes, password, reader)?;
+    let pages = parts
+        .into_iter()
+        .zip(texts)
+        .map(|(part, text)| ReaderDumpPage {
+            width: part.width,
+            height: part.height,
+            norm_rotate: part.norm_rotate,
+            text: TextView {
+                fonts: text.fonts,
+                chars: text.chars,
+            },
+            parts: PartsView {
+                glyphs: part.glyphs,
+                edges: part.edges,
+                graphics: part.graphics,
+            },
+        })
+        .collect();
+    Ok(ReaderDump { pages, warnings })
 }

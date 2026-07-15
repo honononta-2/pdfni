@@ -269,7 +269,6 @@ pub(crate) fn extract_text(
 /// コンテンツストリームから parts と座標付き文字を 1 パスで抽出する
 ///
 /// interpret の結果を共有し、後段の rotate と正規化は parts/text それぞれ独立に走る
-#[cfg(feature = "document")]
 pub(crate) fn extract_parts_and_text(
     contents: &[u8],
     resources: &Dict,

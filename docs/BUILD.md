@@ -23,7 +23,7 @@ below them, so you only need to enable the top layer you want.
 
 | Feature | Enables | Depends on |
 | --- | --- | --- |
-| `document` (default) | Document blocks + Markdown (`extract_document_from_bytes`, `document_to_markdown`) | `reader` |
+| `document` (default) | Document blocks + Markdown (`extract_document_from_bytes`, `extract_markdown_from_bytes`) | `reader` |
 | `reader` | PDF byte input (`extract_from_bytes`, `extract_text_from_bytes`, `read_pages`, CLI) | `text` |
 | `text` | Coordinate-tagged text (`TextDoc`, items, lines) | — |
 | _(none)_ | Table detection from parts JSON (`extract_from_parts`) — always available | — |
