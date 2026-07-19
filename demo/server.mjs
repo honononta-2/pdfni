@@ -3,9 +3,11 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { networkInterfaces } from 'node:os';
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
+const HOST = process.env.HOST || '0.0.0.0';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -13,10 +15,8 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8',
   '.wasm': 'application/wasm',
   '.json': 'application/json; charset=utf-8',
-  '.bcmap': 'application/octet-stream',
+  '.css': 'text/css; charset=utf-8',
   '.pdf': 'application/pdf',
-  '.pfb': 'application/octet-stream',
-  '.ttf': 'font/ttf',
 };
 
 const server = createServer(async (req, res) => {
@@ -36,6 +36,19 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`serving http://localhost:${PORT}/ (Ctrl+C to stop)`);
+function lanAddresses() {
+  const out = new Set();
+  for (const list of Object.values(networkInterfaces())) {
+    for (const ni of list ?? []) {
+      if (ni.internal) continue;
+      if (ni.family === 'IPv4' || ni.family === 4) out.add(ni.address);
+    }
+  }
+  return [...out];
+}
+
+server.listen(PORT, HOST, () => {
+  console.log(`serving on ${HOST}:${PORT}/ (Ctrl+C to stop)`);
+  console.log(`  local:  http://localhost:${PORT}/`);
+  for (const ip of lanAddresses()) console.log(`  lan:    http://${ip}:${PORT}/`);
 });

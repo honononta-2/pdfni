@@ -1,6 +1,6 @@
 //! コンテンツストリーム解釈（パス → edges、テキスト → glyphs）
 //!
-//! 準拠: pdf.js evaluator.js、specs/04
+//! 準拠: pdf.js evaluator.js
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -591,7 +591,7 @@ fn synth_word_spaces(glyphs: &[GlyphPart]) -> Vec<GlyphPart> {
     spaces
 }
 
-/// 重複グリフ除去の完全一致キー（specs/14 §2）
+/// 重複グリフ除去の完全一致キー
 ///
 /// 浮動小数13値は -0.0 を +0.0 へ正規化したビット表現で持つ。
 /// text は SipHash 値のみ保持し文字列の所有・複製を避ける
@@ -621,7 +621,7 @@ fn hash_str(s: &str) -> u64 {
     h.finish()
 }
 
-/// 重ね印字の重複グリフ除去（specs/14）
+/// 重ね印字の重複グリフ除去
 ///
 /// 完全一致の再描画をストリーム先勝ちで1つに畳む。合成空白の生成前に呼ぶ
 fn dedup_overlaid_glyphs(chars: &mut Vec<PendingTextChar>) {
@@ -3425,7 +3425,7 @@ Q
     }
 
     // -----------------------------------------------------------------------
-    // 重複グリフ除去（dedup_overlaid_glyphs、specs/14）
+    // 重複グリフ除去（dedup_overlaid_glyphs）
     // -----------------------------------------------------------------------
 
     /// 除去テスト用の基準グリフ

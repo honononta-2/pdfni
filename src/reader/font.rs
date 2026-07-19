@@ -1,6 +1,6 @@
 //! フォント解決とグリフ分解
 //!
-//! 幅・ToUnicode・ascent/descent。準拠: pdf.js evaluator/fonts、specs/05
+//! 幅・ToUnicode・ascent/descent。準拠: pdf.js evaluator/fonts
 
 use std::borrow::Cow;
 use std::collections::HashMap;

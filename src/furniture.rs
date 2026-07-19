@@ -111,14 +111,14 @@ fn apply_direction(doc: &mut DocDoc, dir: Direction, candidates: Vec<Vec<Cand>>)
             }
         }
 
-        // §3-5: ページ添字順に一括更新
+        // ページ添字順に一括更新
         for p in 0..n_pages {
             if pair_ok[p] {
                 n_p[p] = k + 1;
             }
         }
 
-        // §3-6: 鏡映の救済（pair_ok のみを両隣の成立と数える）
+        // 鏡映の救済（pair_ok のみを両隣の成立と数える）
         let mut any_success = pair_ok.iter().any(|&x| x);
         for p in 0..n_pages {
             if n_p[p] != k {
@@ -133,7 +133,7 @@ fn apply_direction(doc: &mut DocDoc, dir: Direction, candidates: Vec<Vec<Cand>>)
             if !(pair_ok[p - 1] && pair_ok[p + 1]) {
                 continue;
             }
-            // 両隣は §3-5 で n = k+1 になっている
+            // 両隣は一括更新で n = k+1 になっている
             if n_p[p - 1] != k + 1 || n_p[p + 1] != k + 1 {
                 continue;
             }

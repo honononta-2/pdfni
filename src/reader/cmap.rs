@@ -1,6 +1,6 @@
 //! 埋め込み CMap・Identity-H/V・定義済み CMap ロード
 //!
-//! 準拠: pdf.js `cmap.js` / `binary_cmap.js`、specs/06
+//! 準拠: pdf.js `cmap.js` / `binary_cmap.js`
 
 use std::borrow::Cow;
 use std::collections::HashMap;

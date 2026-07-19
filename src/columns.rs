@@ -19,7 +19,7 @@ const FULLWIDTH_LINE_RATIO_MAX: f64 = 0.3;
 /// 再帰分割の深さ上限（この深さの領域は葉）
 const MAX_DEPTH: usize = 8;
 
-/// 参加要素の種別（specs/12 §2）
+/// 参加要素の種別
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ParticipantKind {
     /// 対象本文行の単語。line は行の識別番号（行数の数え上げと行への一意化に使う）

@@ -10,6 +10,8 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct HybridSettings {
+    /// hybrid 検出の有効化 開発中の機能のため既定は無効
+    pub enabled: bool,
     pub snap_tol: f64,
     pub join_tol: f64,
     /// 区切り線とみなす線分の最小長
@@ -35,6 +37,7 @@ pub struct HybridSettings {
 impl Default for HybridSettings {
     fn default() -> Self {
         Self {
+            enabled: false,
             snap_tol: 3.0,
             join_tol: 3.0,
             edge_min_length: 3.0,

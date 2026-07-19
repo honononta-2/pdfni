@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pdfni demo</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #ffffff;
+    --border: #e2e2dd;
+    --border-strong: #cfcfc8;
+    --text: #1f1f1c;
+    --muted: #7a7a72;
+    --accent: #2f6f6a;
+    --accent-soft: #e6f0ef;
+    --danger: #b3402f;
+    --radius: 8px;
+    --mono: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  [hidden] { display: none !important; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 28px 20px 60px;
+  }
+
+  .field { margin-bottom: 22px; }
+
+  .field-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .dropzone {
+    border: 1.5px dashed var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--panel);
+    padding: 26px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .dropzone:hover { border-color: var(--accent); }
+  .dropzone.dragover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .dropzone.has-file {
+    border-style: solid;
+    text-align: left;
+  }
+  .dropzone.has-file:hover { border-color: var(--border-strong); }
+  .dropzone.disabled {
+    opacity: .5;
+    pointer-events: none;
+  }
+  .dz-file {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .file-name {
+    font-family: var(--mono);
+    font-size: 13px;
+    word-break: break-all;
+  }
+  .file-size { color: var(--muted); font-size: 12px; }
+  .remove-btn {
+    flex: none;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-family: var(--sans);
+    cursor: pointer;
+  }
+  .remove-btn:hover { color: var(--danger); border-color: var(--danger); }
+
+  input[type="password"] {
+    width: 100%;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--panel);
+    padding: 11px 12px;
+    font-size: 14px;
+    font-family: var(--sans);
+    color: var(--text);
+  }
+  input[type="password"]:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  input[type="password"]:disabled { opacity: .5; }
+
+  .radios {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  .radio-card {
+    position: relative;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--panel);
+    padding: 12px 10px;
+    text-align: center;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color .12s, background .12s;
+  }
+  .radio-card input { position: absolute; opacity: 0; pointer-events: none; }
+  .radio-card span {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+  }
+  .radio-card:hover { border-color: var(--accent); }
+  .radio-card:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .radio-card:has(input:checked) span { color: var(--accent); }
+  .radio-card:has(input:focus-visible) {
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .radio-card:has(input:disabled) {
+    opacity: .5;
+    pointer-events: none;
+  }
+
+  .run-btn {
+    width: 100%;
+    border: none;
+    border-radius: var(--radius);
+    background: var(--accent);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    font-family: var(--sans);
+    padding: 13px;
+    cursor: pointer;
+    transition: background .15s, opacity .15s;
+  }
+  .run-btn:hover:enabled { background: #275c58; }
+  .run-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  .error {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--danger);
+  }
+
+  .output-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .output-head .field-label { margin-bottom: 0; }
+  .output-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .head-btn, .tabbar button, #table-picker {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-family: var(--sans);
+    cursor: pointer;
+  }
+  .head-btn:hover, .tabbar button:hover { color: var(--accent); border-color: var(--accent); }
+  #table-picker { max-width: 260px; }
+  .tabbar { display: flex; gap: 4px; }
+  .tabbar button.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .output {
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--panel);
+    padding: 14px;
+    max-height: 65vh;
+    overflow: auto;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+    margin: 0;
+  }
+
+  .table-scroll {
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--panel);
+    max-height: 65vh;
+    overflow: auto;
+  }
+  table.result {
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  table.result td {
+    border: 1px solid var(--border-strong);
+    padding: .3rem .5rem;
+    vertical-align: top;
+    text-align: left;
+    white-space: pre-wrap;
+  }
+
+  iframe.preview {
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: #fff;
+    width: 100%;
+    height: 65vh;
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+
+    <div class="field">
+      <span class="field-label">PDF File</span>
+      <div class="dropzone disabled" id="dropzone">
+        <div id="dz-empty">Drop a PDF here or click to browse</div>
+        <div class="dz-file" id="dz-file" hidden>
+          <div>
+            <div class="file-name" id="file-name"></div>
+            <div class="file-size" id="file-size"></div>
+          </div>
+          <button type="button" class="remove-btn" id="remove">Remove</button>
+        </div>
+      </div>
+      <input type="file" id="file-input" accept="application/pdf,.pdf" hidden>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="password">Password</label>
+      <input type="password" id="password" autocomplete="off" disabled>
+    </div>
+
+    <div class="field">
+      <span class="field-label">Output Mode</span>
+      <div class="radios">
+        <label class="radio-card">
+          <input type="radio" name="mode" value="reader" checked disabled>
+          <span>Reader</span>
+        </label>
+        <label class="radio-card">
+          <input type="radio" name="mode" value="tables" disabled>
+          <span>Tables</span>
+        </label>
+        <label class="radio-card">
+          <input type="radio" name="mode" value="doc" disabled>
+          <span>Doc</span>
+        </label>
+        <label class="radio-card">
+          <input type="radio" name="mode" value="md" disabled>
+          <span>Markdown</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="field">
+      <button class="run-btn" id="run" disabled>Run</button>
+      <div class="error" id="error" hidden></div>
+    </div>
+
+    <div class="field" id="output-field" hidden>
+      <div class="output-head">
+        <span class="field-label">Output</span>
+        <div class="output-controls">
+          <select id="table-picker" hidden></select>
+          <div class="tabbar" id="tabs" hidden>
+            <button type="button" data-tab="preview">Preview</button>
+            <button type="button" data-tab="raw">Raw</button>
+          </div>
+          <button type="button" class="head-btn" id="csv" hidden>Download CSV</button>
+          <button type="button" class="head-btn" id="copy" hidden>Copy</button>
+        </div>
+      </div>
+      <pre class="output" id="text-out" hidden></pre>
+      <div class="table-scroll" id="table-out" hidden></div>
+      <iframe class="preview" id="md-preview" sandbox referrerpolicy="no-referrer" title="markdown preview" hidden></iframe>
+    </div>
+
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
+        integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
+        crossorigin="anonymous"></script>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const dropzone = $('dropzone');
+const fileInput = $('file-input');
+const runBtn = $('run');
+const errorEl = $('error');
+
+const controls = { tabs: $('tabs'), picker: $('table-picker'), csv: $('csv'), copy: $('copy') };
+const panes = { text: $('text-out'), table: $('table-out'), preview: $('md-preview') };
+
+let wasm = null;
+let currentFile = null;
+const results = { reader: null, tables: null, doc: null, md: null };
+const activeTab = { tables: 'preview', md: 'preview' };
+
+try {
+  wasm = await import('./pkg/pdfni.js');
+  await wasm.default();
+  dropzone.classList.remove('disabled');
+  $('password').disabled = false;
+  document.querySelectorAll('input[name=mode]').forEach((r) => { r.disabled = false; });
+} catch (e) {
+  showError('Failed to load wasm: ' + (e?.message ?? e));
+}
+
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.hidden = false;
+}
+
+function clearError() {
+  errorEl.textContent = '';
+  errorEl.hidden = true;
+}
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function acceptFile(file) {
+  if (!file) return;
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+  if (!isPdf) {
+    showError('Not a PDF file.');
+    return;
+  }
+  clearError();
+  currentFile = file;
+  $('file-name').textContent = file.name;
+  $('file-size').textContent = fmtSize(file.size);
+  $('dz-empty').hidden = true;
+  $('dz-file').hidden = false;
+  dropzone.classList.add('has-file');
+  runBtn.disabled = false;
+}
+
+function clearFile() {
+  currentFile = null;
+  fileInput.value = '';
+  $('dz-empty').hidden = false;
+  $('dz-file').hidden = true;
+  dropzone.classList.remove('has-file');
+  runBtn.disabled = true;
+}
+
+dropzone.addEventListener('click', () => {
+  if (!currentFile) fileInput.click();
+});
+fileInput.addEventListener('change', () => acceptFile(fileInput.files[0]));
+$('remove').addEventListener('click', (e) => {
+  e.stopPropagation();
+  clearFile();
+});
+
+['dragover', 'dragenter'].forEach((ev) => {
+  dropzone.addEventListener(ev, (e) => {
+    e.preventDefault();
+    dropzone.classList.add('dragover');
+  });
+});
+['dragleave', 'dragend', 'drop'].forEach((ev) => {
+  dropzone.addEventListener(ev, (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+  });
+});
+dropzone.addEventListener('drop', (e) => acceptFile(e.dataTransfer.files[0]));
+
+runBtn.addEventListener('click', run);
+
+function currentMode() {
+  return document.querySelector('input[name=mode]:checked').value;
+}
+
+document.querySelectorAll('input[name=mode]').forEach((r) => {
+  r.addEventListener('change', render);
+});
+
+async function run() {
+  if (!currentFile || !wasm) return;
+  clearError();
+  runBtn.disabled = true;
+  await nextPaint();
+  const mode = currentMode();
+  try {
+    const bytes = new Uint8Array(await currentFile.arrayBuffer());
+    const password = $('password').value || undefined;
+    if (mode === 'reader') {
+      results.reader = { text: pretty(wasm.extract_text_from_pdf(bytes, password, undefined)) };
+    } else if (mode === 'doc') {
+      results.doc = { text: pretty(wasm.extract_document_from_pdf(bytes, undefined, password)) };
+    } else if (mode === 'tables') {
+      const json = wasm.extract_tables_from_pdf(bytes, undefined, password);
+      results.tables = { json: pretty(json), tables: collectTables(JSON.parse(json)) };
+      buildPicker(results.tables.tables);
+    } else {
+      const md = wasm.extract_markdown_from_pdf(bytes, undefined, password);
+      results.md = { text: md };
+      renderMarkdownPreview(md);
+    }
+    render();
+  } catch (e) {
+    showError('Failed: ' + (e?.message ?? e));
+  } finally {
+    runBtn.disabled = !currentFile;
+  }
+}
+
+function nextPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve, 0));
+  });
+}
+
+function pretty(jsonStr) {
+  try { return JSON.stringify(JSON.parse(jsonStr), null, 2); }
+  catch { return jsonStr; }
+}
+
+function render() {
+  const mode = currentMode();
+  const res = results[mode];
+  if (!res) {
+    $('output-field').hidden = true;
+    return;
+  }
+  $('output-field').hidden = false;
+  if (mode === 'reader' || mode === 'doc') {
+    panes.text.textContent = res.text;
+    setOutput({ text: true, copy: true });
+    return;
+  }
+  if (mode === 'md') {
+    setTabs(activeTab.md);
+    if (activeTab.md === 'preview') {
+      setOutput({ tabs: true, preview: true, copy: true });
+    } else {
+      panes.text.textContent = res.text;
+      setOutput({ tabs: true, text: true, copy: true });
+    }
+    return;
+  }
+  if (res.tables.length === 0) {
+    panes.text.textContent = 'No tables detected';
+    setOutput({ text: true });
+    return;
+  }
+  setTabs(activeTab.tables);
+  if (activeTab.tables === 'preview') {
+    renderSelectedTable();
+    setOutput({ tabs: true, picker: true, table: true, csv: true });
+  } else {
+    panes.text.textContent = res.json;
+    setOutput({ tabs: true, text: true, copy: true });
+  }
+}
+
+function setOutput(show) {
+  controls.tabs.hidden = !show.tabs;
+  controls.picker.hidden = !show.picker;
+  controls.csv.hidden = !show.csv;
+  controls.copy.hidden = !show.copy;
+  panes.text.hidden = !show.text;
+  panes.table.hidden = !show.table;
+  panes.preview.hidden = !show.preview;
+}
+
+function setTabs(active) {
+  controls.tabs.querySelectorAll('button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === active);
+  });
+}
+
+controls.tabs.querySelectorAll('button').forEach((b) => {
+  b.addEventListener('click', () => {
+    activeTab[currentMode()] = b.dataset.tab;
+    render();
+  });
+});
+
+const PREVIEW_CSS = `
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 1rem 1.25rem; color: #1f1f1c; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #aaa; padding: .2rem .5rem; }
+  pre { background: #f5f5f5; padding: .5rem; overflow: auto; }
+  code { background: #f5f5f5; padding: 0 .2rem; border-radius: 2px; }
+  img { max-width: 100%; }
+`;
+
+function renderMarkdownPreview(md) {
+  const body = window.marked
+    ? window.marked.parse(md)
+    : `<pre>${escapeHtml(md)}</pre>`;
+  panes.preview.srcdoc =
+    `<!doctype html><meta charset="utf-8"><style>${PREVIEW_CSS}</style>${body}`;
+}
+
+function collectTables(doc) {
+  const tables = [];
+  for (const p of doc.pages ?? []) {
+    let idx = 0;
+    for (const t of p.tables ?? []) {
+      tables.push({
+        page: p.page_number,
+        index: idx,
+        method: t.extraction_method ?? '?',
+        rows: t.n_rows ?? (t.data?.length ?? 0),
+        cols: t.n_cols ?? (t.data?.[0]?.length ?? 0),
+        cells: (t.data ?? []).map((row) => row.map((c) => c?.text ?? '')),
+      });
+      idx++;
+    }
+  }
+  return tables;
+}
+
+function buildPicker(tables) {
+  const picker = controls.picker;
+  picker.innerHTML = '';
+  tables.forEach((t, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = `p${t.page} #${t.index} — ${t.rows}×${t.cols} (${t.method})`;
+    picker.appendChild(opt);
+  });
+  picker.value = '0';
+}
+
+function currentTable() {
+  return results.tables?.tables[Number(controls.picker.value)] ?? null;
+}
+
+function renderSelectedTable() {
+  const t = currentTable();
+  if (!t) return;
+  const rows = t.cells.map((row) =>
+    '<tr>' + row.map((c) => `<td>${escapeHtml(c)}</td>`).join('') + '</tr>'
+  ).join('');
+  panes.table.innerHTML = `<table class="result"><tbody>${rows}</tbody></table>`;
+}
+
+controls.picker.addEventListener('change', renderSelectedTable);
+
+controls.csv.addEventListener('click', () => {
+  const t = currentTable();
+  if (!t) return;
+  const csv = t.cells.map((row) => row.map(csvCell).join(',')).join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `page${t.page}_table${t.index}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+});
+
+function csvCell(s) {
+  const v = String(s ?? '');
+  return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (ch) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+}
+
+function copySource() {
+  const res = results[currentMode()];
+  if (!res) return '';
+  return res.json ?? res.text ?? '';
+}
+
+function copyText(text) {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+  return new Promise((resolve, reject) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    ok ? resolve() : reject(new Error('copy failed'));
+  });
+}
+
+let copyTimer = 0;
+function flashCopy(label) {
+  controls.copy.textContent = label;
+  clearTimeout(copyTimer);
+  copyTimer = setTimeout(() => { controls.copy.textContent = 'Copy'; }, 1200);
+}
+
+controls.copy.addEventListener('click', () => {
+  copyText(copySource()).then(
+    () => flashCopy('Copied'),
+    () => flashCopy('Copy failed'),
+  );
+});
+</script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 //! .bcmap バイナリデコーダ
 //!
-//! 準拠: pdf.js `binary_cmap.js`、specs/06 6節
+//! 準拠: pdf.js `binary_cmap.js`
 
 use super::cmap::{CMap, MapValue};
 

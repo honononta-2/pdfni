@@ -1175,7 +1175,7 @@ const LINE_CROSS_MIN_CELLS: usize = 3;
 /// 複数セルを横切る非直線の線を含む候補の判定
 ///
 /// 罫線は軸平行の直線でセル内容はセル内に収まるため
-/// どちらでもあり得ない線を含む候補はチャート・図領域とみなす(specs/15)
+/// どちらでもあり得ない線を含む候補はチャート・図領域とみなす
 fn has_cell_crossing_line(t: &Table, graphics: &[GraphicPart]) -> bool {
     let overlap = |a0: f64, a1: f64, b0: f64, b1: f64| (a1.min(b1) - a0.max(b0)).max(0.0);
     let nonempty = |c: &Cell| c.bbox.width() > 0.0 || c.bbox.height() > 0.0;
@@ -1327,7 +1327,7 @@ fn detect_tables(
             .collect()
     };
     let use_lattice = options.mode != DetectMode::Borderless;
-    let use_hybrid = options.mode == DetectMode::Auto;
+    let use_hybrid = options.mode == DetectMode::Auto && options.hybrid.enabled;
     let use_text = options.mode != DetectMode::Ruled;
     let mut tables = if use_lattice {
         detect_lattice::detect(edges, &fill, &options.lattice)
@@ -1494,7 +1494,7 @@ mod tests {
         assert_eq!(graphics_coverage(&b, &[]), 0.0);
     }
 
-    /// セル横断線の棄却判定(specs/15 §2-2)
+    /// セル横断線の棄却判定
     #[test]
     fn cell_crossing_line_detection() {
         // 4行3列 300x80 の格子
