@@ -7,6 +7,8 @@ use std::collections::HashMap;
 pub struct Seg {
     pub text: String,
     pub bbox: BBox,
+    /// リーダー runを境界として切り出されたセグか
+    pub leader_adj: bool,
 }
 
 /// 検出パラメータ
@@ -50,7 +52,9 @@ impl Default for TextSettings {
 }
 
 /// 文章セル比率が許容を超えるか
-fn prose_heavy(t: &Table, s: &TextSettings) -> bool {
+///
+/// リーダー runで区切られたセルは文章に数えない
+fn prose_heavy(t: &Table, leader: &[Vec<bool>], s: &TextSettings) -> bool {
     let filled = t
         .data
         .iter()
@@ -60,8 +64,9 @@ fn prose_heavy(t: &Table, s: &TextSettings) -> bool {
     let prose = t
         .data
         .iter()
-        .flatten()
-        .filter(|c| is_prose_cell(&c.text))
+        .enumerate()
+        .flat_map(|(r, row)| row.iter().enumerate().map(move |(c, cell)| (r, c, cell)))
+        .filter(|&(r, c, cell)| is_prose_cell(&cell.text) && !leader[r][c])
         .count();
     (prose as f64) > s.max_prose_ratio * filled as f64
 }
@@ -474,10 +479,10 @@ pub fn detect(segs: &[Seg], s: &TextSettings, scale: Option<f64>) -> Vec<Table> 
         let bottoms: Vec<f64> = members.iter().map(|&i| segs[i].bbox.bottom).collect();
         let member_row_ids = cluster_ids(&bottoms, member_row_tol);
         let n_rows = member_row_ids.iter().copied().max().unwrap_or(0) + 1;
-        if let Some(t) = build_table(segs, &members, &member_row_ids, n_rows, s) {
+        if let Some((t, leader)) = build_table(segs, &members, &member_row_ids, n_rows, s) {
             // 表らしさによる棄却
             if (t.n_rows >= s.untyped_min_rows || has_typed_column(&t))
-                && (!prose_heavy(&t, s) || aligned_full_grid(&t, s))
+                && (!prose_heavy(&t, &leader, s) || aligned_full_grid(&t, s))
             {
                 tables.push(t);
             }
@@ -487,13 +492,15 @@ pub fn detect(segs: &[Seg], s: &TextSettings, scale: Option<f64>) -> Vec<Table> 
 }
 
 /// 1つの行グループから1表を組み立てる
+///
+/// 表とセルごとのリーダー由来フラグを返す
 fn build_table(
     segs: &[Seg],
     active: &[usize],
     row_ids: &[usize],
     n_rows: usize,
     s: &TextSettings,
-) -> Option<Table> {
+) -> Option<(Table, Vec<Vec<bool>>)> {
     let bands = anchor_column_bands(segs, active, row_ids, n_rows, s);
     let n_cols = bands.len();
     if n_rows < s.min_rows || n_cols < s.min_cols {
@@ -526,9 +533,13 @@ fn build_table(
 
     let mut grid_text: Vec<Vec<String>> = vec![vec![String::new(); n_cols]; n_rows];
     let mut grid_box: Vec<Vec<Option<BBox>>> = vec![vec![None; n_cols]; n_rows];
+    let mut grid_leader: Vec<Vec<bool>> = vec![vec![false; n_cols]; n_rows];
     for (k, &i) in active.iter().enumerate() {
         let r = row_ids[k];
         let c = band_of(segs[i].bbox.cx());
+        if segs[i].leader_adj {
+            grid_leader[r][c] = true;
+        }
         if !grid_text[r][c].is_empty() {
             grid_text[r][c].push(' ');
         }
@@ -578,13 +589,16 @@ fn build_table(
         })
         .collect();
 
-    Some(Table {
-        extraction_method: "text",
-        bbox,
-        n_rows,
-        n_cols,
-        data,
-    })
+    Some((
+        Table {
+            extraction_method: "text",
+            bbox,
+            n_rows,
+            n_cols,
+            data,
+        },
+        grid_leader,
+    ))
 }
 
 #[cfg(test)]
@@ -650,6 +664,17 @@ mod tests {
         assert!(!aligned_full_grid(&t, &TextSettings::default()));
     }
 
+    /// リーダー由来のセルは prose に数えない
+    #[test]
+    fn prose_heavy_exempts_leader_cells() {
+        let t = long_text_table(4, &[50.0], true);
+        let s = TextSettings::default();
+        let none = vec![vec![false; 2]; 4];
+        assert!(prose_heavy(&t, &none, &s));
+        let leader = vec![vec![true; 2]; 4];
+        assert!(!prose_heavy(&t, &leader, &s));
+    }
+
     #[test]
     fn cluster_splits_by_tolerance() {
         let ids = cluster_ids(&[0.0, 1.0, 10.0, 10.5], 2.0);
@@ -672,6 +697,7 @@ mod tests {
                     x1: (k as f64) * 20.0 + 10.0,
                     bottom: (k as f64) * 10.0 + 8.0,
                 },
+                leader_adj: false,
             });
         }
         let active: Vec<usize> = (0..n).collect();

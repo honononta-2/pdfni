@@ -1,0 +1,3 @@
+# Benchmark scripts are measurement harness, not implementation —
+# keep them out of the repository language statistics.
+bench/** linguist-vendored

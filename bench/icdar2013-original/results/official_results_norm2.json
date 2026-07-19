@@ -1,0 +1,689 @@
+{
+ "summary": {
+  "structure_adjacency": {
+   "gt_tables": 156,
+   "gt_ars": 23766,
+   "correct_ars": 22241,
+   "detected_ars": 23280,
+   "fp_ars": 302,
+   "precision": 0.9431,
+   "recall": 0.9358,
+   "f1": 0.9395,
+   "precision_matched_only": 0.9554,
+   "f1_matched_only": 0.9455
+  }
+ },
+ "errors": [],
+ "per_doc": [
+  {
+   "doc": "competition-dataset-eu/eu-001",
+   "str": {
+    "gt_tables": 7,
+    "gt_ars": 503,
+    "correct_ars": 446,
+    "detected_ars": 541,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-002",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 54,
+    "correct_ars": 54,
+    "detected_ars": 54,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-003",
+   "str": {
+    "gt_tables": 3,
+    "gt_ars": 98,
+    "correct_ars": 98,
+    "detected_ars": 98,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-004",
+   "str": {
+    "gt_tables": 12,
+    "gt_ars": 1421,
+    "correct_ars": 1418,
+    "detected_ars": 1424,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-005",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 243,
+    "correct_ars": 229,
+    "detected_ars": 254,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-006",
+   "str": {
+    "gt_tables": 4,
+    "gt_ars": 157,
+    "correct_ars": 152,
+    "detected_ars": 152,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-007",
+   "str": {
+    "gt_tables": 6,
+    "gt_ars": 162,
+    "correct_ars": 162,
+    "detected_ars": 162,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-008",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 97,
+    "correct_ars": 97,
+    "detected_ars": 97,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-009a",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 40,
+    "correct_ars": 28,
+    "detected_ars": 39,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-010",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 31,
+    "correct_ars": 29,
+    "detected_ars": 33,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-011",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 49,
+    "correct_ars": 49,
+    "detected_ars": 60,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-012",
+   "str": {
+    "gt_tables": 5,
+    "gt_ars": 341,
+    "correct_ars": 325,
+    "detected_ars": 329,
+    "fp_ars": 26
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-013",
+   "str": {
+    "gt_tables": 4,
+    "gt_ars": 104,
+    "correct_ars": 104,
+    "detected_ars": 104,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-014",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 22,
+    "correct_ars": 22,
+    "detected_ars": 22,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-015",
+   "str": {
+    "gt_tables": 5,
+    "gt_ars": 341,
+    "correct_ars": 341,
+    "detected_ars": 341,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-016",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 274,
+    "correct_ars": 274,
+    "detected_ars": 274,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-017",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 247,
+    "correct_ars": 247,
+    "detected_ars": 247,
+    "fp_ars": 25
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-018",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 285,
+    "correct_ars": 285,
+    "detected_ars": 285,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-019",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 166,
+    "correct_ars": 166,
+    "detected_ars": 166,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-020",
+   "str": {
+    "gt_tables": 3,
+    "gt_ars": 82,
+    "correct_ars": 80,
+    "detected_ars": 80,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-021",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 412,
+    "correct_ars": 343,
+    "detected_ars": 405,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-022",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 126,
+    "correct_ars": 116,
+    "detected_ars": 133,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-023",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 66,
+    "correct_ars": 66,
+    "detected_ars": 66,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-024",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 66,
+    "correct_ars": 66,
+    "detected_ars": 66,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-025",
+   "str": {
+    "gt_tables": 5,
+    "gt_ars": 282,
+    "correct_ars": 265,
+    "detected_ars": 283,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-026",
+   "str": {
+    "gt_tables": 3,
+    "gt_ars": 100,
+    "correct_ars": 95,
+    "detected_ars": 101,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-027",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 247,
+    "correct_ars": 245,
+    "detected_ars": 247,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-001",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 739,
+    "correct_ars": 719,
+    "detected_ars": 730,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-002",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 747,
+    "correct_ars": 677,
+    "detected_ars": 687,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-003",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 29,
+    "correct_ars": 29,
+    "detected_ars": 29,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-004",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 154,
+    "correct_ars": 147,
+    "detected_ars": 154,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-005",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 13,
+    "correct_ars": 13,
+    "detected_ars": 13,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-006",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 17,
+    "correct_ars": 17,
+    "detected_ars": 17,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-007",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 419,
+    "correct_ars": 304,
+    "detected_ars": 356,
+    "fp_ars": 28
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-008",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 58,
+    "correct_ars": 32,
+    "detected_ars": 48,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-009",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 187,
+    "correct_ars": 144,
+    "detected_ars": 144,
+    "fp_ars": 8
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-010",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 43,
+    "correct_ars": 31,
+    "detected_ars": 55,
+    "fp_ars": 10
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-011a",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 54,
+    "correct_ars": 51,
+    "detected_ars": 57,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-012",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 218,
+    "correct_ars": 217,
+    "detected_ars": 226,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-013",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 29,
+    "correct_ars": 29,
+    "detected_ars": 36,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-014",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 54,
+    "correct_ars": 54,
+    "detected_ars": 66,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-015",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 68,
+    "correct_ars": 68,
+    "detected_ars": 68,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-016",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 22,
+    "correct_ars": 22,
+    "detected_ars": 22,
+    "fp_ars": 6
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-017",
+   "str": {
+    "gt_tables": 6,
+    "gt_ars": 2637,
+    "correct_ars": 2518,
+    "detected_ars": 2601,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-018",
+   "str": {
+    "gt_tables": 7,
+    "gt_ars": 3832,
+    "correct_ars": 3693,
+    "detected_ars": 3756,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-019",
+   "str": {
+    "gt_tables": 4,
+    "gt_ars": 578,
+    "correct_ars": 534,
+    "detected_ars": 547,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-020",
+   "str": {
+    "gt_tables": 4,
+    "gt_ars": 1510,
+    "correct_ars": 1456,
+    "detected_ars": 1604,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-021",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 125,
+    "correct_ars": 112,
+    "detected_ars": 119,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-022",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 115,
+    "correct_ars": 115,
+    "detected_ars": 115,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-023",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 184,
+    "correct_ars": 162,
+    "detected_ars": 171,
+    "fp_ars": 49
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-024",
+   "str": {
+    "gt_tables": 4,
+    "gt_ars": 2377,
+    "correct_ars": 2188,
+    "detected_ars": 2321,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-025",
+   "str": {
+    "gt_tables": 6,
+    "gt_ars": 1168,
+    "correct_ars": 986,
+    "detected_ars": 1016,
+    "fp_ars": 37
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-026",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 118,
+    "correct_ars": 113,
+    "detected_ars": 113,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-027",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 142,
+    "correct_ars": 137,
+    "detected_ars": 157,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-028",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 85,
+    "correct_ars": 85,
+    "detected_ars": 85,
+    "fp_ars": 5
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-029",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 55,
+    "correct_ars": 55,
+    "detected_ars": 55,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-030",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 76,
+    "correct_ars": 73,
+    "detected_ars": 74,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-031a",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 83,
+    "correct_ars": 83,
+    "detected_ars": 83,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-032",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 24,
+    "correct_ars": 3,
+    "detected_ars": 16,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-033",
+   "str": {
+    "gt_tables": 3,
+    "gt_ars": 307,
+    "correct_ars": 257,
+    "detected_ars": 292,
+    "fp_ars": 56
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-034",
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 540,
+    "correct_ars": 448,
+    "detected_ars": 478,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-035a",
+   "str": {
+    "gt_tables": 3,
+    "gt_ars": 543,
+    "correct_ars": 512,
+    "detected_ars": 548,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-036",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 19,
+    "correct_ars": 19,
+    "detected_ars": 19,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-037",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 310,
+    "correct_ars": 268,
+    "detected_ars": 268,
+    "fp_ars": 52
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-038",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 22,
+    "correct_ars": 22,
+    "detected_ars": 22,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-039",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 19,
+    "correct_ars": 19,
+    "detected_ars": 19,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-040",
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 30,
+    "correct_ars": 27,
+    "detected_ars": 30,
+    "fp_ars": 0
+   }
+  }
+ ]
+}

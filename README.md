@@ -6,7 +6,7 @@ reader adapted from [Mozilla pdf.js](https://github.com/mozilla/pdf.js).
 Usable as a Rust crate, a CLI, or a WebAssembly module from Node.js and
 the browser.
 
-> Early software (`0.1.0`). APIs may still change.
+> Expect breaking changes.
 
 ## Highlights
 
@@ -45,8 +45,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-For document blocks use `extract_document_from_bytes`, and for Markdown use
-`extract_markdown_from_bytes` (requires the `document` feature — enabled by default).
+## Benchmarks
+
+Full pipeline (table regions are not given), scored with each benchmark's
+official evaluation tool. Scripts and test data live under
+[`bench/`](bench/) — see each benchmark's README for setup.
+
+| Benchmark | Task | Precision | Recall | F1 |
+| --- | --- | --- | --- | --- |
+| [ICDAR 2013 original](http://www.tamirhassan.com/html/dataset.html) (eu + us) | Region detection (char-level) | 0.9347 | 0.9316 | 0.9332 |
+| [ICDAR 2013 original](http://www.tamirhassan.com/html/dataset.html) (eu + us) | Structure (cell adjacency) | 0.9403 | 0.9335 | 0.9369 |
+| [ICDAR 2013 corrected](https://huggingface.co/datasets/bsmock/ICDAR-2013-Table-Competition-Corrected) (eu + us) | Region detection (char-level) | 0.9347 | 0.9316 | 0.9332 |
+| [ICDAR 2013 corrected](https://huggingface.co/datasets/bsmock/ICDAR-2013-Table-Competition-Corrected) (eu + us) | Structure (cell adjacency) | 0.9403 | 0.9335 | 0.9369 |
+| [SciTSR](https://github.com/Academic-Hammer/SciTSR) test (3,000 tables) | Structure (cell adjacency, macro) | 0.9254 | 0.8997 | 0.9124 |
 
 ## Documentation
 

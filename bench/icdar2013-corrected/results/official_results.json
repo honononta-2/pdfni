@@ -1,0 +1,1372 @@
+{
+ "summary": {
+  "region_char_level": {
+   "gt_regions": 156,
+   "matched": 154,
+   "gt_items": 94440,
+   "correct_items": 87977,
+   "result_items": 89952,
+   "fp_items": 4167,
+   "complete": 114,
+   "pure": 149,
+   "precision": 0.9347,
+   "recall": 0.9316,
+   "f1": 0.9332
+  },
+  "structure_adjacency": {
+   "gt_tables": 156,
+   "gt_ars": 24596,
+   "correct_ars": 22961,
+   "detected_ars": 24106,
+   "fp_ars": 312,
+   "precision": 0.9403,
+   "recall": 0.9335,
+   "f1": 0.9369,
+   "precision_matched_only": 0.9525,
+   "f1_matched_only": 0.9429
+  }
+ },
+ "errors": [],
+ "per_doc": [
+  {
+   "doc": "competition-dataset-eu/eu-001",
+   "reg": {
+    "gt_regions": 7,
+    "matched": 7,
+    "gt_items": 2730,
+    "correct_items": 2730,
+    "result_items": 2730,
+    "fp_items": 0,
+    "complete": 7,
+    "pure": 7
+   },
+   "str": {
+    "gt_tables": 7,
+    "gt_ars": 665,
+    "correct_ars": 604,
+    "detected_ars": 703,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-002",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 135,
+    "correct_items": 135,
+    "result_items": 135,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 54,
+    "correct_ars": 54,
+    "detected_ars": 54,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-003",
+   "reg": {
+    "gt_regions": 3,
+    "matched": 3,
+    "gt_items": 924,
+    "correct_items": 924,
+    "result_items": 924,
+    "fp_items": 0,
+    "complete": 3,
+    "pure": 3
+   },
+   "str": {
+    "gt_tables": 3,
+    "gt_ars": 98,
+    "correct_ars": 98,
+    "detected_ars": 98,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-004",
+   "reg": {
+    "gt_regions": 12,
+    "matched": 12,
+    "gt_items": 4622,
+    "correct_items": 4622,
+    "result_items": 4622,
+    "fp_items": 0,
+    "complete": 12,
+    "pure": 12
+   },
+   "str": {
+    "gt_tables": 12,
+    "gt_ars": 1453,
+    "correct_ars": 1450,
+    "detected_ars": 1456,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-005",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 588,
+    "correct_items": 588,
+    "result_items": 588,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 243,
+    "correct_ars": 229,
+    "detected_ars": 254,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-006",
+   "reg": {
+    "gt_regions": 4,
+    "matched": 4,
+    "gt_items": 596,
+    "correct_items": 551,
+    "result_items": 551,
+    "fp_items": 0,
+    "complete": 3,
+    "pure": 4
+   },
+   "str": {
+    "gt_tables": 4,
+    "gt_ars": 157,
+    "correct_ars": 152,
+    "detected_ars": 152,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-007",
+   "reg": {
+    "gt_regions": 6,
+    "matched": 6,
+    "gt_items": 1149,
+    "correct_items": 1149,
+    "result_items": 1149,
+    "fp_items": 0,
+    "complete": 6,
+    "pure": 6
+   },
+   "str": {
+    "gt_tables": 6,
+    "gt_ars": 162,
+    "correct_ars": 162,
+    "detected_ars": 162,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-008",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 302,
+    "correct_items": 302,
+    "result_items": 302,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 97,
+    "correct_ars": 97,
+    "detected_ars": 97,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-009a",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 430,
+    "correct_items": 430,
+    "result_items": 430,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 40,
+    "correct_ars": 28,
+    "detected_ars": 39,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-010",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 140,
+    "correct_items": 140,
+    "result_items": 140,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 31,
+    "correct_ars": 29,
+    "detected_ars": 33,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-011",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 183,
+    "correct_items": 183,
+    "result_items": 183,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 49,
+    "correct_ars": 49,
+    "detected_ars": 60,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-012",
+   "reg": {
+    "gt_regions": 5,
+    "matched": 5,
+    "gt_items": 794,
+    "correct_items": 794,
+    "result_items": 794,
+    "fp_items": 60,
+    "complete": 5,
+    "pure": 5
+   },
+   "str": {
+    "gt_tables": 5,
+    "gt_ars": 355,
+    "correct_ars": 339,
+    "detected_ars": 343,
+    "fp_ars": 26
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-013",
+   "reg": {
+    "gt_regions": 4,
+    "matched": 4,
+    "gt_items": 752,
+    "correct_items": 752,
+    "result_items": 752,
+    "fp_items": 0,
+    "complete": 4,
+    "pure": 4
+   },
+   "str": {
+    "gt_tables": 4,
+    "gt_ars": 104,
+    "correct_ars": 104,
+    "detected_ars": 104,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-014",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 218,
+    "correct_items": 218,
+    "result_items": 218,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 22,
+    "correct_ars": 22,
+    "detected_ars": 22,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-015",
+   "reg": {
+    "gt_regions": 5,
+    "matched": 5,
+    "gt_items": 1876,
+    "correct_items": 1876,
+    "result_items": 1876,
+    "fp_items": 0,
+    "complete": 5,
+    "pure": 5
+   },
+   "str": {
+    "gt_tables": 5,
+    "gt_ars": 341,
+    "correct_ars": 341,
+    "detected_ars": 341,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-016",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 673,
+    "correct_items": 673,
+    "result_items": 673,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 274,
+    "correct_ars": 274,
+    "detected_ars": 274,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-017",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 622,
+    "correct_items": 622,
+    "result_items": 622,
+    "fp_items": 133,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 247,
+    "correct_ars": 247,
+    "detected_ars": 247,
+    "fp_ars": 25
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-018",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 620,
+    "correct_items": 620,
+    "result_items": 620,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 371,
+    "correct_ars": 371,
+    "detected_ars": 371,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-019",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 317,
+    "correct_items": 317,
+    "result_items": 317,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 166,
+    "correct_ars": 166,
+    "detected_ars": 166,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-020",
+   "reg": {
+    "gt_regions": 3,
+    "matched": 3,
+    "gt_items": 517,
+    "correct_items": 517,
+    "result_items": 517,
+    "fp_items": 0,
+    "complete": 3,
+    "pure": 3
+   },
+   "str": {
+    "gt_tables": 3,
+    "gt_ars": 82,
+    "correct_ars": 80,
+    "detected_ars": 80,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-021",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 1363,
+    "correct_items": 1363,
+    "result_items": 1363,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 412,
+    "correct_ars": 343,
+    "detected_ars": 405,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-022",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 414,
+    "correct_items": 414,
+    "result_items": 414,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 126,
+    "correct_ars": 116,
+    "detected_ars": 133,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-023",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 356,
+    "correct_items": 356,
+    "result_items": 356,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 66,
+    "correct_ars": 66,
+    "detected_ars": 66,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-024",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 255,
+    "correct_items": 255,
+    "result_items": 255,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 66,
+    "correct_ars": 66,
+    "detected_ars": 66,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-025",
+   "reg": {
+    "gt_regions": 5,
+    "matched": 5,
+    "gt_items": 1086,
+    "correct_items": 1086,
+    "result_items": 1086,
+    "fp_items": 0,
+    "complete": 5,
+    "pure": 5
+   },
+   "str": {
+    "gt_tables": 5,
+    "gt_ars": 282,
+    "correct_ars": 265,
+    "detected_ars": 283,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-026",
+   "reg": {
+    "gt_regions": 3,
+    "matched": 3,
+    "gt_items": 334,
+    "correct_items": 333,
+    "result_items": 333,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 3
+   },
+   "str": {
+    "gt_tables": 3,
+    "gt_ars": 100,
+    "correct_ars": 95,
+    "detected_ars": 101,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-eu/eu-027",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 700,
+    "correct_items": 700,
+    "result_items": 700,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 247,
+    "correct_ars": 247,
+    "detected_ars": 247,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-001",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 2432,
+    "correct_items": 2432,
+    "result_items": 2432,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 769,
+    "correct_ars": 755,
+    "detected_ars": 760,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-002",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 2916,
+    "correct_items": 2525,
+    "result_items": 2525,
+    "fp_items": 0,
+    "complete": 0,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 789,
+    "correct_ars": 719,
+    "detected_ars": 729,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-003",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 228,
+    "correct_items": 228,
+    "result_items": 228,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 29,
+    "correct_ars": 29,
+    "detected_ars": 29,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-004",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 695,
+    "correct_items": 695,
+    "result_items": 695,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 160,
+    "correct_ars": 153,
+    "detected_ars": 160,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-005",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 170,
+    "correct_items": 170,
+    "result_items": 170,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 13,
+    "correct_ars": 13,
+    "detected_ars": 13,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-006",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 105,
+    "correct_items": 105,
+    "result_items": 105,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 17,
+    "correct_ars": 17,
+    "detected_ars": 17,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-007",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 2079,
+    "correct_items": 1889,
+    "result_items": 1889,
+    "fp_items": 173,
+    "complete": 1,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 419,
+    "correct_ars": 304,
+    "detected_ars": 356,
+    "fp_ars": 28
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-008",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 361,
+    "correct_items": 361,
+    "result_items": 361,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 58,
+    "correct_ars": 32,
+    "detected_ars": 48,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-009",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 960,
+    "correct_items": 638,
+    "result_items": 638,
+    "fp_items": 78,
+    "complete": 0,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 187,
+    "correct_ars": 144,
+    "detected_ars": 144,
+    "fp_ars": 8
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-010",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 294,
+    "correct_items": 294,
+    "result_items": 294,
+    "fp_items": 350,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 43,
+    "correct_ars": 31,
+    "detected_ars": 55,
+    "fp_ars": 10
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-011a",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 638,
+    "correct_items": 638,
+    "result_items": 638,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 54,
+    "correct_ars": 51,
+    "detected_ars": 57,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-012",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 689,
+    "correct_items": 689,
+    "result_items": 1325,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 0
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 218,
+    "correct_ars": 217,
+    "detected_ars": 226,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-013",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 677,
+    "correct_items": 677,
+    "result_items": 1123,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 0
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 29,
+    "correct_ars": 29,
+    "detected_ars": 36,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-014",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 649,
+    "correct_items": 649,
+    "result_items": 1475,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 0
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 54,
+    "correct_ars": 54,
+    "detected_ars": 66,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-015",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 3326,
+    "correct_items": 3326,
+    "result_items": 3326,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 68,
+    "correct_ars": 68,
+    "detected_ars": 68,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-016",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 1445,
+    "correct_items": 1445,
+    "result_items": 1445,
+    "fp_items": 621,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 22,
+    "correct_ars": 22,
+    "detected_ars": 22,
+    "fp_ars": 6
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-017",
+   "reg": {
+    "gt_regions": 6,
+    "matched": 6,
+    "gt_items": 7047,
+    "correct_items": 6933,
+    "result_items": 6933,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 6
+   },
+   "str": {
+    "gt_tables": 6,
+    "gt_ars": 2709,
+    "correct_ars": 2590,
+    "detected_ars": 2673,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-018",
+   "reg": {
+    "gt_regions": 7,
+    "matched": 7,
+    "gt_items": 12219,
+    "correct_items": 11903,
+    "result_items": 11903,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 7
+   },
+   "str": {
+    "gt_tables": 7,
+    "gt_ars": 3942,
+    "correct_ars": 3803,
+    "detected_ars": 3866,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-019",
+   "reg": {
+    "gt_regions": 4,
+    "matched": 3,
+    "gt_items": 3153,
+    "correct_items": 2113,
+    "result_items": 2113,
+    "fp_items": 0,
+    "complete": 0,
+    "pure": 3
+   },
+   "str": {
+    "gt_tables": 4,
+    "gt_ars": 650,
+    "correct_ars": 609,
+    "detected_ars": 619,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-020",
+   "reg": {
+    "gt_regions": 4,
+    "matched": 4,
+    "gt_items": 3954,
+    "correct_items": 3938,
+    "result_items": 3938,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 4
+   },
+   "str": {
+    "gt_tables": 4,
+    "gt_ars": 1510,
+    "correct_ars": 1456,
+    "detected_ars": 1604,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-021",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 524,
+    "correct_items": 498,
+    "result_items": 498,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 125,
+    "correct_ars": 112,
+    "detected_ars": 119,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-022",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 372,
+    "correct_items": 372,
+    "result_items": 372,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 115,
+    "correct_ars": 9,
+    "detected_ars": 115,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-023",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 864,
+    "correct_items": 860,
+    "result_items": 860,
+    "fp_items": 637,
+    "complete": 0,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 184,
+    "correct_ars": 162,
+    "detected_ars": 171,
+    "fp_ars": 49
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-024",
+   "reg": {
+    "gt_regions": 4,
+    "matched": 4,
+    "gt_items": 8372,
+    "correct_items": 8052,
+    "result_items": 8052,
+    "fp_items": 0,
+    "complete": 0,
+    "pure": 4
+   },
+   "str": {
+    "gt_tables": 4,
+    "gt_ars": 2545,
+    "correct_ars": 2345,
+    "detected_ars": 2485,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-025",
+   "reg": {
+    "gt_regions": 6,
+    "matched": 5,
+    "gt_items": 7071,
+    "correct_items": 3995,
+    "result_items": 3995,
+    "fp_items": 1400,
+    "complete": 0,
+    "pure": 5
+   },
+   "str": {
+    "gt_tables": 6,
+    "gt_ars": 1172,
+    "correct_ars": 990,
+    "detected_ars": 1020,
+    "fp_ars": 37
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-026",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 496,
+    "correct_items": 464,
+    "result_items": 464,
+    "fp_items": 0,
+    "complete": 0,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 142,
+    "correct_ars": 137,
+    "detected_ars": 137,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-027",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 509,
+    "correct_items": 509,
+    "result_items": 509,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 144,
+    "correct_ars": 139,
+    "detected_ars": 159,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-028",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 471,
+    "correct_items": 471,
+    "result_items": 471,
+    "fp_items": 17,
+    "complete": 2,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 89,
+    "correct_ars": 89,
+    "detected_ars": 89,
+    "fp_ars": 5
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-029",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 360,
+    "correct_items": 360,
+    "result_items": 360,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 57,
+    "correct_ars": 57,
+    "detected_ars": 57,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-030",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 255,
+    "correct_items": 255,
+    "result_items": 255,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 76,
+    "correct_ars": 73,
+    "detected_ars": 74,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-031a",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 388,
+    "correct_items": 388,
+    "result_items": 388,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 83,
+    "correct_ars": 83,
+    "detected_ars": 83,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-032",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 716,
+    "correct_items": 716,
+    "result_items": 716,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 24,
+    "correct_ars": 3,
+    "detected_ars": 16,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-033",
+   "reg": {
+    "gt_regions": 3,
+    "matched": 3,
+    "gt_items": 1322,
+    "correct_items": 1286,
+    "result_items": 1353,
+    "fp_items": 495,
+    "complete": 1,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 3,
+    "gt_ars": 307,
+    "correct_ars": 257,
+    "detected_ars": 292,
+    "fp_ars": 56
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-034",
+   "reg": {
+    "gt_regions": 2,
+    "matched": 2,
+    "gt_items": 1551,
+    "correct_items": 1335,
+    "result_items": 1335,
+    "fp_items": 0,
+    "complete": 0,
+    "pure": 2
+   },
+   "str": {
+    "gt_tables": 2,
+    "gt_ars": 540,
+    "correct_ars": 448,
+    "detected_ars": 478,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-035a",
+   "reg": {
+    "gt_regions": 3,
+    "matched": 3,
+    "gt_items": 2362,
+    "correct_items": 2339,
+    "result_items": 2339,
+    "fp_items": 0,
+    "complete": 2,
+    "pure": 3
+   },
+   "str": {
+    "gt_tables": 3,
+    "gt_ars": 543,
+    "correct_ars": 512,
+    "detected_ars": 548,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-036",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 987,
+    "correct_items": 987,
+    "result_items": 987,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 19,
+    "correct_ars": 19,
+    "detected_ars": 19,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-037",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 752,
+    "correct_items": 457,
+    "result_items": 457,
+    "fp_items": 203,
+    "complete": 0,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 310,
+    "correct_ars": 268,
+    "detected_ars": 268,
+    "fp_ars": 62
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-038",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 114,
+    "correct_items": 114,
+    "result_items": 114,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 22,
+    "correct_ars": 22,
+    "detected_ars": 22,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-039",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 87,
+    "correct_items": 87,
+    "result_items": 87,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 19,
+    "correct_ars": 19,
+    "detected_ars": 19,
+    "fp_ars": 0
+   }
+  },
+  {
+   "doc": "competition-dataset-us/us-040",
+   "reg": {
+    "gt_regions": 1,
+    "matched": 1,
+    "gt_items": 134,
+    "correct_items": 134,
+    "result_items": 134,
+    "fp_items": 0,
+    "complete": 1,
+    "pure": 1
+   },
+   "str": {
+    "gt_tables": 1,
+    "gt_ars": 30,
+    "correct_ars": 27,
+    "detected_ars": 30,
+    "fp_ars": 0
+   }
+  }
+ ]
+}

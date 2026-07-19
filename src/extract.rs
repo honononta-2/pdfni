@@ -343,6 +343,117 @@ fn cell_text(chars: &[Glyph], index: &CharIndex, cell: &BBox, bidi: bool) -> Str
     strip_cjk_spaces(&out.join("\n"))
 }
 
+/// リーダーに使われる文字か
+fn is_leader_char(c: char) -> bool {
+    matches!(c, '.' | '·' | '․' | '‥' | '…')
+}
+
+/// ダッシュ・罫線代わりの文字か
+fn is_dash_char(c: char) -> bool {
+    matches!(c, '-' | '‐' | '–' | '—' | '―' | '─' | '━' | '_')
+}
+
+/// 通貨記号か
+fn is_currency_char(c: char) -> bool {
+    matches!(c, '$' | '¢' | '£' | '¥' | '€' | '₩' | '₹' | '₽' | '＄' | '￥')
+}
+
+/// 数字を含みラテン文字を含まないか
+fn typed_token(s: &str) -> bool {
+    s.chars().any(|c| c.is_ascii_digit()) && !s.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+/// 行内でリーダー runに属する位置
+///
+/// 同種文字が間隙 seg_gap 以内で4個以上並ぶ列をリーダーとみなす
+fn leader_run_flags(line: &[usize], chars: &[Glyph], seg_gap: f64) -> Vec<bool> {
+    const MIN_RUN: usize = 4;
+    let mut flags = vec![false; line.len()];
+    let mut run: Vec<usize> = Vec::new();
+    let mut prev_x1 = f64::NEG_INFINITY;
+    for (pos, &i) in line.iter().enumerate() {
+        let g = &chars[i];
+        if g.ch.is_whitespace() {
+            continue;
+        }
+        if is_leader_char(g.ch) && (run.is_empty() || g.bbox.x0 - prev_x1 <= seg_gap) {
+            run.push(pos);
+            prev_x1 = g.bbox.x1;
+            continue;
+        }
+        if run.len() >= MIN_RUN {
+            for &p in &run {
+                flags[p] = true;
+            }
+        }
+        run.clear();
+        if is_leader_char(g.ch) {
+            run.push(pos);
+            prev_x1 = g.bbox.x1;
+        }
+    }
+    if run.len() >= MIN_RUN {
+        for &p in &run {
+            flags[p] = true;
+        }
+    }
+    flags
+}
+
+/// リーダー run直前のセグに隣接印を付ける
+fn mark_segs_before_leader(
+    line_segs: &mut [Seg],
+    line: &[usize],
+    chars: &[Glyph],
+    leader: &[bool],
+    seg_gap: f64,
+) {
+    let starts: Vec<f64> = line
+        .iter()
+        .enumerate()
+        .filter(|&(p, _)| leader[p])
+        .map(|(_, &i)| chars[i].bbox.x0)
+        .collect();
+    if starts.is_empty() {
+        return;
+    }
+    for s in line_segs.iter_mut() {
+        if starts
+            .iter()
+            .any(|&lx| s.bbox.x1 <= lx && lx <= s.bbox.x1 + seg_gap * 2.0)
+        {
+            s.leader_adj = true;
+        }
+    }
+}
+
+/// 通貨記号のみのセグを右隣の数値セグへ結合する
+fn merge_currency_segs(line_segs: &mut Vec<Seg>, seg_gap: f64) {
+    let mut k = 0;
+    while k + 1 < line_segs.len() {
+        let is_currency_only = {
+            let mut it = line_segs[k].text.chars();
+            matches!((it.next(), it.next()), (Some(c), None) if is_currency_char(c))
+        };
+        if is_currency_only
+            && typed_token(&line_segs[k + 1].text)
+            && line_segs[k + 1].bbox.x0 - line_segs[k].bbox.x1 <= seg_gap * 3.0
+        {
+            let nxt = line_segs.remove(k + 1);
+            let s = &mut line_segs[k];
+            s.text.push_str(&nxt.text);
+            s.bbox = BBox {
+                x0: s.bbox.x0,
+                top: s.bbox.top.min(nxt.bbox.top),
+                x1: nxt.bbox.x1,
+                bottom: s.bbox.bottom.max(nxt.bbox.bottom),
+            };
+            s.leader_adj |= nxt.leader_adj;
+        }
+        k += 1;
+    }
+}
+
 /// 文字を行内の塊に切り分ける
 fn build_segments(chars: &[Glyph], scale: Option<f64>) -> Vec<Seg> {
     let solid: Vec<usize> = (0..chars.len())
@@ -402,15 +513,29 @@ fn build_segments(chars: &[Glyph], scale: Option<f64>) -> Vec<Seg> {
     let mut segs = Vec::new();
     for mut line in lines {
         line.sort_by(|&a, &b| chars[a].bbox.x0.total_cmp(&chars[b].bbox.x0));
+        let mut line_segs: Vec<Seg> = Vec::new();
         let mut text = String::new();
         let mut bb: Option<BBox> = None;
         let mut last_x1 = f64::NEG_INFINITY;
+        let mut after_leader = false;
+        let mut prev_was_leader = false;
         let line_refs: Vec<(usize, &Glyph)> = line.iter().map(|&i| (i, &chars[i])).collect();
         let intrusive = touching_ws_flags(&line_refs);
+        let leader = leader_run_flags(&line, chars, seg_gap);
         for (pos, &i) in line.iter().enumerate() {
             let g = &chars[i];
+            if leader[pos] {
+                if bb.is_some() {
+                    push_seg(&mut line_segs, &mut text, &mut bb, after_leader);
+                    after_leader = false;
+                }
+                prev_was_leader = true;
+                last_x1 = f64::NEG_INFINITY;
+                continue;
+            }
             if bb.is_some() && g.bbox.x0 - last_x1 > seg_gap {
-                push_seg(&mut segs, &mut text, &mut bb);
+                push_seg(&mut line_segs, &mut text, &mut bb, after_leader);
+                after_leader = prev_was_leader;
             }
             if g.ch.is_whitespace() {
                 // 接触する非空白の間の空白は文字にしない
@@ -418,31 +543,50 @@ fn build_segments(chars: &[Glyph], scale: Option<f64>) -> Vec<Seg> {
                     text.push(g.ch);
                 }
             } else {
+                if prev_was_leader && bb.is_none() {
+                    after_leader = true;
+                }
+                prev_was_leader = false;
+                // ダッシュのアドバンスは空白を含みうるためインク幅は1emまで
+                let x1 = if is_dash_char(g.ch) {
+                    g.bbox.x1.min(g.bbox.x0 + med_h)
+                } else {
+                    g.bbox.x1
+                };
                 text.push(g.ch);
                 bb = Some(match bb {
                     Some(b) => BBox {
                         x0: b.x0.min(g.bbox.x0),
                         top: b.top.min(g.bbox.top),
-                        x1: b.x1.max(g.bbox.x1),
+                        x1: b.x1.max(x1),
                         bottom: b.bottom.max(g.bbox.bottom),
                     },
-                    None => g.bbox,
+                    None => BBox {
+                        x0: g.bbox.x0,
+                        top: g.bbox.top,
+                        x1,
+                        bottom: g.bbox.bottom,
+                    },
                 });
-                last_x1 = g.bbox.x1;
+                last_x1 = x1;
             }
         }
-        push_seg(&mut segs, &mut text, &mut bb);
+        push_seg(&mut line_segs, &mut text, &mut bb, after_leader);
+        mark_segs_before_leader(&mut line_segs, &line, chars, &leader, seg_gap);
+        merge_currency_segs(&mut line_segs, seg_gap);
+        segs.append(&mut line_segs);
     }
     segs
 }
 
-fn push_seg(segs: &mut Vec<Seg>, text: &mut String, bb: &mut Option<BBox>) {
+fn push_seg(segs: &mut Vec<Seg>, text: &mut String, bb: &mut Option<BBox>, leader_adj: bool) {
     if let Some(b) = bb.take() {
         let trimmed = strip_cjk_spaces(text.trim());
         if !trimmed.is_empty() {
             segs.push(Seg {
                 text: trimmed,
                 bbox: b,
+                leader_adj,
             });
         }
     }
@@ -1846,5 +1990,81 @@ mod tests {
         }
         let doc = extract_from_parts(vec![part_with(glyphs)], &zero_min_options());
         assert_eq!(doc.pages.len(), 1);
+    }
+
+    /// リーダー runは境界になり本文から消え 両側のセグに印が付く
+    #[test]
+    fn build_segments_splits_at_leader_run() {
+        let mut glyphs = vec![
+            glyph('A', 0.0, 10.0, 0.0, 10.0),
+            glyph('B', 10.0, 20.0, 0.0, 10.0),
+        ];
+        for k in 0..4 {
+            let x = 25.0 + 7.0 * k as f64;
+            glyphs.push(glyph('.', x, x + 5.0, 0.0, 10.0));
+        }
+        glyphs.push(glyph('1', 60.0, 65.0, 0.0, 10.0));
+        glyphs.push(glyph('2', 65.0, 70.0, 0.0, 10.0));
+        let segs = build_segments(&glyphs, Some(10.0));
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].text, "AB");
+        assert!(segs[0].leader_adj);
+        assert_eq!(segs[1].text, "12");
+        assert!(segs[1].leader_adj);
+    }
+
+    /// 3個以下のドットはリーダー扱いしない
+    #[test]
+    fn build_segments_keeps_short_dot_runs() {
+        let mut glyphs = vec![glyph('A', 0.0, 10.0, 0.0, 10.0)];
+        for k in 0..3 {
+            let x = 12.0 + 7.0 * k as f64;
+            glyphs.push(glyph('.', x, x + 5.0, 0.0, 10.0));
+        }
+        let segs = build_segments(&glyphs, Some(10.0));
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, "A...");
+        assert!(!segs[0].leader_adj);
+    }
+
+    /// 通貨記号だけのセグは右隣の数値セグに結合される
+    #[test]
+    fn build_segments_merges_currency_into_number() {
+        let glyphs = vec![
+            glyph('$', 0.0, 5.0, 0.0, 10.0),
+            glyph('1', 20.0, 25.0, 0.0, 10.0),
+            glyph('2', 25.0, 30.0, 0.0, 10.0),
+            glyph('3', 30.0, 35.0, 0.0, 10.0),
+        ];
+        let segs = build_segments(&glyphs, Some(10.0));
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, "$123");
+        assert_eq!(segs[0].bbox.x0, 0.0);
+        assert_eq!(segs[0].bbox.x1, 35.0);
+    }
+
+    /// 右隣が数値でなければ通貨記号は結合しない
+    #[test]
+    fn build_segments_keeps_currency_before_words() {
+        let glyphs = vec![
+            glyph('$', 0.0, 5.0, 0.0, 10.0),
+            glyph('a', 20.0, 25.0, 0.0, 10.0),
+        ];
+        let segs = build_segments(&glyphs, Some(10.0));
+        assert_eq!(segs.len(), 2);
+    }
+
+    /// 過大なアドバンスのダッシュはインク幅1emに切り詰め後続と分離する
+    #[test]
+    fn build_segments_clamps_wide_dash_advance() {
+        let glyphs = vec![
+            glyph('—', 0.0, 55.0, 0.0, 10.0),
+            glyph('4', 40.0, 45.0, 0.0, 10.0),
+        ];
+        let segs = build_segments(&glyphs, Some(10.0));
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].text, "—");
+        assert!(segs[0].bbox.x1 <= 10.0);
+        assert_eq!(segs[1].text, "4");
     }
 }

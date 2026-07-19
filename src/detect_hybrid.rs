@@ -458,6 +458,7 @@ mod tests {
         Seg {
             text: text.to_string(),
             bbox: BBox { x0, top, x1, bottom },
+            leader_adj: false,
         }
     }
 

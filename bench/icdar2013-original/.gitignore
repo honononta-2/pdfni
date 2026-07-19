@@ -1,0 +1,8 @@
+# Manually placed per README — never committed (dataset and third-party tool binaries)
+data/
+tools/
+# Run artifacts
+work/
+logs/
+*.log
+__pycache__/
