@@ -6,6 +6,7 @@ rust-version = "1.85"
 description = "Extract tables and Markdown from text-embedded PDFs, with a built-in pure-Rust PDF reader adapted from Mozilla pdf.js."
 license = "Apache-2.0"
 readme = "README.md"
+include = ["/src/**", "/examples/**", "/data/bcmaps/**", "/README.md", "/LICENSE", "/NOTICE", "!.DS_Store"]
 
 [lib]
 name = "pdfni"
