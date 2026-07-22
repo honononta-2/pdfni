@@ -77,12 +77,10 @@ cargo build --lib --target wasm32-unknown-unknown --no-default-features
 
 ## Browser package (wasm-pack)
 
-See `test/wasm-test/README.md` for the smoke page. To produce a browser
-package:
+The browser smoke page lives under `demo/`. Build the package with the
+default features (the page imports document-level APIs) and serve it:
 
 ```sh
-wasm-pack build --release --target web \
-  --out-dir test/wasm-test/pkg \
-  --no-default-features --features reader
-node test/wasm-test/server.mjs   # http://localhost:8080
+wasm-pack build --release --target web --out-dir demo/pkg
+node demo/server.mjs   # http://localhost:8080
 ```

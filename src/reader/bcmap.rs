@@ -1,6 +1,6 @@
 //! .bcmap バイナリデコーダ
 //!
-//! 準拠: pdf.js `binary_cmap.js`
+//! 参考: pdf.js `binary_cmap.js`
 
 use super::cmap::{CMap, MapValue};
 
@@ -172,7 +172,7 @@ fn inc_hex(a: &mut [u8], size: usize) {
     }
 }
 
-/// .bcmap をデコードして CMap に書き込む。usecmap 名があれば返す
+/// .bcmap の CMap へのデコード。usecmap 名があれば返り値に
 pub(crate) fn decode_bcmap(data: &[u8], cmap: &mut CMap) -> Result<Option<String>, BcmapError> {
     let mut stream = BinaryCMapStream::new(data);
     let header = stream.get_byte()?;

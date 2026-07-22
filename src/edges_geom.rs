@@ -2,7 +2,7 @@
 
 use crate::model::{Edge, Orientation};
 
-/// 近接する平行エッジを同じ位置に揃える
+/// 近接する平行エッジの位置揃え
 pub fn snap_edges(edges: Vec<Edge>, snap_x_tolerance: f64, snap_y_tolerance: f64) -> Vec<Edge> {
     let mut result = Vec::with_capacity(edges.len());
     let mut horizontals: Vec<Edge> = Vec::new();
@@ -40,7 +40,7 @@ pub fn snap_edges(edges: Vec<Edge>, snap_x_tolerance: f64, snap_y_tolerance: f64
     result
 }
 
-/// 1軸の近接クラスタを平均位置へ揃える
+/// 1軸の近接クラスタの平均位置への整列
 fn snap_group<F, G>(edges: &mut [Edge], tolerance: f64, key: F, mut set: G)
 where
     F: Fn(&Edge) -> f64,
@@ -70,7 +70,7 @@ where
     }
 }
 
-/// 同一直線上で重なる・隣接する線分を1本に連結する
+/// 同一直線上で重なる・隣接する線分の連結
 pub fn join_edge_group(
     edges: Vec<Edge>,
     join_x_tolerance: f64,

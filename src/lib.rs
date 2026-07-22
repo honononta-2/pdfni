@@ -29,10 +29,11 @@ pub use detect_lattice::LatticeSettings;
 pub use detect_text::TextSettings;
 #[cfg(feature = "document")]
 pub use document::{
-    DocBlock, DocDoc, DocPage, TextBlock, TextBlockKind, TextBlockRole, assign_header_footer,
-    assign_headings, assign_lists, build_blocks, extract_document_from_bytes,
-    extract_document_from_bytes_with_query, extract_markdown_from_bytes,
-    extract_markdown_from_bytes_with_query,
+    ContentBlock, ContentLine, ContentPage, ContentText, DocBlock, DocContent, DocDoc, DocPage,
+    TextBlock, TextBlockKind, TextBlockRole, assign_header_footer, assign_headings, assign_lists,
+    build_blocks, extract_content_from_bytes, extract_content_from_bytes_with_query,
+    extract_document_from_bytes, extract_document_from_bytes_with_query,
+    extract_markdown_from_bytes, extract_markdown_from_bytes_with_query,
 };
 pub use error::{Error, Result};
 pub use extract::{

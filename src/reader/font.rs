@@ -1,6 +1,6 @@
 //! フォント解決とグリフ分解
 //!
-//! 幅・ToUnicode・ascent/descent。準拠: pdf.js evaluator/fonts
+//! 幅・ToUnicode・ascent/descent。参考: pdf.js evaluator/fonts
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -70,7 +70,7 @@ fn next_font_uid() -> u64 {
 /// ToUnicode の解釈結果
 #[derive(Debug, Clone)]
 enum ToUnicode {
-    /// charcode をそのままコードポイントとする
+    /// charcode がそのままコードポイント
     Identity,
     /// charcode → Unicode 文字列の疎マップ
     Map(HashMap<u32, String>),
@@ -131,7 +131,6 @@ impl LoadedFont {
         }
     }
 
-    /// 文字列バイト列のグリフ数
     pub fn glyph_count(&self, bytes: &[u8]) -> usize {
         if let Some(cmap) = &self.encoding_cmap {
             let mut i = 0;
@@ -147,7 +146,6 @@ impl LoadedFont {
         }
     }
 
-    /// 文字列バイト列をグリフごとに訪問する
     pub fn for_each_glyph<'a, F>(&'a self, bytes: &[u8], mut visit: F)
     where
         F: FnMut(Glyph<'a>),
@@ -155,7 +153,7 @@ impl LoadedFont {
         if let Some(cmap) = &self.encoding_cmap {
             let mut i = 0;
             while i < bytes.len() {
-                // range 不一致は code 0・1バイト消費として進める（pdf.js 準拠）
+                // range 不一致は code 0・1バイト消費
                 let (charcode, len) = cmap.read_char_code(bytes, i).unwrap_or((0, 1));
                 let is_space = len == 1 && bytes[i] == 0x20;
                 i += len;
@@ -189,7 +187,6 @@ impl LoadedFont {
         }
     }
 
-    /// 文字列バイト列をグリフ列に分解する（テスト用）
     #[cfg(test)]
     pub fn chars_to_glyphs(&self, bytes: &[u8]) -> Vec<Glyph<'_>> {
         let mut out = Vec::with_capacity(self.glyph_count(bytes));
@@ -249,12 +246,10 @@ impl LoadedFont {
         self.descent
     }
 
-    /// 太字属性
     pub fn bold(&self) -> bool {
         self.bold
     }
 
-    /// イタリック属性
     pub fn italic(&self) -> bool {
         self.italic
     }
@@ -274,12 +269,10 @@ pub(crate) struct Glyph<'a> {
     pub is_code_space: bool,
 }
 
-/// i64 を u32 へ。負値・u32 超は 0
 fn u32_or_zero(n: i64) -> u32 {
     u32::try_from(n).unwrap_or(0)
 }
 
-/// charcode → CID（符号化 CMap 経由）
 fn charcode_to_cid(cmap: &CMap, charcode: u32) -> u32 {
     match cmap.lookup(charcode).as_deref() {
         Some(MapValue::Cid(cid)) => *cid,
@@ -288,7 +281,7 @@ fn charcode_to_cid(cmap: &CMap, charcode: u32) -> u32 {
     }
 }
 
-/// resources の /Font から名前で引き、解釈済みフォントを返す
+/// resources の /Font からの名前引き
 pub(crate) fn lookup_font(
     resources: &Dict,
     name: &str,
@@ -306,8 +299,8 @@ pub(crate) fn lookup_font(
         return Arc::new(LoadedFont::stub(name));
     };
 
-    // 間接参照は文書内でキャッシュする
-    // 読み込み中はロックを保持しない（読み込みが再帰的にキャッシュへ入る可能性があるため）
+    // 間接参照は文書内キャッシュ
+    // 読み込み中はロック非保持（再帰的にキャッシュへ入る可能性があるため）
     if let (Object::Ref(r), Some(xref)) = (entry, xref) {
         let key = *r;
         if let Ok(guard) = xref.font_cache.lock() {
@@ -317,7 +310,7 @@ pub(crate) fn lookup_font(
         }
         let loaded = Arc::new(load_font_object(entry, name, data, Some(xref)));
         if let Ok(mut guard) = xref.font_cache.lock() {
-            // 読み込み中に他スレッドが挿入済みなら既存を返す
+            // 他スレッド挿入済みなら既存を優先
             if let Some(cached) = guard.get(&key) {
                 return Arc::clone(cached);
             }
@@ -348,7 +341,7 @@ fn load_font_dict(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> 
     match subtype.as_ref() {
         "Type0" => load_type0(dict, name, data, xref),
         "Type3" => load_type3(dict, name, data, xref),
-        // Type1 / TrueType / MMType1 / CIDFontType* 等は単純として扱う
+        // Type1 / TrueType / MMType1 / CIDFontType* 等は単純扱い
         // （CIDFont 単体は Type0 経由が本筋）
         _ => load_simple(dict, name, data, xref),
     }
@@ -405,7 +398,7 @@ fn load_simple(dict: &Dict, name: &str, data: &[u8], xref: Option<&XRef>) -> Loa
     }
 
     let mut to_unicode = load_tounicode(dict, None, data, xref);
-    // ToUnicode が無い、または穴がある場合に Encoding+AGL で埋める
+    // ToUnicode の欠落・穴は Encoding+AGL で補完
     if let ToUnicode::Map(map) = &mut to_unicode {
         let simple_tu = simple_font_to_unicode(
             &default_encoding,
@@ -590,7 +583,6 @@ fn base_font_name(dict: &Dict, data: &[u8], xref: Option<&XRef>) -> String {
     }
 }
 
-/// FontDescriptor と BaseFont 名から太字・イタリックを確定する
 fn resolve_font_style(
     descriptor: &Dict,
     base_font: &str,
@@ -602,7 +594,7 @@ fn resolve_font_style(
     (desc_bold || name_bold, desc_italic || name_italic)
 }
 
-/// FontDescriptor の Flags / ItalicAngle / FontWeight から書体属性を読む
+/// 判定材料は Flags / ItalicAngle / FontWeight
 fn style_from_descriptor(descriptor: &Dict, data: &[u8], xref: Option<&XRef>) -> (bool, bool) {
     let flags = descriptor
         .get("Flags")
@@ -630,7 +622,7 @@ fn style_from_descriptor(descriptor: &Dict, data: &[u8], xref: Option<&XRef>) ->
     (bold, italic)
 }
 
-/// フォント名から太字・イタリックを推定する（サブセット接頭辞除去後）
+/// サブセット接頭辞の除去後に判定
 fn style_from_font_name(name: &str) -> (bool, bool) {
     let key = style_name_key(name);
     if key.is_empty() {
@@ -655,11 +647,10 @@ fn style_name_key(name: &str) -> String {
             c => out.push(c.to_ascii_lowercase()),
         }
     }
-    // 前後の区切りを落とす
     out.trim_matches('-').to_owned()
 }
 
-/// PDF サブセット接頭辞（6英大字 + `+`）を除く
+/// サブセット接頭辞は6英大字 + `+`
 fn strip_subset_prefix(name: &str) -> &str {
     let bytes = name.as_bytes();
     if bytes.len() > 7 && bytes[6] == b'+' && bytes[..6].iter().all(|b| b.is_ascii_uppercase()) {
@@ -718,7 +709,7 @@ fn extract_simple_widths(
                 if let Some(n) = as_number(&resolved) {
                     widths.insert(j, n);
                 }
-                // 非数値はスキップ（穴あき。j は進める）
+                // 非数値は穴あきスキップ
                 j = j.saturating_add(1);
             }
             default_width = descriptor
@@ -780,7 +771,6 @@ fn extract_cid_widths(
             }
             let w_obj = resolve_obj(&arr[i], data, xref);
             let Some(w) = as_number(&w_obj) else {
-                // 非数値は continue（このエントリを飛ばす）
                 continue;
             };
             i += 1;
@@ -801,7 +791,7 @@ fn extract_cid_widths(
     (widths, default_width)
 }
 
-/// CID フォントの /DW2・/W2（pdf.js と同形式）
+/// CID フォントの /DW2・/W2
 ///
 /// 内部 vmetric は [w1y, v1x, v1y]。既定は [-1000, DW/2, 880]
 fn extract_cid_vmetrics(
@@ -896,7 +886,6 @@ enum EncodingOrigin {
     Embedded,
 }
 
-/// /Encoding を CMap に解決する
 fn load_encoding_cmap(
     type0: &Dict,
     data: &[u8],
@@ -944,13 +933,12 @@ fn load_encoding_cmap(
     }
 }
 
-/// XRef から CMap エントリ数上限を取り出す（未設定時は既定値）
+/// 未設定時は既定値
 fn cmap_entries_limit(xref: Option<&XRef>) -> usize {
     xref.map(|x| x.cmap_entries_limit())
         .unwrap_or(crate::extract::DEFAULT_MAX_CMAP_ENTRIES)
 }
 
-/// UCS2 コンパニオン CMap を条件に応じてロードする
 fn load_ucs2_companion(
     encoding_cmap: &CMap,
     encoding_origin: EncodingOrigin,
@@ -978,7 +966,7 @@ fn load_ucs2_companion(
     }
 }
 
-/// 定義済み CMap をロード。xref があれば文書単位キャッシュを使い共有のまま返す
+/// xref ありは文書単位キャッシュを共有
 fn load_predefined_cmap(name: &str, xref: Option<&XRef>) -> crate::error::Result<Arc<CMap>> {
     let cache = xref.map(|x| x.cmap_cache.as_ref());
     CMap::load_predefined_shared(name, cache)
@@ -988,7 +976,6 @@ fn is_cjk_ordering(ordering: &str) -> bool {
     matches!(ordering, "GB1" | "CNS1" | "Japan1" | "Korea1")
 }
 
-/// CIDSystemInfo から Registry / Ordering を読む
 fn read_cid_system_info(
     cid_dict: &Dict,
     data: &[u8],
@@ -1030,7 +1017,6 @@ fn load_tounicode(
             if n == "Identity-H" || n == "Identity-V" || n == "Identity" {
                 return ToUnicode::Identity;
             }
-            // その他の名前付き ToUnicode は第2段階
             warn(xref, format!("named ToUnicode '{n}' not loaded yet"));
             ToUnicode::empty()
         }
@@ -1052,7 +1038,7 @@ fn load_tounicode(
             }
             let mut map = HashMap::new();
             // for_each が Identity 全空間を回すのは避け、疎マップのみ
-            // parse 後 identity でなければ map を直接使う
+            // parse 後 identity でなければ map を直接使用
             build_tounicode_from_cmap(&cmap, &mut map);
             ToUnicode::Map(map)
         }
@@ -1120,7 +1106,6 @@ fn resolve_ascent_descent(
     (correct_ascent(ascent), correct_descent(descent))
 }
 
-/// 埋め込みフォントプログラムの有無
 fn has_embedded_font(descriptor: &Dict, data: &[u8], xref: Option<&XRef>) -> bool {
     for key in ["FontFile", "FontFile2", "FontFile3"] {
         if let Some(o) = descriptor.get(key) {
@@ -1146,8 +1131,7 @@ fn resolve_metrics_font_name(base_font: &str) -> String {
     }
 }
 
-/// Encoding + Differences を解決して defaultEncoding[256] と differences を返す
-/// 単純フォントの charcode → グリフ名表。静的表は借用のまま持つ
+/// 単純フォントの charcode → グリフ名表。静的表は借用のまま
 type SimpleEncoding = [Cow<'static, str>; 256];
 
 fn resolve_simple_encoding(
@@ -1220,7 +1204,7 @@ fn resolve_simple_encoding(
 
     let mut is_symbolic = (flags & FLAG_SYMBOLIC) != 0;
     let is_nonsymbolic = (flags & FLAG_NONSYMBOLIC) != 0;
-    // TrueType で両方立ち Differences あり → Symbolic を落とす
+    // TrueType で Symbolic・Nonsymbolic 両立かつ Differences ありは Symbolic を無効化
     if subtype == "TrueType" && is_symbolic && is_nonsymbolic && !differences.is_empty() {
         is_symbolic = false;
     }
@@ -1252,13 +1236,13 @@ fn resolve_simple_encoding(
     (default_encoding, differences, base_encoding_name)
 }
 
-/// buildCharCodeToWidth 相当（JS と同様、幅 0 は未登録扱い）
+/// 幅 0 は未登録扱い
 fn build_char_code_to_width(
     metrics_font: &str,
     default_encoding: &SimpleEncoding,
     differences: &HashMap<u32, String>,
 ) -> HashMap<u32, f64> {
-    // Courier 系は等幅で widths 表が空、defaultWidth=600 のみ使う
+    // Courier 系は等幅で widths 表が空、defaultWidth=600 のみ
     if matches!(
         metrics_font,
         "Courier" | "Courier-Bold" | "Courier-BoldOblique" | "Courier-Oblique"
@@ -1326,7 +1310,6 @@ fn try_simple_to_unicode(
             to_unicode.insert(charcode, s.to_string());
             continue;
         }
-        // ヒューリスティック
         match glyph_name_to_codepoint(glyph_name, force_glyphs) {
             GlyphNameCode::Code(code) => {
                 if code > 0 && code <= 0x10_ffff {
@@ -1371,11 +1354,10 @@ enum GlyphNameCode {
     Code(u32),
     /// 解釈できない（合字等の後段フォールバックへ）
     NotFound,
-    /// Cdd の10進解釈が矛盾。表全体を16進で再解析する
+    /// Cdd の10進解釈が矛盾。表全体の16進再解析へ
     RetryAsHex,
 }
 
-/// グリフ名ヒューリスティック
 fn glyph_name_to_codepoint(glyph_name: &str, force_glyphs: bool) -> GlyphNameCode {
     let bytes = glyph_name.as_bytes();
     if bytes.is_empty() {
@@ -1456,14 +1438,13 @@ fn correct_descent(d: Option<f64>) -> f64 {
     }
 }
 
-/// 部分列の検索
 fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-/// 埋め込み Type1 (FontFile) の平文部から内蔵エンコーディングを読む
+/// 埋め込み Type1 (FontFile) の平文部の内蔵エンコーディング
 ///
-/// /Encoding 256 array ... dup <code> /<glyph> put ... readonly def の並びを拾う
+/// /Encoding 256 array ... dup <code> /<glyph> put ... readonly def の並びが対象
 /// 名前指定（StandardEncoding）や FontFile 不在は None
 fn type1_builtin_encoding(
     descriptor: &Dict,
@@ -1476,7 +1457,7 @@ fn type1_builtin_encoding(
         _ => return None,
     };
     let bytes = decode_stream_bytes(data, &stream, xref)?;
-    // eexec 暗号化部より前の平文だけを見る
+    // 対象は eexec 暗号化部より前の平文のみ
     let clear_end = find_sub(&bytes, b"eexec").unwrap_or(bytes.len());
     let clear = &bytes[..clear_end];
     let enc_pos = find_sub(clear, b"/Encoding")?;
@@ -1539,7 +1520,7 @@ fn type1_builtin_encoding(
     if map.is_empty() { None } else { Some(map) }
 }
 
-/// FontFile2 から head.unitsPerEm と hhea ascent/descent を読む
+/// FontFile2 の head.unitsPerEm と hhea ascent/descent
 fn try_truetype_metrics(descriptor: &Dict, data: &[u8], xref: Option<&XRef>) -> Option<(f64, f64)> {
     let ff = descriptor.get("FontFile2")?;
     let stream = match resolve_obj(ff, data, xref) {
@@ -1550,7 +1531,6 @@ fn try_truetype_metrics(descriptor: &Dict, data: &[u8], xref: Option<&XRef>) -> 
     parse_ttf_ascent_descent(&bytes)
 }
 
-/// TrueType テーブルディレクトリから head / hhea を読む
 pub(crate) fn parse_ttf_ascent_descent(font: &[u8]) -> Option<(f64, f64)> {
     if font.len() < 12 {
         return None;
@@ -1623,7 +1603,7 @@ fn decode_stream_bytes(data: &[u8], stream: &Stream, xref: Option<&XRef>) -> Opt
     }
     impl Resolver for FetchResolver<'_> {
         fn resolve(&self, r: Ref) -> crate::error::Result<Option<Object>> {
-            // フォント解釈は寛容に扱い、失敗は未解決として続行する
+            // フォント解釈は寛容。失敗は未解決扱い
             Ok(self.xref.and_then(|x| x.fetch(r, self.data).ok()))
         }
     }
@@ -1693,7 +1673,7 @@ fn read_i16(data: &[u8], off: usize) -> Option<i16> {
     Some(i16::from_be_bytes([data[off], data[off + 1]]))
 }
 
-/// フォント処理中に発生した警告を xref 経由で蓄積する
+/// 警告の蓄積先は xref
 fn warn(xref: Option<&XRef>, msg: impl Into<String>) {
     let msg = msg.into();
     if let Some(x) = xref {

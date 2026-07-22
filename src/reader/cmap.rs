@@ -1,6 +1,6 @@
 //! 埋め込み CMap・Identity-H/V・定義済み CMap ロード
 //!
-//! 準拠: pdf.js `cmap.js` / `binary_cmap.js`
+//! 参考: pdf.js `cmap.js` / `binary_cmap.js`
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use super::data::bcmaps::bcmap_bytes;
 use super::lexer::{Cmd, Lexer, Op, Token};
 use crate::error::{Error, Result};
 
-/// 1 範囲展開の上限（DoS 対策、pdf.js MAX_MAP_RANGE）
+/// 1 範囲展開の上限（DoS 対策）
 const MAX_MAP_RANGE: u32 = 0x00FF_FFFF;
 
 /// CMap マップの値
@@ -208,7 +208,7 @@ impl CMap {
         Ok(arc)
     }
 
-    /// 定義済み CMap を構築する。親は cache 経由でロードする
+    /// 定義済み CMap の構築。親は cache 経由
     fn build_predefined(
         name: &str,
         cache: Option<&Mutex<HashMap<String, Arc<CMap>>>>,
@@ -335,8 +335,8 @@ impl CMap {
 
     /// 埋め込みテキスト形式 CMap をパース
     ///
-    /// `max_entries` は疎マップの総エントリ数の上限。超過すると
-    /// 以降の挿入を打ち切り `truncated` を立てる
+    /// `max_entries` は疎マップの総エントリ数の上限
+    /// 超過時は以降の挿入なしで `truncated` フラグのみ
     pub fn parse_embedded(data: &[u8], max_entries: usize) -> Self {
         let mut cmap = Self::with_limit(max_entries);
         let mut lexer = Lexer::new(data);
@@ -423,7 +423,7 @@ impl Default for CMap {
     }
 }
 
-/// dst 末尾バイトを +1 し、繰り上がりを処理する
+/// dst 末尾バイトの +1 と繰り上がり
 fn increment_last_byte(dst: &mut Vec<u8>) {
     if dst.is_empty() {
         return;
@@ -438,14 +438,13 @@ fn increment_last_byte(dst: &mut Vec<u8>) {
         dst[0] = 0;
         return;
     }
-    // pdf.js: substring(0, lastByte-1) + (byte[lastByte-1]+1) + "\x00"
-    // ただし lastByte-1 も 0xff の場合はそのまま +1 して溢れる実装
+    // lastByte-1 も 0xff の場合はそのまま +1 で桁あふれを許容
     let prev = last - 1;
     dst[prev] = dst[prev].wrapping_add(1);
     dst[last] = 0;
 }
 
-/// 16進文字列等を整数キーに畳む
+/// 16進文字列等の整数キー化
 pub(crate) fn bytes_to_int(bytes: &[u8]) -> u32 {
     let mut a: u32 = 0;
     for &b in bytes {
@@ -577,7 +576,7 @@ fn parse_bf_range(cmap: &mut CMap, lexer: &mut Lexer<'_>) {
                         cmap.map_bf_range(low, high, dst);
                     }
                     Token::Int(n) if (0..=0xffff).contains(&n) => {
-                        // 単一コードポイントを UTF-16BE 2バイトとして扱う
+                        // 単一コードポイントは UTF-16BE 2バイト扱い
                         let dst = vec![((n as u16) >> 8) as u8, (n as u16) as u8];
                         cmap.map_bf_range(low, high, dst);
                     }

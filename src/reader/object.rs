@@ -27,14 +27,14 @@ pub(crate) enum Object {
     Ref(Ref),
 }
 
-/// 辞書。xref は持たず参照解決は呼び出し側で行う
+/// 辞書。参照解決は呼び出し側の責務
 #[derive(Debug, Clone, Default, PartialEq)]
 #[allow(dead_code)]
 pub(crate) struct Dict {
     map: HashMap<Cow<'static, str>, Object>,
 }
 
-/// ストリーム。生データはバッファ上の範囲として保持しデコードは別単位で行う
+/// ストリーム。生データはバッファ上の範囲、デコードは別単位
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub(crate) struct Stream {

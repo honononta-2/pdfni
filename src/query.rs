@@ -80,9 +80,9 @@ impl Region {
     }
 }
 
-/// 矩形に掛かる parts だけ残す
+/// 矩形に掛かる parts への絞り込み
 ///
-/// グリフは中心点で残否を決め 罫線・図形は矩形との交差部分に切り詰める
+/// グリフは中心点で残否、罫線・図形は交差部分へ切り詰め
 /// 図形の curve_len は切り詰め前の値のまま
 pub fn retain_parts_in_region(page: &mut PagePart, region: &Region) {
     let r = to_norm_space(region, page.norm_rotate, page.width, page.height);
@@ -124,7 +124,7 @@ pub fn retain_parts_in_region(page: &mut PagePart, region: &Region) {
     });
 }
 
-/// 表示座標の矩形を norm_rotate 適用後の座標系へ変換する
+/// norm_rotate 適用後の座標系への矩形変換
 ///
 /// w h は正規化後のページ寸法。extract の denorm_box の逆変換
 fn to_norm_space(region: &Region, rot: i32, w: f64, h: f64) -> Region {

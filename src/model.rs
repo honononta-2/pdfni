@@ -1,5 +1,5 @@
 //! 表抽出の内部データモデルと JSON 出力スキーマ
-//! 座標は top-down に統一する
+//! 座標は top-down に統一
 
 use serde::{Deserialize, Serialize};
 

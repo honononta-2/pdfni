@@ -32,14 +32,13 @@ bounding boxes are returned in the original page coordinate frame.
 
 ## Table detectors
 
-Three detectors run in sequence under `DetectMode::Auto`. Regions already
+Two detectors run in sequence under `DetectMode::Auto`. Regions already
 covered by a confirmed table are removed before the next detector runs, so
 they do not overlap.
 
 | Detector | What it looks at | Best for |
 | --- | --- | --- |
 | `lattice` | Axis-aligned ruled edges | Tables with visible ruling |
-| `hybrid` | Ruled edges + text alignment | Partially ruled tables |
 | `text` | Text alignment only | Borderless tables |
 
 `DetectMode::Ruled` runs `lattice` only. `DetectMode::Borderless` runs `text`
@@ -97,13 +96,13 @@ number of worker threads on native.
 src/
   reader/          pure-Rust PDF reader (+ data tables from pdf.js / Adobe CMaps)
   extract.rs       parts → table detection orchestration
-  detect_*.rs      lattice / hybrid / text detectors
+  detect_*.rs      lattice / text detectors
   text.rs          TextDoc, items, lines
   document.rs      DocDoc, headings/lists, Markdown
   columns.rs       multi-column layout for the document model
   wasm.rs          JS exports
-  bin/main.rs      CLI (tables only)
+  bin/main.rs      CLI (content / tables / doc)
 examples/          reader_probe, text_probe, ...
-test/wasm-test/    browser smoke page
+demo/              browser smoke page
 data/              source .bcmap files used when regenerating bundled data
 ```

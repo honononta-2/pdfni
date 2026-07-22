@@ -63,7 +63,7 @@ pub fn extract_from_bytes_with_query(
     Ok(doc)
 }
 
-/// 1始まりのページ番号で対象ページを間引く
+/// 1始まりのページ番号による間引き
 fn select_pages(
     page_infos: Vec<pages::PageInfo>,
     sel: Option<&PageSelection>,
@@ -102,7 +102,7 @@ pub fn extract_text_from_bytes_with_query(
 ) -> Result<TextDoc> {
     let xref = XRef::parse_with_limit(bytes, password, reader.max_decoded_bytes, reader.max_cmap_entries)?;
     let page_infos = select_pages(collect_pages(bytes, &xref)?, query.pages.as_ref());
-    // XRef は Sync なので全スレッドで共有する
+    // XRef は Sync のため全スレッド共有
     let mut pages = crate::par::map_ordered(
         page_infos,
         || &xref,
@@ -121,7 +121,7 @@ pub fn extract_text_from_bytes_with_query(
     })
 }
 
-/// PDFバイト列からページ単位の parts を構築する
+/// PDF バイト列からのページ単位 parts 構築
 pub fn read_pages(bytes: &[u8], password: Option<&str>) -> Result<Vec<PagePart>> {
     read_pages_with(bytes, password, &ReaderSettings::default())
 }
@@ -132,10 +132,10 @@ pub fn read_pages_with(
     password: Option<&str>,
     reader: &ReaderSettings,
 ) -> Result<Vec<PagePart>> {
-    // 空パスワード → 引数パスワードは CipherFactory 内で試す
+    // 空パスワード → 引数パスワードの順の試行は CipherFactory 内
     let xref = XRef::parse_with_limit(bytes, password, reader.max_decoded_bytes, reader.max_cmap_entries)?;
     let page_infos = collect_pages(bytes, &xref)?;
-    // XRef は Sync なので全スレッドで共有する
+    // XRef は Sync のため全スレッド共有
     crate::par::map_ordered(
         page_infos,
         || &xref,
@@ -145,7 +145,6 @@ pub fn read_pages_with(
     .collect()
 }
 
-/// ページ1枚分の parts を構築する
 fn build_page_part(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<PagePart> {
     let contents = decode_contents(bytes, xref, &p.contents)?;
     let parts = extract_parts(&contents, &p.resources, p.view, ContentCtx {
@@ -169,7 +168,6 @@ fn build_page_part(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<Page
     })
 }
 
-/// ページ1枚分の座標付き文字を構築する
 fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<TextPage> {
     let contents = decode_contents(bytes, xref, &p.contents)?;
     let text = extract_text(
@@ -190,7 +188,7 @@ fn build_text_page(p: pages::PageInfo, bytes: &[u8], xref: &XRef) -> Result<Text
     })
 }
 
-/// PDF バイト列からページ単位の parts と座標付き文字を 1 パスで構築する
+/// parts と座標付き文字の 1 パス構築
 ///
 /// 3 番目の戻り値は文書処理中に蓄積した警告
 pub(crate) fn read_pages_and_text(
@@ -221,7 +219,6 @@ pub(crate) fn read_pages_and_text(
     Ok((parts, texts, warnings))
 }
 
-/// ページ1枚分の parts と座標付き文字を 1 パスで構築する
 fn build_page_part_and_text(
     p: pages::PageInfo,
     bytes: &[u8],
@@ -295,7 +292,7 @@ pub struct PartsView {
     pub graphics: Vec<GraphicPart>,
 }
 
-/// リーダーの全情報をバイト列から1パスで抽出する
+/// 全情報の 1 パス抽出
 pub fn read_pages_full(bytes: &[u8], password: Option<&str>) -> Result<ReaderDump> {
     read_pages_full_with(bytes, password, &ReaderSettings::default())
 }

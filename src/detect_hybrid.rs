@@ -92,7 +92,7 @@ where
     tables
 }
 
-/// 行間ギャップで文字塊を縦の領域に分ける
+/// 行間ギャップによる縦の領域分割
 fn split_regions(segs: &[Seg], scale: Option<f64>) -> Vec<Vec<usize>> {
     let med_h = scale.unwrap_or_else(|| median(segs.iter().map(|g| g.bbox.height()).collect()));
     let row_tol = (med_h * 0.5).max(0.5);
@@ -133,7 +133,7 @@ fn split_regions(segs: &[Seg], scale: Option<f64>) -> Vec<Vec<usize>> {
 }
 
 /// 1領域からの表検出
-/// 片軸のみに区切り線が揃う場合だけ表を組み立てる
+/// 成立条件は片軸のみに区切り線が揃うこと
 fn detect_region<F, G>(
     segs: &[Seg],
     members: &[usize],
@@ -180,7 +180,7 @@ where
         .map(|e| e.x0)
         .collect();
 
-    // 罫線本数の最小ゲートは 1 以上として扱う
+    // 罫線本数の最小ゲートは 1 以上
     let min_lines = s.min_lines.max(1);
     let (row_bounds, col_bounds) = if hs.len() >= min_lines && vs.len() < min_lines {
         let cols = band_bounds(segs, members, bbox.x0, bbox.x1, s);
@@ -270,7 +270,6 @@ where
     })
 }
 
-/// 区切り座標列を非減少に補正する
 fn monotonize(bounds: &mut [f64]) {
     for i in 1..bounds.len() {
         if bounds[i] < bounds[i - 1] {
@@ -279,8 +278,7 @@ fn monotonize(bounds: &mut [f64]) {
     }
 }
 
-/// 罫線位置から区切り座標列を作る
-/// 文字が最外の線からはみ出す場合は端に仮想の区切りを足す
+/// 文字が最外の線からはみ出す場合は端に仮想の区切りを追加
 fn line_bounds(mut pos: Vec<f64>, lo: f64, hi: f64) -> Vec<f64> {
     pos.sort_by(|a, b| a.total_cmp(b));
     pos.dedup_by(|a, b| (*a - *b).abs() < 1.0);
@@ -295,8 +293,7 @@ fn line_bounds(mut pos: Vec<f64>, lo: f64, hi: f64) -> Vec<f64> {
     bounds
 }
 
-/// 文字塊の列帯から区切り座標列を作る
-/// 列帯は他の文字塊と整列している塊だけから作り、揃わない塊は境界の根拠にしない
+/// 列帯の根拠は他の文字塊と整列している塊のみ
 fn band_bounds(segs: &[Seg], members: &[usize], lo: f64, hi: f64, s: &HybridSettings) -> Vec<f64> {
     let lefts: Vec<f64> = members.iter().map(|&i| segs[i].bbox.x0).collect();
     let rights: Vec<f64> = members.iter().map(|&i| segs[i].bbox.x1).collect();
@@ -321,8 +318,8 @@ fn band_bounds(segs: &[Seg], members: &[usize], lo: f64, hi: f64, s: &HybridSett
 
 /// 罫線間の行帯を文字行で細分した区切り座標列
 ///
-/// 複列クラスタを論理行の核とし 単列クラスタは最近傍の核へ帰属させる
-/// ラベル折返し断片が直前行へ誤結合するのを避ける
+/// 論理行の核は複列クラスタ、単列クラスタは最近傍の核へ帰属
+/// ラベル折返し断片の直前行への誤結合の防止
 fn refine_row_bounds(
     segs: &[Seg],
     members: &[usize],
@@ -415,7 +412,6 @@ fn refine_row_bounds(
     out
 }
 
-/// 文字塊の行クラスタから区切り座標列を作る
 fn row_cluster_bounds(
     segs: &[Seg],
     members: &[usize],

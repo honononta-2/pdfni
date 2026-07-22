@@ -107,19 +107,120 @@ impl TextBlockRole {
     }
 }
 
-/// 文書単位でヘッダ・フッタの役割を付ける
+/// 文字・フォント情報を除いた文書内容ビュー
+#[derive(Debug, Clone, Serialize)]
+pub struct DocContent {
+    pub pages: Vec<ContentPage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// 1ページ分の内容ビュー
+#[derive(Debug, Clone, Serialize)]
+pub struct ContentPage {
+    /// pages 配列内の 0 始まり位置
+    pub index: usize,
+    pub width: f64,
+    pub height: f64,
+    pub blocks: Vec<ContentBlock>,
+}
+
+/// 内容ビューの1ブロック
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum ContentBlock {
+    #[serde(rename = "table")]
+    Table(Table),
+    #[serde(rename = "text")]
+    Text(ContentText),
+}
+
+/// 内容ビューの本文ブロック
+#[derive(Debug, Clone, Serialize)]
+pub struct ContentText {
+    #[serde(flatten)]
+    pub kind: TextBlockKind,
+    #[serde(default, skip_serializing_if = "TextBlockRole::is_body")]
+    pub role: TextBlockRole,
+    pub text: String,
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
+    pub lines: Vec<ContentLine>,
+}
+
+/// 内容ビューの1行
+#[derive(Debug, Clone, Serialize)]
+pub struct ContentLine {
+    pub text: String,
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
+}
+
+impl DocDoc {
+    pub fn into_content(self) -> DocContent {
+        let pages = self
+            .pages
+            .into_iter()
+            .map(|page| ContentPage {
+                index: page.index,
+                width: page.width,
+                height: page.height,
+                blocks: page.blocks.into_iter().map(block_to_content).collect(),
+            })
+            .collect();
+        DocContent {
+            pages,
+            warnings: self.warnings,
+        }
+    }
+}
+
+fn block_to_content(block: DocBlock) -> ContentBlock {
+    match block {
+        DocBlock::Table(table) => ContentBlock::Table(table),
+        DocBlock::Text(tb) => {
+            let lines = tb
+                .lines
+                .iter()
+                .map(|line| ContentLine {
+                    text: join_line_words(line),
+                    left: line.left,
+                    right: line.right,
+                    top: line.top,
+                    bottom: line.bottom,
+                })
+                .collect();
+            ContentBlock::Text(ContentText {
+                kind: tb.kind,
+                role: tb.role,
+                text: tb.text,
+                left: tb.left,
+                right: tb.right,
+                top: tb.top,
+                bottom: tb.bottom,
+                lines,
+            })
+        }
+    }
+}
+
+/// 文書単位のヘッダ・フッタ役割付与
 pub fn assign_header_footer(doc: &mut DocDoc) {
     furniture::assign_header_footer(doc);
 }
 
-/// 文書単位でリストを検出する
+/// 文書単位のリスト検出
 pub fn assign_lists(doc: &mut DocDoc) {
     for page in &mut doc.pages {
         assign_lists_page(page);
     }
 }
 
-/// 文書単位で見出しを推定する
+/// 文書単位の見出し推定
 pub fn assign_headings(doc: &mut DocDoc) {
     let Some(body_fs) = body_rep_font_size(doc) else {
         return;
@@ -156,7 +257,6 @@ pub fn assign_headings(doc: &mut DocDoc) {
     }
 }
 
-/// 文書モデルを Markdown 文字列へ直列化する
 pub(crate) fn document_to_markdown(doc: &DocDoc, escape_markdown: bool) -> String {
     let mut parts = Vec::new();
     for page in &doc.pages {
@@ -169,7 +269,7 @@ pub(crate) fn document_to_markdown(doc: &DocDoc, escape_markdown: bool) -> Strin
     parts.join("\n\n")
 }
 
-/// 1ブロックを Markdown 断片へ変換する。空表・空白のみ本文は None
+/// 空表・空白のみ本文は None
 fn block_to_markdown(block: &DocBlock, page: &DocPage, escape_markdown: bool) -> Option<String> {
     match block {
         DocBlock::Text(tb) => {
@@ -212,7 +312,7 @@ fn block_to_markdown(block: &DocBlock, page: &DocPage, escape_markdown: bool) ->
 /// 段落内の行を縦に保つハード改行
 const HARD_BREAK: &str = "  \n";
 
-/// 見出し・段落本文を行ごとに Markdown 化する（書体があればインライン強調）
+/// 行ごとの Markdown 化。書体があればインライン強調
 /// 行情報が使えない場合は結合済み text の1要素
 fn format_text_block_lines(tb: &TextBlock, page: &DocPage, escape_markdown: bool) -> Vec<String> {
     if join_paragraph_text(&tb.lines) == tb.text {
@@ -237,7 +337,6 @@ fn format_md_body(text: &str, escape_markdown: bool) -> String {
     }
 }
 
-/// リストの Markdown 直列化
 fn list_to_markdown(
     tb: &TextBlock,
     page: &DocPage,
@@ -296,7 +395,7 @@ enum MdUnit {
     Gap(String),
 }
 
-/// lines から行ごとの書体付き Markdown を組み立てる。強調は行内で閉じる
+/// 行ごとの書体付き Markdown。強調は行内で完結
 fn styled_md_lines(
     lines: &[TextLine],
     fonts: &[TextFont],
@@ -318,7 +417,6 @@ fn styled_md_lines(
     Some(out)
 }
 
-/// lines から装飾なしの Markdown 行を組み立てる
 fn plain_md_lines(lines: &[TextLine], escape_markdown: bool) -> Vec<String> {
     let mut out = Vec::new();
     for line in lines {
@@ -395,7 +493,7 @@ fn md_style_of_font(fonts: &[TextFont], font_idx: u32) -> MdStyle {
     }
 }
 
-/// 同一書体の断片を結合し、間の挿入空白を区間へ取り込む
+/// 同一書体の断片の結合。間の挿入空白は区間へ取り込み
 fn coalesce_md_units(units: &[MdUnit]) -> Vec<(String, MdStyle)> {
     let mut runs: Vec<(String, MdStyle)> = Vec::new();
     let mut pending_gap = String::new();
@@ -451,7 +549,6 @@ fn coalesce_md_units(units: &[MdUnit]) -> Vec<(String, MdStyle)> {
     runs
 }
 
-/// 書体区間を Markdown 強調付き文字列へ直列化する
 fn render_md_runs(runs: &[(String, MdStyle)], escape_markdown: bool) -> String {
     let mut out = String::new();
     for (text, style) in runs {
@@ -464,7 +561,7 @@ fn render_md_run(text: &str, style: MdStyle, escape_markdown: bool) -> String {
     if style.is_normal() {
         return format_md_body(text, escape_markdown);
     }
-    // 区間端の空白は強調の外へ出す
+    // 区間端の空白は強調の外
     let lead = text.chars().take_while(|&c| c == ' ').count();
     let trail = text
         .chars()
@@ -524,7 +621,7 @@ fn list_item_body_groups(lines: &[TextLine]) -> Vec<(Option<u32>, Vec<TextLine>)
     entries
 }
 
-/// GFM パイプテーブルへ直列化する
+/// GFM パイプテーブルへの直列化
 fn table_to_markdown(table: &Table) -> Option<String> {
     if table.n_rows == 0 || table.n_cols == 0 {
         return None;
@@ -548,7 +645,6 @@ fn table_to_markdown(table: &Table) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// 表の1行をパイプ区切りで組み立てる
 fn format_table_row(row: &[Cell], n_cols: usize) -> String {
     let mut s = String::from("|");
     for i in 0..n_cols {
@@ -586,7 +682,7 @@ fn escape_text_block_text(text: &str) -> String {
             body.push(c);
         }
     }
-    // 先頭の連続 U+0020 直後のブロック構文文字を1文字だけエスケープする
+    // エスケープは先頭の連続 U+0020 直後のブロック構文文字1文字だけ
     let n_space = body.bytes().take_while(|&b| b == b' ').count();
     if let Some(first) = body[n_space..].chars().next() {
         if matches!(first, '#' | '*' | '-' | '+' | '>' | '|') {
@@ -600,7 +696,7 @@ fn escape_text_block_text(text: &str) -> String {
     body
 }
 
-/// 改行・タブ・C0 制御文字を U+0020 へ置換する
+/// 改行・タブ・C0 制御文字の U+0020 置換
 pub(crate) fn sanitize_md_text(text: &str) -> String {
     text.chars()
         .map(|c| if is_md_control_char(c) { ' ' } else { c })
@@ -612,7 +708,6 @@ fn is_md_control_char(c: char) -> bool {
     matches!(c, '\u{0000}'..='\u{001F}' | '\u{2028}' | '\u{2029}')
 }
 
-/// PDF バイト列から Markdown 文字列を1発で生成する
 pub fn extract_markdown_from_bytes(
     data: &[u8],
     password: Option<&str>,
@@ -632,7 +727,25 @@ pub fn extract_markdown_from_bytes_with_query(
     Ok(document_to_markdown(&doc, options.escape_markdown))
 }
 
-/// PDF バイト列から見出し推定済みの文書モデルを構築する
+pub fn extract_content_from_bytes(
+    data: &[u8],
+    password: Option<&str>,
+    options: &ExtractOptions,
+) -> Result<DocContent> {
+    extract_content_from_bytes_with_query(data, password, options, &ExtractQuery::default())
+}
+
+/// ページ・矩形で絞った内容ビュー構築
+pub fn extract_content_from_bytes_with_query(
+    data: &[u8],
+    password: Option<&str>,
+    options: &ExtractOptions,
+    query: &ExtractQuery,
+) -> Result<DocContent> {
+    Ok(extract_document_from_bytes_with_query(data, password, options, query)?.into_content())
+}
+
+/// 見出し推定済みの文書モデル
 pub fn extract_document_from_bytes(
     data: &[u8],
     password: Option<&str>,
@@ -731,12 +844,12 @@ pub(crate) fn block_rep_font_size(chars: &[TextChar], tb: &TextBlock) -> Option<
     median_f64(&mut vals)
 }
 
-/// ページの行と表から読み順付きブロック列を構築する
+/// 読み順付きブロック列の構築
 pub fn build_blocks(page: &TextPage, tables: &[Table]) -> Vec<DocBlock> {
     build_blocks_owned(page, tables.to_vec(), false)
 }
 
-/// 表を所有権ごと受け取りブロック列を構築する
+/// 表を所有権ごと受け取る版
 fn build_blocks_owned(page: &TextPage, tables: Vec<Table>, bidi: bool) -> Vec<DocBlock> {
     let valid_cells = collect_valid_cells(&tables);
     let raw_lines = build_text_lines_with(page, bidi);
@@ -791,7 +904,7 @@ fn is_target_body_line(line: &TextLine) -> bool {
     line.dir == "ltr" && line.rot == 0
 }
 
-/// 参加要素列を安定ID順で構築する
+/// 参加要素列（安定ID順）
 fn collect_participants(
     body_lines: &[TextLine],
     tables: &[Table],
@@ -851,7 +964,7 @@ fn collect_participants(
     (parts, word_part_ids, table_part_ids, other_part_ids)
 }
 
-/// X分割ありのページで葉領域ごとにブロック列を構築する
+/// X分割ありのページの葉領域ごとのブロック列構築
 fn build_blocks_with_regions(
     page: &TextPage,
     body_lines: Vec<TextLine>,
@@ -914,7 +1027,7 @@ fn build_blocks_with_regions(
     keyed.into_iter().map(|(_, _, _, _, b)| b).collect()
 }
 
-/// 対象本文行を葉ごとの行断片へ振り分ける
+/// 対象本文行の葉ごとの行断片への振り分け
 fn reconstitute_line_by_leaves(
     page: &TextPage,
     line: TextLine,
@@ -989,7 +1102,7 @@ fn reconstitute_line_by_leaves(
             .map(|i| free_ws_leaf[i].1)
     };
 
-    // 元の line.chars 順を保って各葉へ積む
+    // 各葉への積み方は元の line.chars 順
     let mut chars_by_leaf: Vec<Vec<u32>> = vec![Vec::new(); leaf_order.len()];
     let leaf_slot = |leaf: usize| -> Option<usize> { leaf_order.iter().position(|&l| l == leaf) };
     for &cidx in &line.chars {
@@ -1038,7 +1151,6 @@ fn reconstitute_line_by_leaves(
     out
 }
 
-/// 有効セルの bbox を集める
 fn collect_valid_cells(tables: &[Table]) -> Vec<BBox> {
     let mut out = Vec::new();
     for table in tables {
@@ -1055,7 +1167,7 @@ fn collect_valid_cells(tables: &[Table]) -> Vec<BBox> {
     out
 }
 
-/// 表所有グリフを除いた行を返す
+/// 表所有グリフを除いた行
 fn filter_table_owned_line(page: &TextPage, line: TextLine, cells: &[BBox]) -> Option<TextLine> {
     if cells.is_empty() {
         return Some(line);
@@ -1122,7 +1234,6 @@ fn glyph_table_owned(ch: &TextChar, cells: &[BBox]) -> bool {
     cells.iter().any(|c| c.contains_point(cx, cy))
 }
 
-/// 残存グリフから単語を再構成する
 fn remake_word(page: &TextPage, chars: &[u32]) -> Option<TextWord> {
     if chars.is_empty() {
         return None;
@@ -1193,13 +1304,12 @@ struct LineRep {
     stream_index: u32,
 }
 
-/// 本文行から段落ブロックを生成する
 fn build_text_blocks(page: &TextPage, lines: Vec<TextLine>) -> Vec<TextBlock> {
     if lines.is_empty() {
         return Vec::new();
     }
 
-    // 書字方向グループ (dir, rot) ごとに最小 chars インデックスを求める
+    // 書字方向グループ (dir, rot) ごとの最小 chars インデックス
     let mut group_keys: Vec<(String, i32)> = Vec::new();
     let mut group_lines: Vec<Vec<(LineRep, TextLine)>> = Vec::new();
     let mut group_min: Vec<u32> = Vec::new();
@@ -1288,7 +1398,6 @@ fn can_merge_line_reps(a: &LineRep, b: &LineRep) -> bool {
     ratio <= PARA_FS_RATIO_MAX
 }
 
-/// 行群から TextBlock を組み立てる
 fn make_text_block(lines: Vec<TextLine>) -> TextBlock {
     let dir = lines[0].dir.clone();
     let rot = lines[0].rot;
@@ -1317,7 +1426,6 @@ fn make_text_block(lines: Vec<TextLine>) -> TextBlock {
     }
 }
 
-/// 段落内の行を結合して本文文字列を作る
 fn join_paragraph_text(lines: &[TextLine]) -> String {
     if lines.is_empty() {
         return String::new();
@@ -1371,7 +1479,6 @@ fn join_paragraph_text(lines: &[TextLine]) -> String {
     out
 }
 
-/// 行内単語を空白で連結する
 fn join_line_words(line: &TextLine) -> String {
     let mut s = String::new();
     for (i, w) in line.words.iter().enumerate() {
@@ -1524,7 +1631,7 @@ fn detect_lists_in_run(run: Vec<TextBlock>, chars: &[TextChar]) -> Vec<DocBlock>
         } else {
             let bi = origin[idx];
             if block_untouched[bi] {
-                let block = run_opt[bi].take().expect("無傷ブロックは未取得");
+                let block = run_opt[bi].take().expect("intact block should be untaken");
                 let block_len = block.lines.len();
                 out.push(DocBlock::Text(block));
                 idx += block_len;
@@ -1582,7 +1689,6 @@ fn is_bullet_marker_word(text: &str) -> bool {
     matches!((chars.next(), chars.next()), (Some(c), None) if is_bullet_glyph(c))
 }
 
-/// 番号マーカー単語の解析
 fn parse_ordered_marker_word(text: &str) -> Option<(OrderedMarkerStyle, u32)> {
     let b = text.as_bytes();
     if b.len() < 2 {
@@ -1620,7 +1726,6 @@ fn is_list_marker_word(text: &str) -> bool {
     is_bullet_marker_word(text) || parse_ordered_marker_word(text).is_some()
 }
 
-/// 箇条記号か
 fn is_bullet_glyph(c: char) -> bool {
     matches!(
         c,
@@ -1642,7 +1747,6 @@ fn list_lefts_aligned(
     (left_a - left_b).abs() <= tol
 }
 
-/// リスト字下げの許容幅
 fn list_indent_tol(font_size: f64) -> f64 {
     let scaled = if font_size.is_finite() && font_size > 0.0 {
         font_size * LIST_INDENT_FACTOR
@@ -1652,7 +1756,6 @@ fn list_indent_tol(font_size: f64) -> f64 {
     LIST_INDENT_MIN_PT.max(scaled)
 }
 
-/// ぶら下げ継続行か
 fn is_hang_continuation(
     chars: &[TextChar],
     prev: &TextLine,
@@ -1682,7 +1785,6 @@ fn is_hang_continuation(
     gap <= mfs.max(nfs) * PARA_LEADING_FACTOR
 }
 
-/// 項目行群から List ブロックを組み立てる
 fn make_list_block(items: Vec<Vec<TextLine>>, ordered: bool) -> TextBlock {
     let mut all_lines: Vec<TextLine> = Vec::new();
     let mut item_texts: Vec<String> = Vec::new();
@@ -1891,7 +1993,6 @@ fn median_f64(values: &mut [f64]) -> Option<f64> {
     }
 }
 
-/// ラテン文字か
 fn is_latin_letter(c: char) -> bool {
     matches!(c,
         'A'..='Z'
@@ -1905,7 +2006,6 @@ fn is_latin_letter(c: char) -> bool {
     )
 }
 
-/// CJK 文字種か
 fn is_cjk(c: char) -> bool {
     matches!(c,
         // Hangul Jamo
@@ -2578,6 +2678,36 @@ mod tests {
         let json = serde_json::to_string(&DocBlock::Text(tb)).unwrap();
         assert!(json.contains(r#""kind":"list""#));
         assert!(json.contains(r#""ordered":false"#));
+    }
+
+    #[test]
+    fn content_view_drops_chars_and_fonts() {
+        let fs = 10.0;
+        let p = page(vec![ch("A", 0.0, 100.0, 5.0, 0.0, fs)]);
+        let blocks = build_blocks(&p, &[]);
+        let doc = DocDoc {
+            pages: vec![DocPage {
+                index: 0,
+                width: p.width,
+                height: p.height,
+                fonts: p.fonts.clone(),
+                chars: p.chars.clone(),
+                blocks,
+            }],
+            warnings: vec!["w".to_string()],
+        };
+        let content = doc.into_content();
+        let json = serde_json::to_string(&content).unwrap();
+        assert!(!json.contains(r#""chars""#));
+        assert!(!json.contains(r#""fonts""#));
+        assert!(json.contains(r#""type":"text""#));
+        let ContentBlock::Text(tb) = &content.pages[0].blocks[0] else {
+            panic!("expected text block");
+        };
+        assert_eq!(tb.text, "A");
+        assert_eq!(tb.lines.len(), 1);
+        assert_eq!(tb.lines[0].text, "A");
+        assert_eq!(content.warnings, vec!["w".to_string()]);
     }
 
     /// リスト検出テスト用の行組み立て

@@ -38,8 +38,8 @@ pub(crate) struct Participant {
     pub kind: ParticipantKind,
 }
 
-/// ページを領域分割し、各参加要素の葉領域番号（読み順）を返す
-/// X分割が1つも発生しない場合は None（呼び出し側は従来経路をそのまま使う）
+/// 領域分割の結果は各参加要素の葉領域番号（読み順）
+/// X分割が1つも発生しない場合は None
 pub(crate) fn split_regions(
     page_width: f64,
     page_height: f64,
@@ -145,7 +145,7 @@ fn kind_ord(k: ParticipantKind) -> u8 {
     }
 }
 
-/// 軸へ射影した閉区間を整列・併合する
+/// 軸へ射影した閉区間の整列・併合
 fn project_intervals(parts: &[Participant], ids: &[usize], axis_x: bool) -> Vec<Interval> {
     let mut segs: Vec<(f64, f64, u8, usize)> = Vec::new();
     for &id in ids {
@@ -500,7 +500,7 @@ fn try_y_split(parts: &[Participant], ids: &[usize]) -> Option<Valley> {
             }
             event_idx += 1;
         }
-        // 帯幅が許容以下なら現行の overlap 判定と等価に F を空扱い
+        // 帯幅が許容以下なら F を空扱い（overlap 判定と等価）
         let f: Vec<usize> = if b - a > FW_CROSS_TOLERANCE {
             ids.iter().copied().filter(|id| active.contains(id)).collect()
         } else {

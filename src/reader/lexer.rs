@@ -1,10 +1,10 @@
 //! PDF字句解析（トークナイザ）
 //!
-//! 準拠: pdf.js `parser.js` の Lexer（specialChars 表と救済挙動を含む）
+//! 参考: pdf.js `parser.js` の Lexer
 
 use std::borrow::Cow;
 
-/// 空白=1、区切り=2、通常=0（256要素、pdf.js specialChars 相当）
+/// 空白=1、区切り=2、通常=0（256要素）
 static SPECIAL_CHARS: [u8; 256] = {
     let mut t = [0u8; 256];
     // 空白: NUL TAB LF FF CR SP
@@ -187,7 +187,6 @@ impl<'a> Lexer<'a> {
         Self::new_at(data, 0)
     }
 
-    /// `start` 位置から字句解析を始める
     pub fn new_at(data: &'a [u8], start: usize) -> Self {
         let start = start.min(data.len());
         let mut lex = Self {
@@ -208,14 +207,14 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// 指定位置へシークし、その位置の文字を current に載せる
+    /// シークと current の載せ直し
     pub fn set_pos(&mut self, pos: usize) {
         self.pos = pos.min(self.data.len());
         self.current = None;
         self.next_char();
     }
 
-    /// stream キーワード直後の改行（CRLF / LF）まで進める
+    /// stream キーワード直後の改行（CRLF / LF）の読み飛ばし
     pub fn skip_to_next_line(&mut self) {
         let mut ch = self.current;
         while let Some(b) = ch {
@@ -244,9 +243,7 @@ impl<'a> Lexer<'a> {
         self.data.get(self.pos).copied()
     }
 
-    /// 次のトークンを返す
     pub fn next_token(&mut self) -> Token {
-        // 空白とコメントを読み飛ばす
         let mut comment = false;
         let mut ch = self.current;
         let b = loop {
@@ -258,7 +255,6 @@ impl<'a> Lexer<'a> {
                     comment = false;
                 }
             } else if b == 0x25 {
-                // '%'
                 comment = true;
             } else if SPECIAL_CHARS[b as usize] != 1 {
                 break b;
@@ -279,7 +275,6 @@ impl<'a> Lexer<'a> {
                 Token::ArrayEnd
             }
             0x3c => {
-                // '<'
                 if self.next_char() == Some(0x3c) {
                     self.next_char();
                     Token::DictStart
@@ -288,7 +283,6 @@ impl<'a> Lexer<'a> {
                 }
             }
             0x3e => {
-                // '>'
                 if self.next_char() == Some(0x3e) {
                     self.next_char();
                     Token::DictEnd
@@ -305,7 +299,7 @@ impl<'a> Lexer<'a> {
                 Token::BraceEnd
             }
             0x29 => {
-                // 不正な単独 ')'。pdf.js は FormatError だが、ループ固着を避けるため消費する
+                // 不正な単独 ')' はループ固着を避けるため消費
                 self.next_char();
                 Token::Cmd(Cmd::Op(Op::CloseParen))
             }
@@ -313,13 +307,12 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// 数値の読み取り。整数は i64 で正確に累積し、小数点かオーバーフローで f64 へ移行する
+    /// 整数は i64 で正確に累積、小数点かオーバーフローで f64 へ移行
     fn get_number(&mut self) -> Token {
         let mut ch = self.current;
         let mut negative = false;
 
         if ch == Some(0x2d) {
-            // '-'
             negative = true;
             ch = self.next_char();
             if ch == Some(0x2d) {
@@ -327,7 +320,6 @@ impl<'a> Lexer<'a> {
                 ch = self.next_char();
             }
         } else if ch == Some(0x2b) {
-            // '+'
             ch = self.next_char();
         }
 
@@ -348,7 +340,7 @@ impl<'a> Lexer<'a> {
 
         let mut int_acc = i64::from(first - 0x30);
         let mut float_acc = 0.0f64;
-        // 0 以外なら実数。小数点後の桁位置を表す分母
+        // divide_by は小数点後の桁位置を表す分母
         let mut divide_by = 0.0f64;
         let mut is_float = false;
         if leading_dot {
@@ -408,7 +400,7 @@ impl<'a> Lexer<'a> {
             v = -v;
         }
         if divide_by != 0.0 {
-            // 極端に長い小数で Inf/NaN になった場合は 0 に落とす
+            // 極端に長い小数で Inf/NaN になった場合は 0
             Token::Real(if v.is_finite() { v } else { 0.0 })
         } else {
             // i64 を超えた整数は飽和して Int 化
@@ -421,17 +413,15 @@ impl<'a> Lexer<'a> {
         let mut buf = Vec::new();
         let mut ch = self.next_char();
 
-        // EOF は未終端でも読めた分を返す
+        // EOF は未終端でも読めた分まで
         while let Some(b) = ch {
             let mut char_buffered = false;
             match b {
                 0x28 => {
-                    // '('
                     num_paren += 1;
                     buf.push(b'(');
                 }
                 0x29 => {
-                    // ')'
                     num_paren -= 1;
                     if num_paren == 0 {
                         self.next_char();
@@ -440,7 +430,6 @@ impl<'a> Lexer<'a> {
                     buf.push(b')');
                 }
                 0x5c => {
-                    // '\\'
                     ch = self.next_char();
                     let Some(esc) = ch else { break };
                     match esc {
@@ -497,7 +486,7 @@ impl<'a> Lexer<'a> {
                 buf.push(b);
                 continue;
             }
-            // '#' 直後2桁の16進をバイトへ。崩れていれば文字どおりに扱う
+            // '#' 直後2桁の16進をバイトへ。崩れは文字どおり
             let ch1 = self.next_char();
             let Some(b1) = ch1.filter(|&b1| SPECIAL_CHARS[b1 as usize] == 0) else {
                 buf.push(b'#');
@@ -529,10 +518,9 @@ impl<'a> Lexer<'a> {
         let mut ch = self.current;
         let mut first_digit: Option<u8> = None;
 
-        // EOF は未終端でも読めた分を返す
+        // EOF は未終端でも読めた分まで
         while let Some(b) = ch {
             if b == 0x3e {
-                // '>'
                 self.next_char();
                 break;
             }
@@ -558,7 +546,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn get_command(&mut self, first: u8) -> Token {
-        // スタック上の固定長バッファ（上限128は従来の vec 打ち切りと同じ）
+        // スタック上の固定長バッファ（打ち切り上限 128）
         let mut buf = [0u8; 128];
         let mut len = 1usize;
         buf[0] = first;
@@ -577,8 +565,7 @@ impl<'a> Lexer<'a> {
             len += 1;
         }
 
-        // pdf.js は true/false/null をここでリテラル化するが、
-        // トークン種としては Cmd のまま返し Parser 側で解釈する
+        // true/false/null はリテラル化せず Cmd のまま Parser 側で解釈
         Token::Cmd(intern_cmd(&buf[..len]))
     }
 }
@@ -645,8 +632,8 @@ fn intern_name(s: &str) -> Cow<'static, str> {
     Cow::Owned(s.to_string())
 }
 
-/// 既知演算子バイト列を Op に対応付け、未知は Latin-1 所有文字列にする
-/// 集合は現状 `Token::Cmd` として返るキーワード・コンテンツ演算子を網羅する
+/// 既知演算子バイト列の Op 対応付け。未知は Latin-1 所有文字列
+/// 対象は現状 `Token::Cmd` として返るキーワード・コンテンツ演算子の全集合
 fn intern_cmd(bytes: &[u8]) -> Cmd {
     match bytes {
         // 構文・オブジェクト
@@ -715,7 +702,7 @@ fn intern_cmd(bytes: &[u8]) -> Cmd {
         // シェーディング・XObject
         b"sh" => Cmd::Op(Op::Sh),
         b"Do" => Cmd::Op(Op::Do),
-        // インライン画像以外の画像関連は BI/ID/EI に含む
+        // 画像関連の演算子は BI/ID/EI に包含
         // テキスト状態・配置・描画
         b"BT" => Cmd::Op(Op::BT),
         b"ET" => Cmd::Op(Op::ET),

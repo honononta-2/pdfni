@@ -1,6 +1,6 @@
 //! 相互参照表（xref）の解析とオブジェクト取得
 //!
-//! 準拠: pdf.js `xref.js` の readXRef / fetch / fetchCompressed（ストリーミング再開は省略）
+//! 参考: pdf.js `xref.js`
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -73,15 +73,13 @@ impl Resolver for XRefResolver<'_> {
 
 #[allow(dead_code)]
 impl XRef {
-    /// ファイル本体から xref を構築する（パスワードなし）
+    /// パスワードなし版
     pub fn parse(data: &[u8]) -> Result<XRef> {
         Self::parse_with_password(data, None)
     }
 
-    /// パスワード付きで xref を構築し、必要なら暗号ハンドラを初期化する
-    ///
-    /// 通常解析（startxref → テーブル/ストリーム）が失敗するか、
-    /// 解析後に /Root → /Pages が引けない場合は indexObjects へフォールバックする
+    /// 通常解析（startxref → テーブル/ストリーム）の失敗時や
+    /// /Root → /Pages が引けないときは indexObjects へフォールバック
     pub fn parse_with_password(data: &[u8], password: Option<&str>) -> Result<XRef> {
         Self::parse_with_limit(
             data,
@@ -91,7 +89,6 @@ impl XRef {
         )
     }
 
-    /// 復号出力・CMap エントリ数の上限を指定して xref を構築する
     pub fn parse_with_limit(
         data: &[u8],
         password: Option<&str>,
@@ -106,7 +103,6 @@ impl XRef {
         }
     }
 
-    /// 空の XRef 骨格を作る
     fn empty(header_offset: usize) -> XRef {
         XRef {
             header_offset,
@@ -158,7 +154,7 @@ impl XRef {
                     }
                 }
                 Err(_) => {
-                    // 壊れた世代は飛ばしてキューを続行する
+                    // 壊れた世代は飛ばしてキュー続行
                 }
             }
         }
@@ -171,7 +167,6 @@ impl XRef {
         Ok(xref)
     }
 
-    /// /Encrypt があれば暗号ハンドラを初期化する
     fn init_cipher(&mut self, data: &[u8], password: Option<&str>) -> Result<()> {
         if !self.trailer.has("Encrypt") {
             return Ok(());
@@ -258,7 +253,7 @@ impl XRef {
         matches!(pages_dict.get("Count"), Some(Object::Int(_)) | Some(Object::Real(_)))
     }
 
-    /// 壊れた PDF を線形走査して xref を再構築する（pdf.js indexObjects 相当）
+    /// 壊れた PDF の線形走査による xref 再構築
     fn index_objects(
         data: &[u8],
         password: Option<&str>,
@@ -280,18 +275,16 @@ impl XRef {
         let mut xref_stms: Vec<usize> = Vec::new();
         let mut position = 0usize;
         // find_bytes_from の走査は残ファイル全長に比例するため
-        // 前方に対象が無いと確認できた後は再探索を打ち切る
+        // 前方に対象が無いと確認できた後は再探索を打ち切り
         let mut trailer_absent = false;
         let mut startxref_absent = false;
 
         while position < body.len() {
             let ch = body[position];
-            // 空白
             if is_pdf_whitespace(ch) {
                 position += 1;
                 continue;
             }
-            // コメント
             if ch == b'%' {
                 position += 1;
                 while position < body.len() && body[position] != b'\n' && body[position] != b'\r' {
@@ -303,7 +296,6 @@ impl XRef {
             let token = read_scan_token(body, position);
 
             if token_is_keyword(token, b"xref") {
-                // trailer キーワードまで進めて位置を記録
                 let tpos = if trailer_absent {
                     None
                 } else {
@@ -353,10 +345,10 @@ impl XRef {
                     );
                 }
 
-                // 次の区切りまで進む（endobj 欠落にも耐える）
+                // 区切り探索は endobj 欠落耐性つき
                 let content_end = find_obj_content_end(body, content_start);
                 let content = &body[obj_start..content_end.min(body.len())];
-                // /XRef タグ（後続が英字でない）を xref ストリーム候補とする
+                // /XRef タグ（後続が英字でない）は xref ストリーム候補
                 if let Some(tag_off) = find_bytes_from(content, 0, b"/XRef") {
                     let after = tag_off + 5;
                     let next = content.get(after).copied().unwrap_or(0);
@@ -385,7 +377,6 @@ impl XRef {
             let _ = xref.read_xref_at(body, stm_off, &mut queue);
         }
 
-        // trailer 辞書をパース
         let mut trailer_dicts: Vec<Dict> = Vec::new();
         for &tpos in &trailers {
             if let Some(dict) = parse_trailer_at(body, tpos) {
@@ -393,8 +384,7 @@ impl XRef {
             }
         }
         // xref ストリーム辞書で /Root を持つものも候補に
-        // （read_xref_at が entries だけ更新し trailer は返すが、上では破棄している）
-        // 再走査: エントリのうちストリームで /Type /XRef のものを拾う
+        // 再走査対象はストリームで /Type /XRef のエントリ
         let nums: Vec<u32> = xref.entries.keys().copied().collect();
         for num in nums {
             let Ok(obj) = xref.fetch(Ref::new(num, 0), data) else {
@@ -428,7 +418,7 @@ impl XRef {
             chosen = fallback;
         }
 
-        // 全滅時は /Type /Catalog を持つオブジェクトを探す
+        // 全滅時は /Type /Catalog の探索へ
         if chosen.is_none() || !xref.trailer_pages_valid(data, chosen.as_ref().unwrap_or(&Dict::new()))
         {
             if let Some(catalog_trailer) = xref.find_catalog_trailer(data) {
@@ -440,7 +430,7 @@ impl XRef {
             Error::Reader("Invalid PDF structure: no usable trailer in recovery".into())
         })?;
 
-        // キャッシュを空にして暗号初期化（fetch 結果が混ざるのを防ぐ）
+        // 暗号初期化前にキャッシュを空へ（fetch 結果の混在防止）
         xref.cache.lock().unwrap().clear();
         xref.init_cipher(data, password)?;
 
@@ -453,7 +443,7 @@ impl XRef {
         Ok(xref)
     }
 
-    /// 全エントリから /Type /Catalog を探し trailer 相当を組み立てる
+    /// /Type /Catalog からの trailer 相当の組み立て
     fn find_catalog_trailer(&self, data: &[u8]) -> Option<Dict> {
         let mut nums: Vec<u32> = self.entries.keys().copied().collect();
         nums.sort_unstable();
@@ -488,7 +478,6 @@ impl XRef {
         self.recovered
     }
 
-    /// 保持している trailer 辞書
     pub fn trailer(&self) -> &Dict {
         &self.trailer
     }
@@ -498,24 +487,21 @@ impl XRef {
         self.cipher.as_ref()
     }
 
-    /// ストリーム復号のチェーン累積出力の上限バイト数
     pub(crate) fn decode_limit(&self) -> usize {
         self.decode_limit
     }
 
-    /// 埋め込み CMap の総エントリ数の上限
     pub(crate) fn cmap_entries_limit(&self) -> usize {
         self.cmap_entries_limit
     }
 
-    /// 警告を1件追加する
     pub(crate) fn push_warning(&self, msg: impl Into<String>) {
         if let Ok(mut w) = self.warnings.lock() {
             w.push(msg.into());
         }
     }
 
-    /// 蓄積した警告を取り出し、同じ内容の連続重複を除いて返す
+    /// 同じ内容の連続重複は除去
     pub(crate) fn take_warnings(&self) -> Vec<String> {
         let Ok(mut w) = self.warnings.lock() else {
             return Vec::new();
@@ -535,7 +521,7 @@ impl XRef {
         self.entries.get(&num)
     }
 
-    /// trailer の /Encrypt を辞書として取る（復号なし）
+    /// trailer の /Encrypt（復号なし）
     fn resolve_encrypt_dict(&self, data: &[u8]) -> Result<(Dict, Option<u32>)> {
         match self.trailer.get("Encrypt") {
             Some(Object::Dict(d)) => Ok((d.clone(), None)),
@@ -586,14 +572,12 @@ impl XRef {
         }
     }
 
-    /// オブジェクトを取得する（所有コピーが要る呼び出し側向け）
+    /// 所有コピーが要る呼び出し側向け
     pub fn fetch(&self, r: Ref, data: &[u8]) -> Result<Object> {
         Ok((*self.fetch_shared(r, data)?).clone())
     }
 
-    /// オブジェクトをキャッシュ共有のまま取得する
-    ///
-    /// Stream はバッファ上の範囲参照のためキャッシュせずその都度組み立てる
+    /// Stream はバッファ上の範囲参照のためキャッシュせずその都度組み立て
     pub fn fetch_shared(&self, r: Ref, data: &[u8]) -> Result<Arc<Object>> {
         let num = r.num;
         let generation = r.generation;
@@ -665,7 +649,7 @@ impl XRef {
         self.parse_after_obj_header(data, abs, r, &resolver)
     }
 
-    /// オフセット位置の `<num> <gen> obj` を検証し、本体を Parser で読む
+    /// `<num> <gen> obj` ヘッダ検証後の本体パース
     fn parse_after_obj_header(
         &self,
         data: &[u8],
@@ -757,7 +741,7 @@ impl XRef {
         let n = n as usize;
 
         let resolver = XRefResolver { xref: self, data };
-        // ObjStm 本文はストリームとして復号。中身のオブジェクトは再復号しない
+        // ObjStm 本文はストリームとして復号。中身は再復号なし
         let decoded =
             decode_stream(data, &stream, &resolver, self.cipher.as_ref(), self.decode_limit)?;
 
@@ -787,7 +771,7 @@ impl XRef {
             offsets.push(off as usize);
         }
 
-        // index と並びの食い違い: まず index、だめなら num 一致で探す
+        // index と並びの食い違いは index 優先、次に num 一致
         let mut chosen = if (index as usize) < nums.len() && nums[index as usize] == r.num {
             Some(index as usize)
         } else {
@@ -812,7 +796,7 @@ impl XRef {
 
         // 同ストリーム内の非 Stream オブジェクトをキャッシュ
         if !matches!(obj, Object::Stream(_)) {
-            // 呼び出し側 fetch でもキャッシュするが、兄弟も埋める
+            // 兄弟オブジェクトの先回りキャッシュ
             for (j, &onum) in nums.iter().enumerate() {
                 if j == i {
                     continue;
@@ -836,7 +820,7 @@ impl XRef {
         Ok(obj)
     }
 
-    /// 指定位置の xref テーブルまたは xref ストリームを読む
+    /// xref テーブル・xref ストリーム両対応の読み取り
     fn read_xref_at(
         &mut self,
         body: &[u8],
@@ -1018,7 +1002,7 @@ impl XRef {
             Error::Reader("Invalid XRef entry fields length".into())
         })?;
 
-        // /Index 省略時は Size を全域として使うため u32 範囲に収める
+        // /Index 省略時は Size が全域のため u32 範囲に制限
         let size_i = dict_int(&stream.dict, "Size").unwrap_or(0).max(0);
         if size_i > i64::from(u32::MAX) {
             return Err(Error::Reader("Invalid XRef range fields".into()));
@@ -1047,7 +1031,7 @@ impl XRef {
             .checked_add(offset_w)
             .and_then(|v| v.checked_add(gen_w))
             .ok_or_else(|| Error::Reader("Invalid XRef entry fields length".into()))?;
-        // /W [0 0 0] はエントリ境界が取れず /Index 個数だけ空ループするため不正とする
+        // /W [0 0 0] はエントリ境界が取れず /Index 個数の空ループになるため不正
         if entry_width == 0 {
             return Err(Error::Reader("Invalid XRef entry fields length".into()));
         }
@@ -1100,7 +1084,7 @@ impl XRef {
 }
 
 impl Resolver for XRef {
-    /// キャッシュ済みのみ。未キャッシュは fetch が data を要する
+    /// キャッシュ済みのみ解決。未キャッシュは fetch（data が必要）
     ///
     /// 通常の Length 解決は `XRefResolver`（fetch 内部）経由。
     /// 外部から `dyn Resolver` として使う場合はキャッシュヒットのみ。
@@ -1114,7 +1098,7 @@ impl Resolver for XRef {
     }
 }
 
-/// trailer /ID[0] を取る
+/// trailer /ID[0]
 fn extract_file_id(trailer: &Dict) -> Vec<u8> {
     match trailer.get("ID") {
         Some(Object::Array(arr)) if !arr.is_empty() => match &arr[0] {
@@ -1186,14 +1170,14 @@ fn read_be(data: &[u8], offset: usize, width: usize) -> Result<u32> {
 
 // --- indexObjects 用スキャナ ---
 
-/// LF / CR / `<` 手前までのトークン（pdf.js readToken 相当）に対する読み出し窓の上限
+/// スキャナトークン（LF / CR / `<` 手前まで）の読み出し窓の上限
 ///
 /// 呼び出し先はキーワード（xref/trailer, 先頭 4〜7 バイト）と
-/// `<num> <gen> obj` ヘッダ（u32 最大 10 桁 + u16 最大 5 桁 + 空白 + "obj" ≒ 20 バイト）だけを見る
-/// 実装契約上、64 バイトあれば正当な識別に足りる
+/// `<num> <gen> obj` ヘッダ（u32 最大 10 桁 + u16 最大 5 桁 + 空白 + "obj" ≒ 20 バイト）が対象
+/// 実装契約上、正当な識別には 64 バイトで十分
 const MAX_SCAN_TOKEN_LEN: usize = 64;
 
-/// LF / CR / `<` 手前までのトークン（pdf.js readToken 相当。無制限だと壊れた入力で O(n²) になるため上限を入れる）
+/// LF / CR / `<` 手前までのトークン。上限は壊れた入力の O(n²) 防止
 fn read_scan_token(data: &[u8], offset: usize) -> &[u8] {
     let hard_end = offset
         .saturating_add(MAX_SCAN_TOKEN_LEN)
@@ -1226,7 +1210,6 @@ fn token_is_keyword(token: &[u8], keyword: &[u8]) -> bool {
     )
 }
 
-/// `<num> <gen> obj` トークンをパースする
 fn parse_obj_header_token(token: &[u8]) -> Option<(u32, u16, usize)> {
     let mut i = 0usize;
     if i >= token.len() || !token[i].is_ascii_digit() {
@@ -1281,7 +1264,6 @@ fn can_parse_obj_at(body: &[u8], content_start: usize) -> bool {
 fn find_obj_content_end(body: &[u8], start: usize) -> usize {
     let mut i = start;
     while i < body.len() {
-        // endobj
         if body[i..].starts_with(b"endobj") {
             return i + b"endobj".len();
         }
@@ -1337,9 +1319,7 @@ fn find_startxref_or_obj(body: &[u8], start: usize) -> Option<usize> {
     None
 }
 
-/// `trailer` キーワード位置から辞書を読む
 fn parse_trailer_at(body: &[u8], trailer_pos: usize) -> Option<Dict> {
-    // "trailer" を読み飛ばして辞書をパース
     let mut pos = trailer_pos;
     if body[pos..].starts_with(b"trailer") {
         pos += b"trailer".len();

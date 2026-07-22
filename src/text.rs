@@ -1,4 +1,4 @@
-//! 座標付き文字の公開型
+//! 座標付き文字の公開型とビュー構築
 
 use std::collections::HashMap;
 
@@ -60,7 +60,7 @@ pub struct TextChar {
     pub synthetic: bool,
 }
 
-/// pdf.js TextItem 相当のチャンク
+/// TextItem 互換のチャンク
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextItem {
     #[serde(rename = "str")]
@@ -97,14 +97,14 @@ pub struct TextWord {
     pub chars: Vec<u32>,
 }
 
-/// 中心点が矩形内にある文字だけ残す
+/// 残す基準はグリフ中心点
 pub fn retain_chars_in_region(page: &mut TextPage, region: &crate::query::Region) {
     page.chars.retain(|c| {
         region.contains_point((c.left + c.right) / 2.0, (c.top + c.bottom) / 2.0)
     });
 }
 
-// pdf.js evaluator の閾値（fontSize 比）
+// TextItem 分割閾値（fontSize 比）
 const TRACKING_SPACE_FACTOR: f64 = 0.102;
 const NOT_A_SPACE_FACTOR: f64 = 0.03;
 const NEGATIVE_SPACE_FACTOR: f64 = -0.2;
@@ -118,19 +118,18 @@ const LINE_BAND_SPAN_FACTOR: f64 = 0.7;
 /// 進行軸の行分割空隙（font_size 比）
 const LINE_PROGRESS_GAP_FACTOR: f64 = 2.0;
 
-/// TextPage から pdf.js 相当の TextItem 列を構築する
 pub fn build_text_items(page: &TextPage) -> Vec<TextItem> {
     build_text_items_with(page, false)
 }
 
-/// TextPage から TextItem 列を構築する（`bidi` で RTL 並べ替え）
+/// bidi = RTL 並べ替えの有効化フラグ
 pub fn build_text_items_with(page: &TextPage, bidi: bool) -> Vec<TextItem> {
     let mut items: Vec<TextItem> = Vec::new();
     let mut chunk: Option<ChunkState> = None;
     // 直前2文字（空白合成判定用）。初期値は空白
     let mut last_chars = [' ', ' '];
     let mut last_pos: usize = 0;
-    // 位置比較用の直前可視グリフ終端。flush 後も維持する
+    // 位置比較用の直前可視グリフ終端。flush 後も維持
     let mut prev_transform: Option<[f64; 6]> = None;
     let mut prev_vertical = false;
     let mut prev_font_size: f64 = 0.0;
@@ -150,7 +149,7 @@ pub fn build_text_items_with(page: &TextPage, bidi: bool) -> Vec<TextItem> {
             .unwrap_or(false);
         let is_ws = is_whitespace_str(&ch.text);
 
-        // 実 whitespace は str に入れず位置だけ進める
+        // 実 whitespace は str に入れず位置のみ前進
         if is_ws {
             save_last_char(&mut last_chars, &mut last_pos, ' ');
             // prev_transform は更新しない（次の非空白とのギャップに空白幅を含める）
@@ -191,7 +190,7 @@ pub fn build_text_items_with(page: &TextPage, bidi: bool) -> Vec<TextItem> {
                 let thresholds = Thresholds::from_font_size(font_size);
 
                 if vertical || prev_vertical {
-                    // 表示座標は y 下向き。pdf.js（y 上向き）の last-pos と符号を揃える
+                    // 表示座標は y 下向き、符号は y 上向き基準
                     let advance_y = pos_y - last_y;
                     let advance_x = pos_x - last_x;
                     let height_ref = chunk
@@ -354,14 +353,13 @@ pub fn build_text_items_with(page: &TextPage, bidi: bool) -> Vec<TextItem> {
             }
         }
 
-        // チャンクへグリフを追加
         let c = chunk.get_or_insert_with(|| ChunkState::new(ch, vertical));
         if save_last_char_non_ws(&mut last_chars, &mut last_pos, &ch.text) {
             c.str.push(' ');
         }
         c.str.push_str(&ch.text);
 
-        // pdf.js と同じく TJ 数値を除いた字送り幅を累積する
+        // 累積は TJ 数値を除いた字送り幅
         let glyph_advance = glyph_advance(ch, vertical);
         let adv = progress_component(glyph_advance, vertical, &ch.transform);
         if vertical {
@@ -370,7 +368,7 @@ pub fn build_text_items_with(page: &TextPage, bidi: bool) -> Vec<TextItem> {
             c.signed_dim += adv;
         }
 
-        // グリフ幅だけ進んだ位置を prev にする
+        // prev はグリフ幅だけ進んだ位置
         prev_transform = Some([
             ch.transform[0],
             ch.transform[1],
@@ -397,12 +395,11 @@ pub fn build_text_items_with(page: &TextPage, bidi: bool) -> Vec<TextItem> {
     items
 }
 
-/// TextPage から行・単語ビューを構築する
 pub fn build_text_lines(page: &TextPage) -> Vec<TextLine> {
     build_text_lines_with(page, false)
 }
 
-/// TextPage から行・単語ビューを構築する（`bidi` で RTL 並べ替え）
+/// bidi = RTL 並べ替えの有効化フラグ
 pub fn build_text_lines_with(page: &TextPage, bidi: bool) -> Vec<TextLine> {
     let mut group_order: Vec<(bool, i32)> = Vec::new();
     let mut group_indices: Vec<Vec<usize>> = Vec::new();
@@ -448,7 +445,6 @@ struct GlyphPos {
     is_ws: bool,
 }
 
-/// 書字方向グループから行を構築する
 fn lines_for_group(
     page: &TextPage,
     indices: &[usize],
@@ -560,7 +556,7 @@ fn lines_for_group(
     out
 }
 
-/// 帯クラスタを進行軸空隙で分割して行を出す
+/// 帯クラスタの進行軸空隙での行分割
 fn emit_cluster_lines(
     page: &TextPage,
     cluster: &mut Vec<GlyphPos>,
@@ -581,7 +577,6 @@ fn emit_cluster_lines(
     }
 }
 
-/// 進行軸の大きな bbox 間隙でクラスタを分割する
 fn split_cluster_by_progress(
     page: &TextPage,
     cluster: &mut [GlyphPos],
@@ -650,7 +645,6 @@ fn progress_bbox_extent(ch: &TextChar, vertical: bool, rot: i32) -> (f64, f64) {
     (lo, hi)
 }
 
-/// クラスタから行ビューを組み立てる
 fn line_from_cluster(
     page: &TextPage,
     cluster: &mut [GlyphPos],
@@ -726,7 +720,7 @@ fn progress_span(ch: &TextChar, vertical: bool) -> (f64, f64) {
 
 /// 行内の非空白を進行軸 key で並べた表
 ///
-/// 要素は (key = s0, s0, s1)。空白判定で共有し行あたり 1 回のみ構築する
+/// 空白判定で共有。構築は行あたり 1 回
 fn build_progress_solids(
     page: &TextPage,
     order: &[u32],
@@ -766,7 +760,6 @@ fn whitespace_between_touching_solids(
     }
 }
 
-/// 行内の単語を構築する
 fn words_for_line(
     page: &TextPage,
     order: &[u32],
@@ -783,7 +776,7 @@ fn words_for_line(
         let idx = idx_u32 as usize;
         let ch = &page.chars[idx];
         if is_whitespace_str(&ch.text) {
-            // 接触する非空白の間に載った空白は語境界にしない
+            // 接触する非空白の間に載った空白は語境界の対象外
             if whitespace_between_touching_solids(page, idx, &solids, vertical) {
                 continue;
             }
@@ -827,7 +820,6 @@ fn words_for_line(
     words
 }
 
-/// 単語ビューの組み立て
 fn make_word(page: &TextPage, chars: &[u32], bidi: bool) -> Option<TextWord> {
     if chars.is_empty() {
         return None;
@@ -890,7 +882,7 @@ fn progress_gap(
     }
 }
 
-/// 座標を -rot で正立へ揃える
+/// -rot 回転による正立化
 pub(crate) fn derotate_xy(x: f64, y: f64, rot: i32) -> (f64, f64) {
     match rot {
         90 => (-y, x),
@@ -1137,11 +1129,11 @@ fn progress_component(advance: [f64; 2], vertical: bool, transform: &[f64; 6]) -
     }
 }
 
-/// 字送り判定用の前進ベクトルを得る
+/// 字送り判定用の前進ベクトル
 ///
 /// 横書きは占有幅（bbox 射影。Tc 込み）と実前進（advance 射影。TJ 込み）の
-/// 小さい方を使う。詰め配置（負の TJ）と字間トラッキング（Tc のみ）を両立する。
-/// 縦書き・軸外は advance をそのまま使う
+/// 小さい方を採用し詰め配置（負の TJ）と字間トラッキング（Tc のみ）を両立
+/// 縦書き・軸外は advance のまま
 fn glyph_advance(ch: &TextChar, vertical: bool) -> [f64; 2] {
     if vertical {
         return ch.advance;
@@ -1169,7 +1161,7 @@ fn glyph_advance(ch: &TextChar, vertical: bool) -> [f64; 2] {
     .into_iter()
     .fold(f64::NEG_INFINITY, f64::max);
     let occ_len = (end - origin).max(0.0);
-    // 上付きなど advance≈0 で幅だけあるグリフは占有幅を使う
+    // 上付きなど advance≈0 で幅だけあるグリフは占有幅
     let adv_len = ch.advance[0] * ux + ch.advance[1] * uy;
     let length = if adv_len.is_finite() && adv_len > 1e-9 {
         occ_len.min(adv_len)
@@ -1179,7 +1171,7 @@ fn glyph_advance(ch: &TextChar, vertical: bool) -> [f64; 2] {
     [ux * length, uy * length]
 }
 
-/// pdf.js compareWithLastPosition の回転正規化
+/// 位置比較用の回転正規化
 fn derotate_positions(
     current: &[f64; 6],
     prev: &[f64; 6],

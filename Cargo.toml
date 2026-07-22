@@ -1,6 +1,6 @@
 [package]
 name = "pdfni"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Extract tables and Markdown from text-embedded PDFs, with a built-in pure-Rust PDF reader adapted from Mozilla pdf.js."
@@ -17,7 +17,7 @@ crate-type = ["lib", "cdylib"]
 [[bin]]
 name = "pdfni"
 path = "src/bin/main.rs"
-required-features = ["reader"]
+required-features = ["document"]
 
 [[example]]
 name = "reader_smoke"

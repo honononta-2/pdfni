@@ -15,7 +15,7 @@ pub struct PagePart {
     pub glyphs: Vec<GlyphPart>,
     pub edges: Vec<EdgePart>,
     /// リーダーが検出用に正規化したページ内容の回転角(0/90/180/270)
-    /// 非0のとき width/height と各座標は正規化後の値で 出力時に元へ戻す
+    /// 非0のとき width/height と各座標は正規化後の値（出力時に復元）
     #[serde(default)]
     pub norm_rotate: i32,
     /// 非罫線グラフィックの外接矩形(省略可)
@@ -31,13 +31,13 @@ pub struct GlyphPart {
     pub right: f64,
     pub top: f64,
     pub bottom: f64,
-    /// デバイス座標のフォントサイズ。無い場合は bbox 高さから推定する従来動作
+    /// デバイス座標のフォントサイズ。無い場合は bbox 高さから推定
     #[serde(default)]
     pub font_size: Option<f64>,
-    /// 回転していない横書きグリフか。false は表の材料から除外される
+    /// 回転していない横書きグリフか。false は表の材料の対象外
     #[serde(default = "upright_default")]
     pub upright: bool,
-    /// 軸平行な回転角(0/90/180/270)。軸外の回転は0のまま upright=false で除外される
+    /// 軸平行な回転角(0/90/180/270)。軸外は 0 のまま upright=false で対象外
     #[serde(default)]
     pub rot: i32,
 }
@@ -167,12 +167,10 @@ fn is_cjk(c: char) -> bool {
     )
 }
 
-/// 行内の水平な空白か
 fn is_inline_space(c: char) -> bool {
     c == ' ' || c == '\u{3000}' || c == '\t'
 }
 
-/// CJK文字どうしの間の空白を除く
 fn strip_cjk_spaces(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::new();
@@ -196,7 +194,7 @@ fn strip_cjk_spaces(s: &str) -> String {
 
 /// センターY昇順の文字索引
 ///
-/// セル充当の文字走査をページ全文字からY範囲内へ絞る
+/// セル充当の文字走査の絞り込み用
 struct CharIndex {
     by_cy: Vec<(f64, u32)>,
 }
@@ -212,7 +210,7 @@ impl CharIndex {
         Self { by_cy }
     }
 
-    /// bb にセンターが入る文字の元indexを昇順で返す
+    /// bb にセンターが入る文字の元index（昇順）
     fn in_box(&self, chars: &[Glyph], bb: &BBox) -> Vec<usize> {
         let lo = self.by_cy.partition_point(|&(cy, _)| cy < bb.top);
         let hi = self.by_cy.partition_point(|&(cy, _)| cy < bb.bottom);
@@ -226,10 +224,9 @@ impl CharIndex {
     }
 }
 
-/// x ソート済み行で、各空白位置が直前・直後の非空白の間に載っているかを一括判定する
+/// 各空白が直前・直後の非空白の間に載っているかの一括判定
 ///
-/// 非空白位置は常に false。空白位置は現行 ws_between_touching_solids_x と同一の
-/// 「直前・直後の最近傍非空白」比較を返す
+/// 非空白位置は常に false。基準は最近傍非空白との接触
 fn touching_ws_flags(line: &[(usize, &Glyph)]) -> Vec<bool> {
     let n = line.len();
     let mut prev_end: Vec<Option<f64>> = vec![None; n];
@@ -265,7 +262,7 @@ fn touching_ws_flags(line: &[(usize, &Glyph)]) -> Vec<bool> {
         .collect()
 }
 
-/// 行グリフを x 順に連結（接触する非空白の間の空白は除く）
+/// x 順の連結。接触する非空白の間の空白は対象外
 fn join_line_glyphs(line: &[(usize, &Glyph)]) -> String {
     let intrusive = touching_ws_flags(line);
     let mut s = String::new();
@@ -278,7 +275,6 @@ fn join_line_glyphs(line: &[(usize, &Glyph)]) -> String {
     s
 }
 
-/// セル内テキストの組み立て
 fn cell_text(chars: &[Glyph], index: &CharIndex, cell: &BBox, bidi: bool) -> String {
     let mut hits: Vec<(usize, &Glyph)> = index
         .in_box(chars, cell)
@@ -343,7 +339,6 @@ fn cell_text(chars: &[Glyph], index: &CharIndex, cell: &BBox, bidi: bool) -> Str
     strip_cjk_spaces(&out.join("\n"))
 }
 
-/// リーダーに使われる文字か
 fn is_leader_char(c: char) -> bool {
     matches!(c, '.' | '·' | '․' | '‥' | '…')
 }
@@ -353,7 +348,6 @@ fn is_dash_char(c: char) -> bool {
     matches!(c, '-' | '‐' | '–' | '—' | '―' | '─' | '━' | '_')
 }
 
-/// 通貨記号か
 fn is_currency_char(c: char) -> bool {
     matches!(c, '$' | '¢' | '£' | '¥' | '€' | '₩' | '₹' | '₽' | '＄' | '￥')
 }
@@ -365,7 +359,7 @@ fn typed_token(s: &str) -> bool {
 
 /// 行内でリーダー runに属する位置
 ///
-/// 同種文字が間隙 seg_gap 以内で4個以上並ぶ列をリーダーとみなす
+/// リーダーは同種文字が間隙 seg_gap 以内で4個以上並ぶ列
 fn leader_run_flags(line: &[usize], chars: &[Glyph], seg_gap: f64) -> Vec<bool> {
     const MIN_RUN: usize = 4;
     let mut flags = vec![false; line.len()];
@@ -400,7 +394,6 @@ fn leader_run_flags(line: &[usize], chars: &[Glyph], seg_gap: f64) -> Vec<bool> 
     flags
 }
 
-/// リーダー run直前のセグに隣接印を付ける
 fn mark_segs_before_leader(
     line_segs: &mut [Seg],
     line: &[usize],
@@ -427,7 +420,7 @@ fn mark_segs_before_leader(
     }
 }
 
-/// 通貨記号のみのセグを右隣の数値セグへ結合する
+/// 結合先は右隣の数値セグのみ
 fn merge_currency_segs(line_segs: &mut Vec<Seg>, seg_gap: f64) {
     let mut k = 0;
     while k + 1 < line_segs.len() {
@@ -454,7 +447,6 @@ fn merge_currency_segs(line_segs: &mut Vec<Seg>, seg_gap: f64) {
     }
 }
 
-/// 文字を行内の塊に切り分ける
 fn build_segments(chars: &[Glyph], scale: Option<f64>) -> Vec<Seg> {
     let solid: Vec<usize> = (0..chars.len())
         .filter(|&i| !chars[i].ch.is_whitespace())
@@ -538,7 +530,7 @@ fn build_segments(chars: &[Glyph], scale: Option<f64>) -> Vec<Seg> {
                 after_leader = prev_was_leader;
             }
             if g.ch.is_whitespace() {
-                // 接触する非空白の間の空白は文字にしない
+                // 接触する非空白の間の空白は文字の対象外
                 if !intrusive[pos] && bb.is_some() {
                     text.push(g.ch);
                 }
@@ -639,10 +631,8 @@ fn aligned_col_count(a: &[&Seg], b: &[&Seg], tol: f64) -> usize {
     ids.iter().copied().max().unwrap_or(0) + 1
 }
 
-/// 数値主体の行か
-///
-/// 数字を含みアルファベットを含まない行に加え 科学記法のe/Eだけは字として許す
-/// 記号（% 桁区切り 括弧 通貨等）は従来通り不問
+/// 数字を含みアルファベットを含まない行。科学記法の e/E は字として許容
+/// 記号（% 桁区切り 括弧 通貨等）は不問
 fn numeric_typed_line(l: &[&Glyph]) -> bool {
     l.iter().any(|g| g.ch.is_ascii_digit())
         && l.iter()
@@ -735,8 +725,8 @@ fn row_split_boundaries(
         bot[rid] = bot[rid].max(marks[k].bot);
         typed_any[rid] |= marks[k].typed_evidence;
     }
-    // 両側とも複列かつ下側に数値型の裏づけがあるときだけ切る
-    // 片側だけの複列はラベル折返し＋数値の中間配置と区別できない
+    // 分割は両側とも複列かつ下側に数値型の裏づけがあるときのみ
+    // 片側だけの複列はラベル折返し＋数値の中間配置と区別不能
     let multi = |i: usize| cols[i].len() >= 2;
     let splits = |i: usize| multi(i) && typed_any[i];
 
@@ -751,10 +741,8 @@ fn row_split_boundaries(
     out
 }
 
-/// セル内の空白がx境界での分割を許すか
-///
-/// 境界をまたぐグリフが無く 境界を含む空白が字高スケール比で十分広いときだけ許す
-/// 結合セルの跨ぎテキストは境界がグリフに当たるため自然に保護される
+/// 許可条件は境界をまたぐグリフが無く 境界を含む空白が字高スケール比で十分広いこと
+/// 結合セルの跨ぎテキストは境界がグリフに当たるため自然に保護
 fn col_split_allowed(gs: &[&Glyph], x: f64, gap_min: f64) -> bool {
     let mut left = f64::NEG_INFINITY;
     let mut right = f64::INFINITY;
@@ -768,7 +756,7 @@ fn col_split_allowed(gs: &[&Glyph], x: f64, gap_min: f64) -> bool {
     left <= x + 0.5 && right >= x - 0.5 && right - left >= gap_min
 }
 
-/// 疎罫線で複数列にまたがるセルを格子の列軸で細分する
+/// 疎罫線で複数列にまたがるセルの列軸細分
 fn refine_lattice_cols(
     t: &mut Table,
     chars: &[Glyph],
@@ -779,7 +767,7 @@ fn refine_lattice_cols(
     if t.n_cols < 2 {
         return;
     }
-    // 列軸のx座標。非退化セルを持たない列は境界不明として扱う
+    // 列軸のx座標。非退化セルを持たない列は境界不明
     let mut xs: Vec<Option<f64>> = vec![None; t.n_cols];
     for row in &t.data {
         for (j, cell) in row.iter().enumerate() {
@@ -843,7 +831,7 @@ fn refine_lattice_cols(
     }
 }
 
-/// 疎罫線の罫線行内をテキスト行で細分する
+/// 疎罫線の罫線行内のテキスト行細分
 fn refine_lattice_rows(
     t: &mut Table,
     chars: &[Glyph],
@@ -911,7 +899,6 @@ fn refine_lattice_rows(
     }
 }
 
-/// 矩形の重なり判定
 fn overlaps_any(b: &BBox, tables: &[Table]) -> bool {
     tables.iter().any(|t| {
         let ox0 = b.x0.max(t.bbox.x0);
@@ -926,9 +913,7 @@ fn overlaps_any(b: &BBox, tables: &[Table]) -> bool {
     })
 }
 
-/// 折返し断片の孤児行を隣接する本行へ吸収する
-///
-/// 非空が1列だけの連続行を 複列行の空セルへ上下まとめて結合する
+/// 対象は非空が1列だけの連続行。複列行の空セルへ上下まとめて結合
 fn absorb_wrap_orphan_rows(t: &mut Table) {
     let filled = |row: &[Cell]| -> Vec<usize> {
         row.iter()
@@ -1043,7 +1028,7 @@ fn absorb_wrap_orphan_rows(t: &mut Table) {
     }
 }
 
-/// 全行が空の列と全列が空の行を落とす
+/// 全行が空の列と全列が空の行の除去
 fn prune_empty(t: &mut Table) {
     let keep_cols: Vec<usize> = (0..t.n_cols)
         .filter(|&c| {
@@ -1103,10 +1088,8 @@ fn prune_empty(t: &mut Table) {
 const FS_SCALE_LATIN: f64 = 0.85;
 const FS_SCALE_CJK: f64 = 1.10;
 
-/// フォントサイズ供給時の閾値スケールを求める
-///
-/// 過半のグリフが font_size を持つときだけ Some。スケールは
-/// fs 中央値×係数で、CJK 優勢ページは全角前提の広い係数を使う
+/// 過半のグリフが font_size を持つときだけ Some。スケールは fs 中央値×係数
+/// CJK 優勢ページは全角前提の広い係数
 fn fs_threshold_scale(glyphs: &[GlyphPart]) -> Option<f64> {
     let solid: Vec<&GlyphPart> = glyphs.iter().filter(|g| !g.ch.is_whitespace()).collect();
     if solid.is_empty() {
@@ -1170,14 +1153,14 @@ fn detect_page(pi: usize, part: PagePart, options: &ExtractOptions) -> Page {
             orientation: e.orientation,
         })
         .collect();
-    // 字高スケール未満の線分片（グラフの曲線・破線の断片）は罫線候補にしない
+    // 字高スケール未満の線分片（グラフの曲線・破線の断片）は罫線候補の対象外
     if let Some(s) = scale {
         edges.retain(|e| e.length() >= 0.5 * s);
     }
     let mut tables = detect_tables(&chars, &edges, options, scale);
 
     // ページ内で部分的に回転している表の検出
-    // 同じ回転角のグリフ群を回転フレームへ写して検出し 結果を戻して合流する
+    // 同じ回転角のグリフ群を回転フレームで検出して合流
     for rot in [90, 180, 270] {
         let group: Vec<&GlyphPart> = part
             .glyphs
@@ -1241,7 +1224,7 @@ fn detect_page(pi: usize, part: PagePart, options: &ExtractOptions) -> Page {
             }
         }
     }
-    // チャート領域(曲線・斜め線に覆われた領域、セルを横切る線を含む領域)の候補を棄却する
+    // チャート領域(曲線・斜め線に覆われた領域、セルを横切る線を含む領域)の候補の棄却
     tables.retain(|t| {
         graphics_coverage(&t.bbox, &part.graphics) < GRAPHICS_COVER_MAX
             && !has_cell_crossing_line(t, &part.graphics)
@@ -1255,7 +1238,7 @@ fn detect_page(pi: usize, part: PagePart, options: &ExtractOptions) -> Page {
 
     let (mut width, mut height) = (part.width, part.height);
     if part.norm_rotate != 0 {
-        // リーダーの正規化回転を戻し元のページ座標系で出力する
+        // 出力は正規化回転を戻した元のページ座標系
         for t in &mut tables {
             t.bbox = denorm_box(&t.bbox, part.norm_rotate, part.width, part.height);
             for cell in t.data.iter_mut().flatten() {
@@ -1276,7 +1259,7 @@ fn detect_page(pi: usize, part: PagePart, options: &ExtractOptions) -> Page {
     }
 }
 
-/// ページ座標を回転フレームへ写す(denorm_boxの逆方向)
+/// 回転フレームへの座標変換。denorm_box の逆方向
 ///
 /// w h は元のページ寸法
 fn norm_box(b: &BBox, rot: i32, w: f64, h: f64) -> BBox {
@@ -1303,28 +1286,28 @@ fn norm_box(b: &BBox, rot: i32, w: f64, h: f64) -> BBox {
     }
 }
 
-/// グラフィック被覆率がこの値以上の表候補はチャート領域として棄却する
+/// チャート領域として棄却するグラフィック被覆率の下限
 const GRAPHICS_COVER_MAX: f64 = 0.5;
 
-/// 線が外接矩形を実際に走っていると判定する弦長比の下限
+/// 線が外接矩形を実際に走っているとみなす弦長比の下限
 ///
 /// 直線は 1.0、角丸の弧やジッタだけで外接矩形が広がったパスは 0.1 前後
 const LINE_TRAVERSAL_MIN: f64 = 0.7;
 
 /// 非直線の線がセルを横切ったとみなす行数・列数の下限
 ///
-/// 結合セル1つ分(2セル)に収まる装飾は許容する
+/// 結合セル1つ分(2セル)に収まる装飾は許容
 const LINE_CROSS_MIN_CELLS: usize = 3;
 
 /// 複数セルを横切る非直線の線を含む候補の判定
 ///
 /// 罫線は軸平行の直線でセル内容はセル内に収まるため
-/// どちらでもあり得ない線を含む候補はチャート・図領域とみなす
+/// どちらでもあり得ない線はチャート・図領域の根拠
 fn has_cell_crossing_line(t: &Table, graphics: &[GraphicPart]) -> bool {
     let overlap = |a0: f64, a1: f64, b0: f64, b1: f64| (a1.min(b1) - a0.max(b0)).max(0.0);
     let nonempty = |c: &Cell| c.bbox.width() > 0.0 || c.bbox.height() > 0.0;
 
-    // 候補のセル格子から列・行の中心を作る(空セルは除く)
+    // 列・行の中心（空セルは除く）
     let mut col_centers: Vec<f64> = Vec::with_capacity(t.n_cols);
     for j in 0..t.n_cols {
         let mut iv: Option<(f64, f64)> = None;
@@ -1361,7 +1344,7 @@ fn has_cell_crossing_line(t: &Table, graphics: &[GraphicPart]) -> bool {
     graphics.iter().any(|g| {
         let (gl, gr) = (g.left.min(g.right), g.left.max(g.right));
         let (gt, gb) = (g.top.min(g.bottom), g.top.max(g.bottom));
-        // 走行性: 弦長が外接矩形の長辺を実際に走っている
+        // 走行性: 弦長が外接矩形の長辺を実際に走っていること
         let long = (gr - gl).max(gb - gt);
         if long <= 0.0 || g.curve_len < LINE_TRAVERSAL_MIN * long {
             return false;
@@ -1384,7 +1367,7 @@ fn has_cell_crossing_line(t: &Table, graphics: &[GraphicPart]) -> bool {
         if in_cell {
             return false;
         }
-        // セル横断: 3列以上の列中心または3行以上の行中心を覆う
+        // セル横断: 3列以上の列中心または3行以上の行中心を覆うこと
         let cols = col_centers.iter().filter(|&&x| gl <= x && x <= gr).count();
         let rows = row_centers.iter().filter(|&&y| gt <= y && y <= gb).count();
         cols >= LINE_CROSS_MIN_CELLS || rows >= LINE_CROSS_MIN_CELLS
@@ -1393,7 +1376,7 @@ fn has_cell_crossing_line(t: &Table, graphics: &[GraphicPart]) -> bool {
 
 /// 表bboxのうちグラフィック矩形に覆われる割合
 ///
-/// 20x20の格子サンプリングで近似する
+/// 20x20 の格子サンプリング近似
 fn graphics_coverage(b: &BBox, graphics: &[GraphicPart]) -> f64 {
     if graphics.is_empty() || b.width() <= 0.0 || b.height() <= 0.0 {
         return 0.0;
@@ -1418,7 +1401,7 @@ fn graphics_coverage(b: &BBox, graphics: &[GraphicPart]) -> f64 {
     hit as f64 / (n * n) as f64
 }
 
-/// 正規化回転された座標を元のページ座標へ戻す
+/// 元のページ座標への復元。norm_box の逆方向
 ///
 /// w h は正規化後のページ寸法
 fn denorm_box(b: &BBox, rot: i32, w: f64, h: f64) -> BBox {
@@ -1445,7 +1428,7 @@ fn denorm_box(b: &BBox, rot: i32, w: f64, h: f64) -> BBox {
     }
 }
 
-/// 3方式の検出を優先順で実行し1ページ分の表を確定する
+/// 3方式を優先順に適用する1ページ分の表確定
 fn detect_tables(
     chars: &[Glyph],
     edges: &[Edge],
@@ -1455,7 +1438,7 @@ fn detect_tables(
     let index = CharIndex::new(chars);
     let bidi = options.bidi;
     let fill = |b: &BBox| cell_text(chars, &index, b, bidi);
-    // 矩形内の非空白グリフの中心座標列 hybrid の充填率上界に使う
+    // 矩形内の非空白グリフの中心座標列。hybrid の充填率上界用
     let nonws_centers = |b: &BBox| -> Vec<(f64, f64)> {
         index
             .in_box(chars, b)
@@ -1500,7 +1483,7 @@ fn detect_tables(
     }
     tables.retain(|t| t.n_rows >= options.lattice.min_rows && t.n_cols >= options.lattice.min_cols);
 
-    // 確定したlattice表の領域内の文字は後続の検出の入力から除く
+    // 確定した lattice 表の領域内の文字は後続の検出の対象外
     let segs: Vec<Seg> = all_segs
         .into_iter()
         .filter(|seg| !tables.iter().any(|t| t.bbox.contains_center(&seg.bbox)))
@@ -1524,7 +1507,7 @@ fn detect_tables(
         }
     }
 
-    // 確定したhybrid表の領域内の文字も除いてからtext検出に渡す
+    // 確定した hybrid 表の領域内の文字も除いた text 検出入力
     let segs: Vec<Seg> = segs
         .into_iter()
         .filter(|seg| !tables.iter().any(|t| t.bbox.contains_center(&seg.bbox)))
@@ -1547,7 +1530,7 @@ fn detect_tables(
         }
     }
 
-    // ページ内の読み順に揃える
+    // ページ内の読み順
     tables.sort_by(|a, b| {
         a.bbox
             .top

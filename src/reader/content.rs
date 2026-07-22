@@ -1,6 +1,6 @@
 //! コンテンツストリーム解釈（パス → edges、テキスト → glyphs）
 //!
-//! 準拠: pdf.js evaluator.js
+//! 参考: pdf.js `evaluator.js`
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -19,19 +19,19 @@ use super::xref::XRef;
 /// 軸平行判定の許容差（pt）
 const EPS: f64 = 0.8;
 
-/// パス全長に占める非軸平行セグメント弦長の比率がこの値未満のパスは graphics に登録しない
-/// 角丸矩形の四隅や塗り罫線の太さ分の短辺をチャート要素と区別する
+/// graphics 登録の対象とする非軸平行セグメント弦長の全長比の下限
+/// 角丸矩形の四隅や塗り罫線の短辺とチャート要素の区別
 const GRAPHICS_MIN_FRAC: f64 = 0.25;
 
 /// Form XObject のネスト上限。正当な入力を弾かない上限
 const MAX_FORM_DEPTH: usize = 20;
 
 /// q/Q グラフィック状態スタックの深さ上限
-/// Adobe PDF Reference の実装限界 28 に十分な余裕を持たせつつ mupdf の 2048 より小さく取る
+/// Adobe PDF Reference の実装限界 28 に十分な余裕を持たせた値
 const MAX_GSTACK_DEPTH: usize = 128;
 
 /// Tf 名前 → フォントの memo エントリ数上限
-/// 正当な文書のフォント辞書規模を大きく上回る余裕をとりつつ非有界成長を防ぐ
+/// 正当な文書のフォント辞書規模を大きく上回る余裕値
 const MAX_FONT_MEMO_ENTRIES: usize = 256;
 
 /// Form 解決用の文脈（xref が無い単体テストでは None）
@@ -160,9 +160,7 @@ pub(crate) struct ExtractedText {
     pub chars: Vec<TextChar>,
 }
 
-/// コンテンツストリームから glyphs と edges を抽出する
-///
-/// page_rotate はページ属性 /Rotate（表示座標系へ回してから返す）
+/// page_rotate はページ属性 /Rotate。出力は表示座標系へ回転済み
 pub(crate) fn extract_parts(
     contents: &[u8],
     resources: &Dict,
@@ -191,7 +189,6 @@ pub(crate) fn extract_parts(
     finalize_parts(tagged, edges, graphics, view, page_rotate)
 }
 
-/// interpret 結果から parts の後段処理を通して ExtractedParts を返す
 fn finalize_parts(
     mut tagged: Vec<(GlyphPart, RotQ)>,
     mut edges: Vec<EdgePart>,
@@ -239,9 +236,7 @@ fn finalize_parts(
     }
 }
 
-/// コンテンツストリームから座標付き文字を抽出する
-///
-/// ページ /Rotate のみ適用し支配回転の正規化はしない
+/// ページ /Rotate のみ適用。支配回転の正規化なし
 pub(crate) fn extract_text(
     contents: &[u8],
     resources: &Dict,
@@ -271,9 +266,7 @@ pub(crate) fn extract_text(
     finalize_text(sink, view, page_rotate)
 }
 
-/// コンテンツストリームから parts と座標付き文字を 1 パスで抽出する
-///
-/// interpret の結果を共有し、後段の rotate と正規化は parts/text それぞれ独立に走る
+/// interpret 共有の 1 パス版。後段の rotate と正規化は parts/text で独立
 pub(crate) fn extract_parts_and_text(
     contents: &[u8],
     resources: &Dict,
@@ -305,7 +298,6 @@ pub(crate) fn extract_parts_and_text(
     (parts, text)
 }
 
-/// interpret 結果の TextSink から text の後段処理を通して ExtractedText を返す
 fn finalize_text(mut sink: TextSink, view: [f64; 4], page_rotate: i32) -> ExtractedText {
     let (mut w, mut h) = (view[2] - view[0], view[3] - view[1]);
     dedup_overlaid_glyphs(&mut sink.chars);
@@ -350,7 +342,6 @@ fn finalize_text(mut sink: TextSink, view: [f64; 4], page_rotate: i32) -> Extrac
     }
 }
 
-/// テキスト文字の座標をページ回転で移す
 fn rotate_text_chars(chars: &mut [PendingTextChar], w: f64, h: f64, rot: u8) {
     let rmat = page_rot_mat(w, h, rot);
     for c in chars.iter_mut() {
@@ -380,7 +371,6 @@ fn page_rot_mat(w: f64, h: f64, rot: u8) -> [f64; 6] {
     }
 }
 
-/// 表示座標ベクトルのページ回転
 fn rotate_vec_td(dx: f64, dy: f64, rot: u8) -> [f64; 2] {
     match rot {
         1 => [-dy, dx],
@@ -390,7 +380,6 @@ fn rotate_vec_td(dx: f64, dy: f64, rot: u8) -> [f64; 2] {
     }
 }
 
-/// グリフと線分とグラフィックの座標を正規化回転で移す
 fn rotate_parts(
     tagged: &mut [(GlyphPart, RotQ)],
     edges: &mut [EdgePart],
@@ -449,9 +438,7 @@ fn rotate_parts(
 /// ページ内容の支配回転の判定に必要な非空白グリフの割合
 const NORM_ROT_MIN_RATIO: f64 = 0.9;
 
-/// 非空白グリフの9割以上が同一の非ゼロ回転を持つときその回転を返す
-///
-/// 返り値は量子化回転(1/2/3 = 90/180/270度)で 支配回転が無ければ0
+/// 返り値は量子化回転 1/2/3 = 90/180/270度。支配回転が無ければ 0
 fn dominant_rotation(tagged: &[(GlyphPart, RotQ)]) -> u8 {
     let mut counts = [0usize; 4];
     let mut total = 0usize;
@@ -472,7 +459,7 @@ fn dominant_rotation(tagged: &[(GlyphPart, RotQ)]) -> u8 {
         .unwrap_or(0) as u8
 }
 
-/// 進行方向を0/90/180/270度へ量子化する（PDF空間 反時計回り）
+/// 量子化の基準は PDF 空間の反時計回り
 fn quantize_rot(ux: f64, uy: f64) -> RotQ {
     if uy.abs() <= 0.05 && ux > 0.05 {
         RotQ::R0
@@ -497,7 +484,6 @@ struct Rect {
 }
 
 impl Rect {
-    /// top-down座標の矩形を正規化回転で移す
     fn rotate_td(self, w: f64, h: f64, rot: u8) -> Rect {
         match rot {
             1 => Rect {
@@ -523,12 +509,10 @@ impl Rect {
     }
 }
 
-/// 語間ギャップに空白グリフを合成する
+/// 語間ギャップへの空白グリフ合成
 ///
-/// 既存2ルート（pdfium / pdf.js）は語間の空白グリフを出力するが、
-/// show 列をそのまま辿る本リーダーでは TJ / Td による語間が無音になる。
-/// 検出コアはセル文の空白を文章判定に使うため、行内の小さなギャップ
-/// （字高の 0.12〜1.0 倍）を空白1文字で埋めて出力を揃える
+/// 検出コアが文章判定に使う語間空白が show 列に無いため
+/// 字高 0.12〜1.0 倍のギャップを空白1文字で補完
 fn synth_word_spaces(glyphs: &[GlyphPart]) -> Vec<GlyphPart> {
     let mut hs: Vec<f64> = glyphs
         .iter()
@@ -542,7 +526,7 @@ fn synth_word_spaces(glyphs: &[GlyphPart]) -> Vec<GlyphPart> {
     let med_h = hs[hs.len() / 2];
     let line_tol = (med_h * 0.6).max(0.5);
 
-    // bottom の近さで行にまとめる（既存の空白も行に含めて重複合成を防ぐ）
+    // 実在の空白も行クラスタへ含めた重複合成の防止
     let mut all: Vec<&GlyphPart> = glyphs.iter().collect();
     all.sort_by(|a, b| a.bottom.total_cmp(&b.bottom));
     let mut lines: Vec<Vec<&GlyphPart>> = Vec::new();
@@ -594,8 +578,8 @@ fn synth_word_spaces(glyphs: &[GlyphPart]) -> Vec<GlyphPart> {
 
 /// 重複グリフ除去の完全一致キー
 ///
-/// 浮動小数13値は -0.0 を +0.0 へ正規化したビット表現で持つ。
-/// text は SipHash 値のみ保持し文字列の所有・複製を避ける
+/// 浮動小数13値は -0.0 を +0.0 へ正規化したビット表現
+/// text は文字列を所有しない SipHash 値のみ
 #[derive(PartialEq, Eq, Hash)]
 struct GlyphDedupKey {
     text_hash: u64,
@@ -605,7 +589,6 @@ struct GlyphDedupKey {
     bits: [u64; 13],
 }
 
-/// -0.0 を +0.0 へ正規化したビット表現
 fn norm_f64_bits(v: f64) -> u64 {
     if v == 0.0 {
         0.0f64.to_bits()
@@ -614,7 +597,7 @@ fn norm_f64_bits(v: f64) -> u64 {
     }
 }
 
-/// 文字列を u64 に畳む（HashSet 標準の SipHash-1-3 と同一）
+/// HashSet 標準と同一の SipHash-1-3 による u64 化
 fn hash_str(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -622,9 +605,7 @@ fn hash_str(s: &str) -> u64 {
     h.finish()
 }
 
-/// 重ね印字の重複グリフ除去
-///
-/// 完全一致の再描画をストリーム先勝ちで1つに畳む。合成空白の生成前に呼ぶ
+/// 完全一致の再描画はストリーム先勝ちで1つ。合成空白の生成より前段
 fn dedup_overlaid_glyphs(chars: &mut Vec<PendingTextChar>) {
     let mut seen = HashSet::new();
     chars.retain(|c| {
@@ -670,9 +651,7 @@ struct PartDedupKey {
     bits: [u64; 4],
 }
 
-/// 重ね印字の重複グリフ除去（parts 側）
-///
-/// 完全一致の再描画をストリーム先勝ちで1つに畳む。合成空白の生成前に呼ぶ
+/// 完全一致の再描画はストリーム先勝ちで1つ。合成空白の生成より前段
 fn dedup_overlaid_parts(glyphs: &mut Vec<GlyphPart>) {
     let mut seen = HashSet::new();
     glyphs.retain(|g| {
@@ -690,7 +669,7 @@ fn dedup_overlaid_parts(glyphs: &mut Vec<GlyphPart>) {
     });
 }
 
-/// 語間ギャップに合成空白をストリーム位置へ挿入する
+/// 挿入位置はストリーム順
 fn synth_word_spaces_text(chars: &mut Vec<PendingTextChar>) {
     if chars.len() < 2 {
         return;
@@ -821,7 +800,6 @@ fn text_is_whitespace(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_whitespace())
 }
 
-/// コンテンツストリームから軸平行な辺を抽出する
 #[cfg(test)]
 pub(crate) fn extract_edges(
     contents: &[u8],
@@ -832,7 +810,6 @@ pub(crate) fn extract_edges(
     extract_parts(contents, resources, view, ctx, 0).edges
 }
 
-/// 単位行列
 fn identity() -> [f64; 6] {
     [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
 }
@@ -849,12 +826,10 @@ fn mat_mul(m1: [f64; 6], m2: [f64; 6]) -> [f64; 6] {
     ]
 }
 
-/// CTM で点を変換する
 fn apply_ctm(m: [f64; 6], x: f64, y: f64) -> (f64, f64) {
     (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
 }
 
-/// 行列を (tx, ty) 平行移動する
 fn translate_mat(m: [f64; 6], tx: f64, ty: f64) -> [f64; 6] {
     [
         m[0],
@@ -866,7 +841,7 @@ fn translate_mat(m: [f64; 6], tx: f64, ty: f64) -> [f64; 6] {
     ]
 }
 
-/// テキスト状態（q/Q で CTM と一緒に保存・復元される。pdf.js の TextState と同様）
+/// テキスト状態。q/Q で CTM と一緒に保存・復元
 #[derive(Clone)]
 struct TextState {
     text_matrix: [f64; 6],
@@ -968,10 +943,10 @@ impl PathBuilder {
 
     fn close(&mut self) {
         self.segs.push(Seg::Close);
-        // 現在点は finalize 時にサブパス始点へ戻す
+        // 現在点の始点戻しは finalize 側
     }
 
-    /// re を move+line×3+close、退化時は1本線に展開する
+    /// re の move+line×3+close への展開。退化時は1本線
     fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
         if w == 0.0 || h == 0.0 {
             self.move_to(x, y);
@@ -987,7 +962,7 @@ impl PathBuilder {
     }
 }
 
-/// CTM 適用後の2点を軸平行辺にする（位置は終点側）
+/// CTM 適用済み2点からの軸平行辺。位置は終点側
 fn axis_edge(a: (f64, f64), b: (f64, f64), view: [f64; 4]) -> Option<EdgePart> {
     let (ox, oy) = (view[0], view[3]); // view 左上（PDF 座標）
     let (px, py) = a;
@@ -1016,10 +991,10 @@ fn axis_edge(a: (f64, f64), b: (f64, f64), view: [f64; 4]) -> Option<EdgePart> {
     }
 }
 
-/// パスを辺化しバッファを空にする
+/// パスの辺化とバッファのクリア
 ///
-/// 軸平行にならない線分と曲線はパス1回分の外接矩形として graphics に集約する。
-/// 弦長比率で軸平行辺が支配的なパスは角丸矩形などの罫線描画とみなし集約しない
+/// 軸平行にならない線分と曲線はパス1回分の外接矩形として graphics へ集約
+/// 弦長比率で軸平行辺が支配的なパスは罫線描画とみなし集約の対象外
 fn finalize_path(
     path: &mut PathBuilder,
     filled: bool,
@@ -1036,7 +1011,6 @@ fn finalize_path(
     let mut gbox: Option<[f64; 4]> = None;
     let mut axis_len = 0.0;
     let mut gbox_len = 0.0;
-    // 軸平行なら辺に、そうでなければ gbox に集約し弦長を分類別に積む
     let mut emit = |a: (f64, f64), b: (f64, f64), curve: bool| {
         if !curve && let Some(e) = axis_edge(a, b, view) {
             axis_len += (a.0 - b.0).hypot(a.1 - b.1);
@@ -1111,8 +1085,7 @@ fn finalize_path(
     }
 }
 
-/// オブジェクトを解決する
-/// 間接参照を解決してキャッシュ共有のまま返す（読み取り用）
+/// 間接参照をキャッシュ共有のまま解決（読み取り用）
 fn resolve_obj(obj: &Object, ctx: &ContentCtx<'_>) -> Arc<Object> {
     match obj {
         Object::Ref(r) => match ctx.xref {
@@ -1132,7 +1105,7 @@ struct FetchResolver<'a> {
 
 impl Resolver for FetchResolver<'_> {
     fn resolve(&self, r: Ref) -> crate::error::Result<Option<Object>> {
-        // コンテンツ解釈は寛容に扱い、失敗は未解決として続行する
+        // コンテンツ解釈は寛容。失敗は未解決扱い
         Ok(self.xref.and_then(|x| x.fetch(r, self.data).ok()))
     }
 }
@@ -1145,7 +1118,7 @@ fn as_f64(obj: &Object) -> Option<f64> {
     }
 }
 
-/// スタック末尾 N 個の数値を順序どおり取り出す（固定長でヒープ確保しない）
+/// スタック末尾 N 個の数値。順序保存、固定長でヒープ確保なし
 fn take_nums<const N: usize>(stack: &mut Vec<Object>) -> Option<[f64; N]> {
     if stack.len() < N {
         return None;
@@ -1170,10 +1143,9 @@ fn take_name(stack: &mut Vec<Object>) -> Option<String> {
     }
 }
 
-/// content stream 内の配列・辞書ネスト上限。stray closer は interpret の main loop が捨てる
+/// content stream 内の配列・辞書ネスト上限。stray closer は interpret の main loop で破棄
 const MAX_STREAM_PARSE_DEPTH: usize = 200;
 
-/// 配列リテラルをパースする
 fn parse_array(lexer: &mut Lexer<'_>, depth: usize) -> Object {
     if depth >= MAX_STREAM_PARSE_DEPTH {
         return Object::Null;
@@ -1205,7 +1177,7 @@ fn parse_array(lexer: &mut Lexer<'_>, depth: usize) -> Object {
                                 continue;
                             }
                         }
-                        // 復元できない場合は捨てる
+                        // 復元不能は破棄
                     }
                 }
                 _ => {} // 配列内の未知コマンドは無視
@@ -1216,7 +1188,6 @@ fn parse_array(lexer: &mut Lexer<'_>, depth: usize) -> Object {
     Object::Array(arr)
 }
 
-/// 辞書リテラルをパースする
 fn parse_dict(lexer: &mut Lexer<'_>, depth: usize) -> Object {
     if depth >= MAX_STREAM_PARSE_DEPTH {
         return Object::Null;
@@ -1256,7 +1227,7 @@ fn parse_dict(lexer: &mut Lexer<'_>, depth: usize) -> Object {
     Object::Dict(dict)
 }
 
-/// BI...EI を `data` 上でスキップし lexer 位置を更新する
+/// BI...EI のスキップと lexer 位置の更新
 fn skip_inline_image_in(data: &[u8], lexer: &mut Lexer<'_>) {
     loop {
         match lexer.next_token() {
@@ -1272,16 +1243,15 @@ fn skip_inline_image_in(data: &[u8], lexer: &mut Lexer<'_>) {
         pos += 1;
     }
 
-    // 「空白に続く EI、直後が空白または終端」を探す
+    // 探索対象は「空白に続く EI、直後が空白または終端」
     let mut i = pos;
     while i + 2 <= data.len() {
         if data[i] == b'E' && data[i + 1] == b'I' {
             let prev_ws = i == 0 || is_pdf_ws(data[i - 1]);
-            // 画像データ開始直後の EI は i==pos で prev がデータ先頭。
-            // 仕様どおり「空白に続く」なので、pos より前の空白（ID 後）も認める:
-            // i == pos のとき、pos 直前が空白なら OK（すでにスキップ済みなので true 扱い）
+            // 画像データ先頭の EI も仕様の「空白に続く」を満たす扱い
+            // ID 後の空白はスキップ済みのため i == pos は true
             let prev_ok = if i == pos {
-                // ID 後空白の直後に EI → 空画像。許容する
+                // ID 後空白の直後の EI は空画像として許容
                 true
             } else {
                 prev_ws
@@ -1304,10 +1274,9 @@ fn is_pdf_ws(b: u8) -> bool {
     matches!(b, 0x00 | 0x09 | 0x0a | 0x0c | 0x0d | 0x20)
 }
 
-/// 単位行列
 const IDENTITY_MAT: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
-/// コンテンツストリーム評価器。ページ内で共有する出力先と文脈を束ねる
+/// コンテンツストリーム評価器。ページ内共有の出力先と文脈
 struct Evaluator<'a, 'b> {
     ctx: &'a ContentCtx<'b>,
     view: [f64; 4],
@@ -1318,9 +1287,9 @@ struct Evaluator<'a, 'b> {
     /// Form 再帰の現在深さ 間接参照 inline 双方
     form_depth: usize,
     text_sink: Option<&'a mut TextSink>,
-    /// edges/graphics を集める
+    /// edges/graphics を集めるか
     collect_paths: bool,
-    /// glyphs を集める
+    /// glyphs を集めるか
     collect_glyphs: bool,
 }
 
@@ -1329,7 +1298,7 @@ struct Frame<'r> {
     stack: Vec<Object>,
     ctm: [f64; 6],
     gstack: Vec<([f64; 6], TextState)>,
-    /// gstack 上限を超えて push を打ち切った q の数。対の Q で先に消費する
+    /// gstack 上限超過で打ち切った q の数。対の Q が先に消費
     gstack_overflow: usize,
     path: PathBuilder,
     text: TextState,
@@ -1362,7 +1331,6 @@ impl Evaluator<'_, '_> {
         finalize_path(path, fill, ctm, self.view, self.edges, self.graphics);
     }
 
-    /// ストリーム本文を解釈して glyphs / edges に追記する
     fn interpret(&mut self, contents: &[u8], resources: &Dict, ctm0: [f64; 6]) {
         let mut lexer = Lexer::new(contents);
         let mut frame = Frame {
@@ -1407,7 +1375,7 @@ impl Evaluator<'_, '_> {
                         {
                             stack.push(Object::Ref(Ref::new(num as u32, generation as u16)));
                         }
-                        // 復元できない場合は捨てる
+                        // 復元不能は破棄
                     }
                 }
                 Token::Cmd(Cmd::Op(Op::BI)) => {
@@ -1439,8 +1407,8 @@ impl Evaluator<'_, '_> {
             tj_scratch,
         } = frame;
         match op {
-            // グラフィックス状態（テキスト状態も保存・復元する。アンダーフローは無視）
-            // 上限超過の q はスキップカウンタで数え、対の Q で消費して外側の対応を保つ
+            // グラフィックス状態。テキスト状態も一緒に保存・復元、アンダーフローは無視
+            // 上限超過の q はスキップカウンタで数え対の Q で消費
             Op::LowerQ => {
                 if gstack.len() < MAX_GSTACK_DEPTH {
                     gstack.push((*ctm, text.clone()));
@@ -1537,7 +1505,7 @@ impl Evaluator<'_, '_> {
                 if let Some(sz) = take_nums::<1>(stack) {
                     if let Some(name) = take_name(stack) {
                         text.font_size = sz[0];
-                        // memo が上限に達したら insert しない。未知名は都度 lookup_font で解決する
+                        // 上限到達後は insert なし。未知名は都度 lookup_font で解決
                         let font = match font_memo.get(&name) {
                             Some(f) => Arc::clone(f),
                             None => {
@@ -1639,7 +1607,6 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    /// TJ 配列の表示
     fn show_text_array(
         &mut self,
         text: &mut TextState,
@@ -1675,10 +1642,8 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    /// バイト列をグリフに展開して出力し textMatrix を進める
-    ///
-    /// `extra_spacing` は最終グリフの字送りに加算（テキスト空間、hScale 前）
-    /// 横書きでは pdf.js の extraSpacing（`-n/1000×fs`）と同符号
+    /// extra_spacing は最終グリフの字送りへの加算分（テキスト空間、hScale 前）
+    /// 横書きは -n/1000×fs と同符号
     fn show_text_bytes(
         &mut self,
         text: &mut TextState,
@@ -1722,7 +1687,7 @@ impl Evaluator<'_, '_> {
             .map(|s| s.font_index(font, &text.font_name));
 
         // 列内で不変: TRM 線形成分と派生量（平行移動のみ変わる）
-        // text_rendering_matrix と同じ式・同じ演算順で一度だけ算出する
+        // text_rendering_matrix と同じ式・同じ演算順の一括算出
         let trm_lin = text.text_rendering_matrix(ctm);
         let font_size_dev = (trm_lin[2] * trm_lin[2] + trm_lin[3] * trm_lin[3]).sqrt();
         let dlen = (trm_lin[0] * trm_lin[0] + trm_lin[1] * trm_lin[1]).sqrt();
@@ -1751,7 +1716,7 @@ impl Evaluator<'_, '_> {
             let extra = if i + 1 == count { extra_spacing } else { 0.0 };
             i += 1;
 
-            // 平行移動成分はグリフごとに再計算（線形成分は trm_lin を使う）
+            // 平行移動成分はグリフごとに再計算。線形成分は trm_lin
             let trm = text.text_rendering_matrix(ctm);
             let (ox, oy) = (trm[4], trm[5]);
 
@@ -1851,7 +1816,6 @@ impl Evaluator<'_, '_> {
         });
     }
 
-    /// 縦書きフォントの字送りと bbox
     fn show_text_bytes_vertical(
         &mut self,
         text: &mut TextState,
@@ -1865,7 +1829,7 @@ impl Evaluator<'_, '_> {
         let glyphs = &mut *self.glyphs;
         let mut text_sink = self.text_sink.as_deref_mut();
 
-        // TJ の extra は横書き向け `-n/1000×fs`。縦書きでは符号を反転して pdf.js に合わせる
+        // TJ の extra は横書き向け -n/1000×fs。縦書きは符号反転
         let vert_extra = |e: f64| -e;
 
         if bytes.is_empty() {
@@ -1926,7 +1890,7 @@ impl Evaluator<'_, '_> {
             let ox = wx + trm_lin[0] * (-v1x / 1000.0) + trm_lin[2] * (v1y / 1000.0);
             let oy = wy + trm_lin[1] * (-v1x / 1000.0) + trm_lin[3] * (v1y / 1000.0);
 
-            // 縦前進（hScale なし）。Tc は pdf.js どおり符号反転
+            // 縦前進（hScale なし）。Tc は符号反転
             let scaled_dim = w1y / 1000.0 * text.font_size;
             let mut cs = -text.char_spacing + extra;
             if g.is_code_space {
@@ -1934,7 +1898,7 @@ impl Evaluator<'_, '_> {
             }
             let advance_y = scaled_dim - cs;
 
-            // TRM 上の幅端点を横軸へ射影する。軸の鏡映は ux/uy にだけ持たせる
+            // TRM 上の幅端点の横軸射影。軸の鏡映は ux/uy のみ
             let width_end_x = ox + trm_lin[0] * (width / 1000.0);
             let width_end_y = oy + trm_lin[1] * (width / 1000.0);
             let device_w = (width_end_x - ox) * ux + (width_end_y - oy) * uy;
@@ -2012,9 +1976,9 @@ impl Evaluator<'_, '_> {
     }
 }
 
-/// 進行方向とその直交方向から字箱の外接軸平行矩形を求める
+/// 字箱の外接軸平行矩形
 ///
-/// 0/90/180/270度では正確な箱 任意角では外接箱になる
+/// 0/90/180/270度では正確な箱 任意角では外接箱
 /// 返り値はPDF空間の (x_min, x_max, y_min, y_max)
 fn glyph_box(
     ox: f64,
@@ -2053,7 +2017,7 @@ fn glyph_box(
 
 impl Evaluator<'_, '_> {
     fn do_form_xobject(&mut self, name: &str, ctm: [f64; 6], resources: &Dict) {
-        // ネスト段数が上限以上なら再帰しない 間接参照 inline 双方
+        // 上限以上のネストは再帰なし。間接参照 inline 双方
         if self.form_depth >= MAX_FORM_DEPTH {
             return;
         }
@@ -2069,7 +2033,7 @@ impl Evaluator<'_, '_> {
             return;
         };
 
-        // 循環検出（参照番号）。挿入と除去はここで対にする
+        // 循環検出（参照番号）。挿入と除去はここで対
         let ref_id = match entry {
             Object::Ref(r) => Some(*r),
             _ => None,
@@ -2089,7 +2053,7 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    /// Form XObject の解決と本文実行（循環検出の出入りは呼び出し側で行う）
+    /// Form XObject の解決と本文実行。循環検出の出入りは呼び出し側
     fn run_form_xobject(
         &mut self,
         entry: &Object,
@@ -2108,10 +2072,8 @@ impl Evaluator<'_, '_> {
             return;
         }
 
-        // /Matrix を CTM に合成（無ければ単位行列）
         let form_mat = parse_matrix(stream.dict.get("Matrix"), self.ctx).unwrap_or_else(identity);
 
-        // /Resources（無ければ親を継承）
         let resolved_res = stream
             .dict
             .get("Resources")
@@ -2126,12 +2088,12 @@ impl Evaluator<'_, '_> {
             return;
         };
 
-        // /Matrix を CTM に合成して本文を実行（テキスト状態は Form 内で独立）
+        // テキスト状態は Form 内で独立
         self.interpret(body.as_ref(), form_res, mat_mul(ctm, form_mat));
     }
 }
 
-/// Form ストリーム本文を取得。参照があれば文書単位キャッシュを使う
+/// Form 本文の取得。間接参照は文書単位キャッシュ
 fn form_stream_body(
     ref_id: Option<Ref>,
     stream: &Stream,
@@ -2384,8 +2346,8 @@ mod tests {
         ));
     }
 
-    /// 退化矩形 w=0 は線分と閉じ線で同一の縦辺が2本になる（pdf.js ルートと同じ挙動。
-    /// 重複辺は検出コアが吸収する）
+    /// 退化矩形 w=0 は線分と閉じ線で同一の縦辺が2本になる
+    /// 重複辺は検出コアが吸収
     #[test]
     fn degenerate_rect_zero_width() {
         // re x y 0 h → move (x,y) line (x, y+h) close

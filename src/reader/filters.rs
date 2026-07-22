@@ -1,6 +1,6 @@
 //! ストリームフィルタの復号
 //!
-//! 準拠: pdf.js `parser.js` makeFilter、および各 *\_stream.js
+//! 参考: pdf.js `parser.js` および各 *_stream.js
 
 use std::io::Read;
 
@@ -37,10 +37,10 @@ impl FilterKind {
     }
 }
 
-/// Stream の /Filter 連鎖を適用して復号済みバイト列を返す
+/// /Filter 連鎖の適用による復号
 ///
-/// 暗号化がある場合はフィルタ適用前にストリーム本文を復号する。
-/// /Crypt が明示されているときは二重適用しない。xref ストリームは cipher=None で呼ぶ。
+/// 暗号化時はフィルタ適用前にストリーム本文を復号
+/// /Crypt 明示時は二重適用なし。xref ストリームは cipher=None
 /// limit はフィルタチェーン累積出力の上限バイト数
 #[allow(dead_code)]
 pub(crate) fn decode_stream(
@@ -96,7 +96,7 @@ pub(crate) fn decode_stream(
                 .ok_or_else(|| Error::Reader(format!("unsupported filter: \"{name}\"")))?;
             let params = match params_root {
                 Some(Object::Dict(d)) => Some(d),
-                // Name のとき Array の DecodeParms は無視（pdf.js は警告のみ）
+                // Name のとき Array の DecodeParms は無視
                 _ => None,
             };
             vec![(kind, params)]
@@ -114,7 +114,7 @@ pub(crate) fn decode_stream(
                     Some(Object::Array(arr)) => {
                         arr.get(i).map(|p| resolve_owned(p, resolver)).transpose()?
                     }
-                    // 単一 Dict を全段に使うのは仕様外。pdf.js は配列時のみインデックス参照
+                    // 単一 Dict を全段に使うのは仕様外
                     _ => None,
                 };
                 let params_dict = match params {
@@ -136,7 +136,7 @@ pub(crate) fn decode_stream(
 
 /// フィルタ連鎖の適用
 ///
-/// 伸長爆弾対策としてチェーン累積出力を budget で制限する
+/// 伸長爆弾対策のチェーン累積出力の budget 制限
 fn apply_stages(
     mut decoded: Vec<u8>,
     stages: &[(FilterKind, Option<Dict>)],
@@ -239,9 +239,9 @@ fn as_i64(obj: &Object) -> Option<i64> {
 
 // --- FlateDecode ---
 
-/// zlib → raw deflate の順で試し、失敗時は途中まで読めた分を返す
+/// 試行順は zlib → raw deflate。失敗時は途中まで読めた分
 ///
-/// 破損による途中終了は許容し、上限超過は Err にする
+/// 破損による途中終了は許容、上限超過は Err
 fn decode_flate(data: &[u8], limit: usize) -> Result<Vec<u8>> {
     if let Some(out) = read_to_end_ok(ZlibDecoder::new(data), limit)? {
         return Ok(out);
@@ -365,7 +365,7 @@ fn decode_lzw(data: &[u8], early_change: i64, limit: usize) -> Result<Vec<u8>> {
             dictionary_values[next_code as usize] = current_sequence[0];
             next_code += 1;
             let n = next_code + early_change;
-            // n が 2 の冪のときコード長を延ばす
+            // n が 2 の冪のときコード長を延長
             if n > 0 && (n & (n - 1)) == 0 {
                 code_length = (n.ilog2() + 1).min(12);
             }
@@ -571,7 +571,7 @@ fn apply_predictor(data: &[u8], params: &Dict, predictor: i64, limit: usize) -> 
         .max(1) as usize;
     let columns = params.get("Columns").and_then(as_i64).unwrap_or(1).max(1) as usize;
 
-    // 宣言値が過大なとき積のオーバーフローを弾く
+    // 宣言値が過大なときの積オーバーフロー対策
     let overflow = || Error::Reader("predictor parameters overflow".into());
     let pix_bytes = colors
         .checked_mul(bits)
@@ -591,7 +591,7 @@ fn apply_predictor(data: &[u8], params: &Dict, predictor: i64, limit: usize) -> 
     }
 
     // TIFF 1 行 = row_bytes / PNG 1 行 = 1 + row_bytes バイト
-    // 完全行が 1 本も入らない宣言は空 Vec で打ち切り、DecodeParms 由来の巨大バッファ確保を避ける
+    // 完全行が 1 本も入らない宣言は空 Vec 打ち切り（DecodeParms 由来の巨大確保の防止）
     let stride = if predictor == 2 {
         row_bytes
     } else {
@@ -798,7 +798,7 @@ mod tests {
 
     // ----- LZW -----
 
-    /// テスト用 LZW 符号化器（pdf.js と同じビット詰め・EarlyChange）
+    /// テスト用 LZW 符号化器
     fn encode_lzw(input: &[u8], early_change: i64) -> Vec<u8> {
         let early_change = if early_change != 0 { 1 } else { 0 };
         // 単純実装: 各バイトをクリア後にリテラルとして出す（辞書成長の検証用）

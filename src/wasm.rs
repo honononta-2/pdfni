@@ -12,7 +12,7 @@ struct Input {
     options: ExtractOptions,
 }
 
-/// 文字と線分の JSON から表抽出し Document の JSON を返す
+/// 入力は文字と線分の JSON、出力は Document の JSON
 #[wasm_bindgen]
 pub fn extract_tables(input_json: &str) -> Result<String, JsError> {
     let input: Input =
@@ -21,9 +21,9 @@ pub fn extract_tables(input_json: &str) -> Result<String, JsError> {
     serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// PDF バイト列から純Rustリーダーで表抽出し Document の JSON を返す
+/// 出力は Document の JSON
 ///
-/// options_json の pages・region キーで対象ページ・矩形を絞れる
+/// options_json の pages・region キーで対象ページ・矩形を絞り込み可能
 #[cfg(feature = "reader")]
 #[wasm_bindgen]
 pub fn extract_tables_from_pdf(
@@ -40,8 +40,6 @@ pub fn extract_tables_from_pdf(
     serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// options_json から検出・読み取りの設定を取り出す
-///
 /// None・空文字は既定値
 #[cfg(feature = "reader")]
 fn extract_options_from_json(options_json: &Option<String>) -> Result<ExtractOptions, JsError> {
@@ -53,9 +51,7 @@ fn extract_options_from_json(options_json: &Option<String>) -> Result<ExtractOpt
     }
 }
 
-/// options_json から読み取り層の設定を取り出す
-///
-/// 検出系の項目は無視される
+/// 検出系の項目は無視
 #[cfg(feature = "reader")]
 fn reader_settings_from_json(
     options_json: &Option<String>,
@@ -72,7 +68,7 @@ struct QueryJson {
     region: Option<RegionJson>,
 }
 
-/// region の LTRB / LTWH 両形式を受ける
+/// region は LTRB / LTWH 両形式に対応
 #[cfg(feature = "reader")]
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -85,7 +81,6 @@ struct RegionJson {
     height: Option<f64>,
 }
 
-/// options_json から絞り込み条件と警告を取り出す
 #[cfg(feature = "reader")]
 fn query_from_json(
     options_json: &Option<String>,
@@ -142,9 +137,9 @@ fn resolve_region(
     ))
 }
 
-/// PDF バイト列から座標付き文字を抽出し TextDoc の JSON を返す
+/// 出力は TextDoc の JSON
 ///
-/// options_json の pages・region キーで対象ページ・矩形を絞れる
+/// options_json の pages・region キーで対象ページ・矩形を絞り込み可能
 #[cfg(feature = "reader")]
 #[wasm_bindgen]
 pub fn extract_text_from_pdf(
@@ -165,10 +160,10 @@ pub fn extract_text_from_pdf(
     serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// PDF バイト列から TextItem 互換ビューを抽出しページごとの items の JSON を返す
+/// 出力はページごとの items（TextItem 互換ビュー）の JSON
 ///
-/// bidi は既定オフ。有効化は Rust の `build_text_items_with` か文書入口の options を使う
-/// options_json の pages・region キーで対象ページ・矩形を絞れる
+/// bidi は既定オフ。有効化は Rust の `build_text_items_with` か文書入口の options
+/// options_json の pages・region キーで対象ページ・矩形を絞り込み可能
 #[cfg(feature = "reader")]
 #[wasm_bindgen]
 pub fn extract_text_items_from_pdf(
@@ -193,10 +188,10 @@ pub fn extract_text_items_from_pdf(
     serde_json::to_string(&pages).map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// PDF バイト列から行・単語ビューを抽出しページごとの lines の JSON を返す
+/// 出力はページごとの lines（行・単語ビュー）の JSON
 ///
-/// bidi は既定オフ。有効化は Rust の `build_text_lines_with` か文書入口の options を使う
-/// options_json の pages・region キーで対象ページ・矩形を絞れる
+/// bidi は既定オフ。有効化は Rust の `build_text_lines_with` か文書入口の options
+/// options_json の pages・region キーで対象ページ・矩形を絞り込み可能
 #[cfg(feature = "reader")]
 #[wasm_bindgen]
 pub fn extract_text_lines_from_pdf(
@@ -221,9 +216,9 @@ pub fn extract_text_lines_from_pdf(
     serde_json::to_string(&pages).map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// PDF バイト列から文書モデルを抽出し DocDoc の JSON を返す
+/// 出力は DocDoc の JSON
 ///
-/// options_json の pages・region キーで対象ページ・矩形を絞れる
+/// options_json の pages・region キーで対象ページ・矩形を絞り込み可能
 #[cfg(feature = "document")]
 #[wasm_bindgen]
 pub fn extract_document_from_pdf(
@@ -244,9 +239,32 @@ pub fn extract_document_from_pdf(
     serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// PDF バイト列から Markdown 文字列を返す
+/// 出力は DocContent の JSON
 ///
-/// options_json の pages・region キーで対象ページ・矩形を絞れる
+/// options_json の pages・region キーで対象ページ・矩形を絞り込み可能
+#[cfg(feature = "document")]
+#[wasm_bindgen]
+pub fn extract_content_from_pdf(
+    bytes: &[u8],
+    options_json: Option<String>,
+    password: Option<String>,
+) -> Result<String, JsError> {
+    let options = extract_options_from_json(&options_json)?;
+    let (query, query_warnings) = query_from_json(&options_json)?;
+    let mut doc = crate::document::extract_content_from_bytes_with_query(
+        bytes,
+        password.as_deref(),
+        &options,
+        &query,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))?;
+    doc.warnings.extend(query_warnings);
+    serde_json::to_string(&doc).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// 出力は Markdown 文字列
+///
+/// options_json の pages・region キーで対象ページ・矩形を絞り込み可能
 #[cfg(feature = "document")]
 #[wasm_bindgen]
 pub fn extract_markdown_from_pdf(

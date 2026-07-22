@@ -31,7 +31,7 @@ pub(crate) fn find_startxref(data: &[u8]) -> Result<usize> {
     }
 
     let sig_len = STARTXREF_SIGNATURE.len();
-    // 窓同士がキーワード長ぶん重なるよう末尾から広げる
+    // 窓はキーワード長ぶん重ねて末尾から拡大
     let mut pos = data.len();
     loop {
         pos = pos.saturating_sub(STARTXREF_STEP - sig_len);
@@ -47,7 +47,7 @@ pub(crate) fn find_startxref(data: &[u8]) -> Result<usize> {
     Err(Error::Reader("startxref not found".into()))
 }
 
-/// スライス末尾側から部分列を探す
+/// 末尾側からの部分列検索
 fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
@@ -56,7 +56,7 @@ fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     (0..=last).rev().find(|&i| &haystack[i..i + needle.len()] == needle)
 }
 
-/// startxref 直後の整数オフセットを読む
+/// startxref 直後の整数オフセット
 fn parse_offset_after_startxref(data: &[u8], i: usize) -> Result<usize> {
     let invalid = || Error::Reader("startxref offset is missing or invalid".into());
     let rest = data.get(i..).unwrap_or_default();

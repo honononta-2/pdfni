@@ -1,5 +1,4 @@
-//! PDFから表を抽出しJSONを出すCLI
-//! 使い方: pdfni [--mode auto|ruled|borderless] [--pages 1,3-5] [--region L,T,R,B] [--password-stdin] <input.pdf> [output.json]
+//! PDFから文書内容・表を抽出するCLI
 
 use anyhow::Result;
 use pdfni::{DetectMode, ExtractOptions, ExtractQuery, Region};
@@ -8,12 +7,18 @@ use std::io::{BufRead, IsTerminal};
 
 fn usage() -> ! {
     eprintln!(
-        "使い方: pdfni [--mode auto|ruled|borderless] [--pages 1,3-5] [--region L,T,R,B] [--password-stdin] <input.pdf> [output.json]"
+        "usage: pdfni [--output content|tables|doc] [--mode auto|ruled|borderless] [--pages 1,3-5] [--region L,T,R,B] [--detect-header-footer] [--password-stdin] <input.pdf> [output.json]"
     );
     std::process::exit(2);
 }
 
-// L,T,R,B の4値を top-down 表示座標の矩形として読む
+enum OutputKind {
+    Content,
+    Tables,
+    Doc,
+}
+
+// 矩形は top-down 表示座標
 fn parse_region(s: &str) -> Option<Region> {
     let vals: Vec<f64> = s
         .split(',')
@@ -26,7 +31,6 @@ fn parse_region(s: &str) -> Option<Region> {
     Some(Region::from_ltrb(left, top, right, bottom))
 }
 
-// stdin の 1 行目をパスワードとして読む。末尾の \n / \r\n は 1 回だけ除去
 fn read_password_from_stdin() -> Result<String> {
     let stdin = std::io::stdin();
     if stdin.is_terminal() {
@@ -45,13 +49,22 @@ fn read_password_from_stdin() -> Result<String> {
 }
 
 fn main() -> Result<()> {
+    let mut output_kind = OutputKind::Content;
     let mut mode = DetectMode::Auto;
+    let mut detect_header_footer = false;
     let mut password_stdin = false;
     let mut query = ExtractQuery::default();
     let mut positional = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(a) = args.next() {
-        if a == "--mode" {
+        if a == "--output" {
+            output_kind = match args.next().as_deref() {
+                Some("content") => OutputKind::Content,
+                Some("tables") => OutputKind::Tables,
+                Some("doc") => OutputKind::Doc,
+                _ => usage(),
+            };
+        } else if a == "--mode" {
             mode = match args.next().as_deref() {
                 Some("auto") => DetectMode::Auto,
                 Some("ruled") => DetectMode::Ruled,
@@ -68,6 +81,8 @@ fn main() -> Result<()> {
                 Some(Some(region)) => Some(region),
                 _ => usage(),
             };
+        } else if a == "--detect-header-footer" {
+            detect_header_footer = true;
         } else if a == "--password-stdin" {
             password_stdin = true;
         } else {
@@ -89,19 +104,47 @@ fn main() -> Result<()> {
 
     let options = ExtractOptions {
         mode,
+        detect_header_footer,
         ..ExtractOptions::default()
     };
     let bytes = std::fs::read(&input)?;
-    let mut doc = pdfni::extract_from_bytes_with_query(&bytes, password.as_deref(), &options, &query)?;
-    doc.source = input.clone();
-    let json = serde_json::to_string_pretty(&doc)?;
+    let out_text = match output_kind {
+        OutputKind::Content => {
+            let doc = pdfni::extract_content_from_bytes_with_query(
+                &bytes,
+                password.as_deref(),
+                &options,
+                &query,
+            )?;
+            serde_json::to_string_pretty(&doc)?
+        }
+        OutputKind::Tables => {
+            let mut doc = pdfni::extract_from_bytes_with_query(
+                &bytes,
+                password.as_deref(),
+                &options,
+                &query,
+            )?;
+            doc.source = input.clone();
+            serde_json::to_string_pretty(&doc)?
+        }
+        OutputKind::Doc => {
+            let doc = pdfni::extract_document_from_bytes_with_query(
+                &bytes,
+                password.as_deref(),
+                &options,
+                &query,
+            )?;
+            serde_json::to_string_pretty(&doc)?
+        }
+    };
 
     match output {
         Some(out) => {
-            std::fs::write(&out, json)?;
+            std::fs::write(&out, out_text)?;
             eprintln!("=> {out}");
         }
-        None => println!("{json}"),
+        None => println!("{out_text}"),
     }
     Ok(())
 }

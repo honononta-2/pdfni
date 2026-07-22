@@ -1,6 +1,6 @@
 //! PDF Standard セキュリティハンドラ（R2〜R6）
 //!
-//! 準拠: pdf.js `crypto.js` の CipherTransformFactory、ISO 32000 Algorithm 2 / 2.A / 2.B
+//! 参考: pdf.js `crypto.js`、ISO 32000 Algorithm 2 / 2.A / 2.B
 
 use std::collections::HashMap;
 
@@ -54,7 +54,6 @@ pub(crate) struct CipherFactory {
 }
 
 impl CipherFactory {
-    /// /Encrypt 辞書と /ID[0]・パスワードから構築する
     pub fn from_encrypt_dict(
         encrypt: &Dict,
         file_id: &[u8],
@@ -111,7 +110,7 @@ impl CipherFactory {
                 key_length_bits = 128;
             }
         }
-        // MD5 経路（R2〜R4）の鍵は仕様上 40〜128 bit。上限超過は hash スライスで panic するため弾く
+        // MD5 経路（R2〜R4）の鍵は仕様上 40〜128 bit。超過は hash スライスの panic 防止で拒否
         if key_length_bits < 40
             || key_length_bits % 8 != 0
             || (algorithm <= 4 && key_length_bits > 128)
@@ -138,7 +137,7 @@ impl CipherFactory {
 
         let flags = dict_int(encrypt, "P").unwrap_or(0);
 
-        // 空パスワード → 指定パスワードの順で試す
+        // 試行順は空パスワード → 指定パスワード
         let mut candidates: Vec<Vec<u8>> = vec![Vec::new()];
         if let Some(pw) = password {
             if !pw.is_empty() {
@@ -173,7 +172,7 @@ impl CipherFactory {
 
         let mut encryption_key = encryption_key.ok_or(Error::BadPassword)?;
 
-        // V=4 で鍵が 16 未満のときの救済（pdf.js 準拠）
+        // V=4 で鍵が 16 未満のときの救済
         if algorithm == 4 && encryption_key.len() < 16 {
             let mut padded = vec![0u8; 16];
             padded[..encryption_key.len()].copy_from_slice(&encryption_key);
@@ -194,7 +193,6 @@ impl CipherFactory {
         self.encrypt_metadata
     }
 
-    /// 文字列を復号する
     pub fn decrypt_string(&self, data: &[u8], num: u32, generation: u16) -> Result<Vec<u8>> {
         let method = self.str_method;
         if method == CryptMethod::None {
@@ -204,8 +202,6 @@ impl CipherFactory {
         decrypt_with_method(method, &key, data)
     }
 
-    /// ストリーム本文を復号する
-    ///
     /// `crypt_filter_name` が Some のときは /Crypt の Name。None は既定 StmF
     pub fn decrypt_stream(
         &self,
@@ -328,7 +324,7 @@ fn password_to_bytes(password: &str, revision: i64) -> Vec<u8> {
         let b = password.as_bytes();
         b[..b.len().min(127)].to_vec()
     } else {
-        // R2〜R4 は 1 バイト文字として扱う
+        // R2〜R4 は 1 バイト文字扱い
         password.chars().map(|c| (c as u32).min(255) as u8).collect()
     }
 }
@@ -359,7 +355,7 @@ fn prepare_key_data(
         derive_file_key_r2_r4(password, o, flags, file_id, revision, key_length_bits, encrypt_metadata);
 
     let check = compute_u_entry(&encryption_key, file_id, revision);
-    // R2 は 32 バイト全照合。R≥3 は /U 先頭 16 バイトのみ（pdf.js 準拠）
+    // R2 は 32 バイト全照合。R≥3 は /U 先頭 16 バイトのみ
     let ok = if revision >= 3 {
         check.len() >= 16 && u.len() >= 16 && check[..16] == u[..16]
     } else {
@@ -405,7 +401,6 @@ pub(crate) fn derive_file_key_r2_r4(
     hash[..key_len].to_vec()
 }
 
-/// /U エントリ相当のバイト列を計算する
 fn compute_u_entry(encryption_key: &[u8], file_id: &[u8], revision: i64) -> Vec<u8> {
     if revision >= 3 {
         let mut data = Vec::with_capacity(32 + file_id.len());
@@ -738,7 +733,7 @@ fn dict_bytes(dict: &Dict, key: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// Object 木の文字列を復号し、Stream に crypto_ref を付ける
+/// Object 木の文字列復号と Stream への crypto_ref 付与
 pub(crate) fn decrypt_object_tree(
     obj: &mut Object,
     cipher: &CipherFactory,
@@ -772,7 +767,7 @@ pub(crate) fn decrypt_object_tree(
 
 // --- テスト用の暗号化組み立てヘルパ ---
 
-/// R4 用 /U エントリ（32 バイト）を生成する
+/// R4 用 /U エントリ（32 バイト）
 #[cfg(test)]
 pub(crate) fn compute_u_r3_r4(encryption_key: &[u8], file_id: &[u8]) -> Vec<u8> {
     compute_u_entry(encryption_key, file_id, 4)
@@ -814,7 +809,7 @@ pub(crate) fn compute_o_r3_r4(
     enc
 }
 
-/// R5/R6 用 /U /UE を生成する（ユーザーパスワードのみ）
+/// R5/R6 用 /U /UE（ユーザーパスワードのみ）
 #[cfg(test)]
 pub(crate) fn compute_u_ue_r5_r6(
     revision: i64,
@@ -848,7 +843,7 @@ pub(crate) fn compute_o_oe_dummy_r5_r6(
     validation_salt: &[u8; 8],
     key_salt: &[u8; 8],
 ) -> Result<(Vec<u8>, Vec<u8>)> {
-    // オーナーパスワードは空でユーザーと別 salt にする
+    // オーナーパスワードは空、salt はユーザーと別
     let owner_pw: &[u8] = b"";
     let o_hash = hash_v5(revision, owner_pw, validation_salt, u_bytes)?;
     let mut o = Vec::with_capacity(48);

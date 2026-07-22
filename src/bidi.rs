@@ -1,4 +1,4 @@
-//! PDF 文字列の bidi 並べ替え（pdf.js bidi.js 相当）
+//! PDF 文字列の bidi 並べ替え
 //!
 //! 移植元: refs/pdf.js/src/core/bidi.js（Unicode Bidirectional Algorithm のサブセット）
 
@@ -16,7 +16,7 @@ pub fn apply_bidi(s: &str, vertical: bool) -> BidiText {
     bidi(s, 1, vertical)
 }
 
-/// Bidi クラス（UBA サブセット）。名称は UBA 仕様に合わせる
+/// Bidi クラス（UBA サブセット）。名称は UBA 仕様どおり
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum BidiType {
@@ -55,7 +55,7 @@ fn create_bidi_text(str: String, is_ltr: bool, vertical: bool) -> BidiText {
     }
 }
 
-// U+0000..=U+00FF の Bidi クラス。pdf.js baseTypes と同順
+// U+0000..=U+00FF の Bidi クラス
 #[rustfmt::skip]
 const BASE_TYPES: [BidiType; 256] = [
     BN, BN, BN, BN, BN, BN, BN, BN, BN, S, B, S,
@@ -80,7 +80,7 @@ const BASE_TYPES: [BidiType; 256] = [
     L, L, L, L, L, ON, L, L, L, L, L, L, L, L,
 ];
 
-// U+0600..=U+06FF。061D は欠番のため ON に落とす
+// U+0600..=U+06FF。061D は欠番のため ON 扱い
 #[rustfmt::skip]
 const ARABIC_TYPES: [BidiType; 256] = [
     AN, AN, AN, AN, AN, AN, ON, ON, AL, ET, ET, AL,
@@ -141,7 +141,7 @@ fn char_type(ch: char) -> BidiType {
     }
 }
 
-/// 走査して最初に見つかった強い方向を返す
+/// 最初に見つかった強い方向
 fn strong_dir(iter: impl IntoIterator<Item = BidiType>, fallback: BidiType) -> BidiType {
     for t in iter {
         match t {
@@ -153,16 +153,14 @@ fn strong_dir(iter: impl IntoIterator<Item = BidiType>, fallback: BidiType) -> B
     fallback
 }
 
-/// pdf.js `bidi(str, startLevel, vertical)` 相当
-///
-/// `start_level == -1` のときは文字比率で基準方向を推定する（単体比較用）。
-/// 本番の `apply_bidi` は常に `start_level = 1` を渡す
+/// `start_level == -1` は文字比率で基準方向を推定（単体比較用）
+/// 本番の `apply_bidi` は常に `start_level = 1`
 pub fn bidi(s: &str, start_level: i32, vertical: bool) -> BidiText {
     if s.is_empty() || vertical {
         return create_bidi_text(s.to_string(), true, vertical);
     }
 
-    // pdf.js は UTF-16 コード単位。BMP のみの RTL 対象では char と一致する
+    // RTL 対象は BMP のみで char と UTF-16 コード単位が一致
     let mut chars: Vec<char> = s.chars().collect();
     let str_length = chars.len();
     let mut types: Vec<BidiType> = chars.iter().map(|&c| char_type(c)).collect();
@@ -185,7 +183,7 @@ pub fn bidi(s: &str, start_level: i32, vertical: bool) -> BidiText {
             start_level = 1;
         }
     } else if is_odd(start_level) {
-        // 明示 RTL 基準では dir も rtl にする（pdf.js は startLevel 固定時 isLTR を更新しない）
+        // 明示 RTL 基準では dir も rtl
         is_ltr = false;
     }
 
@@ -267,7 +265,7 @@ pub fn bidi(s: &str, start_level: i32, vertical: bool) -> BidiText {
         }
     }
 
-    // N1. 中立文字は左右の強い方向が一致するとその方向になる
+    // N1. 中立文字は左右の強い方向の一致時にその方向
     let mut i = 0;
     while i < str_length {
         if types[i] == ON {
@@ -329,7 +327,7 @@ pub fn bidi(s: &str, start_level: i32, vertical: bool) -> BidiText {
         }
     }
 
-    // pdf.js: strip < and >
+    // < と > は除去
     let out: String = chars
         .into_iter()
         .filter(|&c| c != '<' && c != '>')

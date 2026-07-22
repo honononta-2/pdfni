@@ -1,6 +1,6 @@
 //! ページツリー走査と view / Contents の解決
 //!
-//! 準拠: pdf.js `catalog.js` getPageDict / getAllPageDicts、`document.js` Page
+//! 参考: pdf.js `catalog.js`・`document.js`
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -36,12 +36,12 @@ struct FetchResolver<'a> {
 
 impl Resolver for FetchResolver<'_> {
     fn resolve(&self, r: Ref) -> Result<Option<Object>> {
-        // ページ属性の解決は寛容に扱い、失敗は未解決として続行する
+        // ページ属性の解決は寛容。失敗は未解決扱い
         Ok(self.xref.fetch(r, self.data).ok())
     }
 }
 
-/// trailer /Root → /Pages を DFS してページを列挙する
+/// /Root → /Pages の DFS によるページ列挙
 pub(crate) fn collect_pages(data: &[u8], xref: &XRef) -> Result<Vec<PageInfo>> {
     let root_raw = xref
         .trailer()
@@ -92,7 +92,7 @@ pub(crate) fn collect_pages(data: &[u8], xref: &XRef) -> Result<Vec<PageInfo>> {
                         stack.extend(arr.iter().rev().map(|o| Arc::new(o.clone())));
                     }
                     _ => {
-                        // Kids が配列でない仕様違反: 自身を葉として扱う
+                        // Kids が配列でない仕様違反: 自身を葉扱い
                         pages.push(build_page_info(data, xref, dict));
                     }
                 }
@@ -109,7 +109,7 @@ pub(crate) fn collect_pages(data: &[u8], xref: &XRef) -> Result<Vec<PageInfo>> {
     Ok(pages)
 }
 
-/// /Type が Page、または /Kids を持たないノードを葉とする
+/// 葉の条件は /Type が Page、または /Kids を持たないこと
 fn is_page_leaf(dict: &Dict, xref: &XRef, data: &[u8]) -> bool {
     if type_is_page(dict, xref, data) {
         return true;
@@ -128,7 +128,7 @@ fn type_is_page(dict: &Dict, xref: &XRef, data: &[u8]) -> bool {
 }
 
 fn build_page_info(data: &[u8], xref: &XRef, page_dict: &Dict) -> PageInfo {
-    // Parent チェーンは1回だけ収集し、各属性の継承解決で共有する
+    // Parent チェーンの収集は1回、各属性の継承解決で共有
     let ancestors = collect_ancestors(data, xref, page_dict);
     let chain = || {
         std::iter::once(page_dict).chain(ancestors.iter().filter_map(|o| match &**o {
@@ -142,7 +142,7 @@ fn build_page_info(data: &[u8], xref: &XRef, page_dict: &Dict) -> PageInfo {
     let view = compute_view(crop, media);
     let rotate = resolve_rotate(data, xref, chain());
     let resources = resolve_resources(data, xref, chain());
-    // 解決のみ。復号はページ並列処理側で行う
+    // 解決のみ。復号はページ並列処理側
     let contents = match page_dict.get("Contents") {
         Some(raw) => xref.resolve_shared(raw, data),
         None => Arc::new(Object::Null),
@@ -155,7 +155,7 @@ fn build_page_info(data: &[u8], xref: &XRef, page_dict: &Dict) -> PageInfo {
     }
 }
 
-/// Parent チェーンの祖先辞書を近い順に集める（自身は含まない）
+/// 近い順の祖先辞書（自身は含まない）
 fn collect_ancestors(data: &[u8], xref: &XRef, page_dict: &Dict) -> Vec<Arc<Object>> {
     let mut visited: HashSet<Ref> = HashSet::new();
     let mut ancestors: Vec<Arc<Object>> = Vec::new();
@@ -170,7 +170,7 @@ fn collect_ancestors(data: &[u8], xref: &XRef, page_dict: &Dict) -> Vec<Arc<Obje
     ancestors
 }
 
-/// 継承つき /Rotate の解決。90度の倍数以外は0として扱う
+/// 継承つき /Rotate の解決。90度の倍数以外は 0 扱い
 fn resolve_rotate<'a>(
     data: &[u8],
     xref: &XRef,
@@ -221,7 +221,7 @@ fn compute_view(crop: [f64; 4], media: [f64; 4]) -> [f64; 4] {
     }
 }
 
-/// チェーンを親側へ辿り、最初に見つかった矩形を返す（正規化済み）
+/// 親側チェーンで最初に見つかった矩形（正規化済み）
 fn inherit_box<'a>(
     data: &[u8],
     xref: &XRef,
@@ -238,7 +238,7 @@ fn inherit_box<'a>(
     None
 }
 
-/// Resources を全階層から集め、子優先で浅いマージする
+/// 全階層の Resources の子優先の浅いマージ
 fn resolve_resources<'a>(
     data: &[u8],
     xref: &XRef,
@@ -284,7 +284,6 @@ fn follow_parent(
     }
 }
 
-/// 解決済み Contents を復号する
 pub(crate) fn decode_contents(data: &[u8], xref: &XRef, contents: &Object) -> Result<Vec<u8>> {
     let resolver = FetchResolver { xref, data };
 
@@ -305,7 +304,7 @@ pub(crate) fn decode_contents(data: &[u8], xref: &XRef, contents: &Object) -> Re
                     xref.decode_limit(),
                 )?);
             }
-            // ストリーム間は空白1つで連結する
+            // ストリーム間の連結は空白1つ
             Ok(chunks.join(&b' '))
         }
         _ => Ok(Vec::new()),

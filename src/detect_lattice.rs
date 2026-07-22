@@ -19,9 +19,9 @@ pub struct LatticeSettings {
     pub edge_min_length: f64,
     /// 整形前に切る線分の最小長
     pub edge_min_length_prefilter: f64,
-    /// 罫線行内をテキスト行で細分する
+    /// 罫線行内のテキスト行細分
     pub refine_rows: bool,
-    /// 複数列にまたがるセルを格子の列軸で細分する
+    /// 複数列にまたがるセルの列軸細分
     pub refine_cols: bool,
     /// 格子列と文字塊の列並びの整合検査
     pub col_check: bool,
@@ -99,7 +99,7 @@ fn crosses(v: &Edge, h: &Edge, tol: f64) -> bool {
     v.top <= h.top + tol && v.bottom >= h.top - tol && v.x0 >= h.x0 - tol && v.x0 <= h.x1 + tol
 }
 
-/// 罫線網ごとの外接矩形で欠けた外枠を仮想線で補う
+/// 罫線網ごとの外接矩形による欠けた外枠の仮想線補完
 /// 外枠のない内側格子だけの表を閉じたセルにするための前処理
 fn complete_outer_borders(edges: &[Edge], tol: f64) -> Vec<Edge> {
     let n = edges.len();
@@ -246,7 +246,7 @@ fn intersections_to_cells(map: &HashMap<(i64, i64), Xsec>) -> Vec<BBox> {
     let mut points: Vec<(i64, i64)> = map.keys().copied().collect();
     points.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
-    // 交点を列と行で索引 走査済みの pt より後の候補を接尾辞スライスで取り出す
+    // 交点の列・行索引。候補は走査済み pt より後の接尾辞スライス
     let mut by_x: HashMap<i64, Vec<(i64, i64)>> = HashMap::new();
     let mut by_y: HashMap<i64, Vec<(i64, i64)>> = HashMap::new();
     for &p in &points {
@@ -302,7 +302,7 @@ fn intersections_to_cells(map: &HashMap<(i64, i64), Xsec>) -> Vec<BBox> {
     cells
 }
 
-/// セルを表ごとにまとめる
+/// セルの表ごとのグループ化
 fn cells_to_tables(cells: &[BBox]) -> Vec<Vec<BBox>> {
     let corners = |c: &BBox| -> [(i64, i64); 4] {
         [

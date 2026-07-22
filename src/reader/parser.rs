@@ -1,13 +1,13 @@
 //! PDF構文解析とストリーム切り出し
 //!
-//! 準拠: pdf.js `parser.js` の Parser・makeStream・#findStreamLength
+//! 参考: pdf.js `parser.js`
 
 use crate::error::{Error, Result};
 
 use super::lexer::{Cmd, Lexer, Op, Token};
 use super::object::{Dict, Object, Ref, Stream};
 
-/// 間接参照の解決。xref が実装する。/Length が Ref のときに使う
+/// 間接参照の解決。実装は xref、用途は /Length が Ref のとき
 ///
 /// Ok(None) は未解決（Null 相当）、Err は解決処理自体の失敗
 #[allow(dead_code)]
@@ -61,13 +61,12 @@ impl<'a> Parser<'a> {
         self.buf2 = self.lexer.next_token();
     }
 
-    /// 先読みを1つ進め、消費したトークンを返す
+    /// 先読みを1つ進めた消費トークン
     fn shift(&mut self) -> Token {
         let next = self.lexer.next_token();
         std::mem::replace(&mut self.buf1, std::mem::replace(&mut self.buf2, next))
     }
 
-    /// 1オブジェクトを構築する
     pub fn get_obj(&mut self, resolver: &dyn Resolver) -> Result<Object> {
         match self.shift() {
             Token::DictStart => self.parse_dict(resolver),
@@ -128,7 +127,7 @@ impl<'a> Parser<'a> {
         }
 
         if matches!(self.buf1, Token::Eof) {
-            // EOF 到達時は読めた分を返す
+            // EOF 到達時は読めた分まで
             return Ok(Object::Dict(dict));
         }
 
@@ -158,14 +157,13 @@ impl<'a> Parser<'a> {
         if !matches!(self.buf1, Token::Eof) {
             self.shift(); // ]
         }
-        // EOF 到達時は読めた分を返す
+        // EOF 到達時は読めた分まで
         Ok(Object::Array(arr))
     }
 
-    /// pdf.js makeStream 相当。ストリーム本文のデコードは行わない
+    /// ストリーム化。本文のデコードなし
     fn make_stream(&mut self, dict: Dict, resolver: &dyn Resolver) -> Result<Object> {
         // buf1 = >> , buf2 = stream。字句位置は stream トークン消費後
-        // stream キーワード直後の改行を飛ばし、本文開始位置を得る
         self.lexer.skip_to_next_line();
         let start = self.lexer.byte_pos();
 
@@ -183,7 +181,7 @@ impl<'a> Parser<'a> {
             })?
         };
 
-        // endstream（または誤植・切詰）の後へ字句位置を進めてバッファを張り直す
+        // 字句位置は endstream（誤植・切詰含む）の後、バッファは張り直し
         self.lexer.set_pos(start + length);
         let _ = self.lexer.next_token();
         self.refill();
@@ -201,7 +199,7 @@ impl<'a> Parser<'a> {
     }
 
     /// /Length が合わないときの endstream 救済スキャン
-    /// 全データがメモリ上にあるためブロック分割はせず末尾まで走査する
+    /// 全データがメモリ上にあるためブロック分割なしの全走査
     fn find_stream_length(&self, start_pos: usize) -> Option<usize> {
         let data = self.data;
         // 後続候補: stream（正常）/ steam（誤植）/ strea（切詰）
@@ -218,7 +216,6 @@ impl<'a> Parser<'a> {
             for part in PARTIALS {
                 let k = rest.iter().zip(*part).take_while(|(a, b)| a == b).count();
                 if k >= STREAM_SUFFIX_LEN {
-                    // endstream
                     return Some(i - start_pos);
                 }
                 if k == part.len() {
@@ -238,7 +235,7 @@ fn is_endstream_whitespace(b: u8) -> bool {
     matches!(b, 0x20 | 0x09 | 0x0d | 0x0a)
 }
 
-/// /Length を解決する。非整数・未解決は 0
+/// 非整数・未解決の /Length は 0
 fn resolve_length(dict: &Dict, resolver: &dyn Resolver) -> Result<usize> {
     Ok(match dict.get("Length") {
         Some(Object::Int(n)) if *n >= 0 => *n as usize,
@@ -353,7 +350,7 @@ mod tests {
         };
         assert!(matches!(d.get("Type"), Some(Object::Name(n)) if n == "Page"));
         // 42 をキーとして飛ばしたあと /Type が値側に回る可能性もあるが、
-        // pdf.js 同様「キーが Name でないトークンを1つ捨てて継続」する
+        // キーが Name でないトークンを1つ捨てて継続するため
         // 入力 `42 /Type /Page` では 42 を捨て → /Type がキー、/Page が値
         assert_eq!(d.len(), 1);
     }

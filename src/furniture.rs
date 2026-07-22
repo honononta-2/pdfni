@@ -9,7 +9,7 @@ const EDGE_GAP_MAX: f64 = 30.0;
 /// font_size 近似の比上限
 const FS_RATIO_MAX: f64 = 1.05;
 
-/// 文書単位でヘッダ・フッタの役割を付ける
+/// 文書単位のヘッダ・フッタ役割付与
 pub fn assign_header_footer(doc: &mut DocDoc) {
     for page in &mut doc.pages {
         for block in &mut page.blocks {
@@ -133,7 +133,7 @@ fn apply_direction(doc: &mut DocDoc, dir: Direction, candidates: Vec<Vec<Cand>>)
             if !(pair_ok[p - 1] && pair_ok[p + 1]) {
                 continue;
             }
-            // 両隣は一括更新で n = k+1 になっている
+            // 両隣は一括更新済みで n = k+1
             if n_p[p - 1] != k + 1 || n_p[p + 1] != k + 1 {
                 continue;
             }
@@ -164,7 +164,7 @@ fn apply_direction(doc: &mut DocDoc, dir: Direction, candidates: Vec<Vec<Cand>>)
     }
 }
 
-/// ヘッダ帯とフッタ帯の候補を 1 度の走査で分別する
+/// ヘッダ帯・フッタ帯候補の 1 走査での分別
 fn page_candidates_both(page: &crate::document::DocPage) -> (Vec<Cand>, Vec<Cand>) {
     let w = page.width;
     let h = page.height;

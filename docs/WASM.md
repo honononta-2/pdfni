@@ -39,6 +39,7 @@ for the full feature layering and the CMap trimming warning.
 | `extract_text_items_from_pdf(bytes, password?, options_json?)` | `reader` | PDF bytes → pdf.js-like items per page |
 | `extract_text_lines_from_pdf(bytes, password?, options_json?)` | `reader` | PDF bytes → line / word view per page |
 | `extract_document_from_pdf(bytes, options_json?, password?)` | `document` | PDF bytes → `DocDoc` JSON (blocks + tables) |
+| `extract_content_from_pdf(bytes, options_json?, password?)` | `document` | PDF bytes → `DocContent` JSON (blocks + tables, no per-glyph data) |
 | `extract_markdown_from_pdf(bytes, options_json?, password?)` | `document` | PDF bytes → Markdown string |
 
 `options_json` accepts the same JSON that `ExtractOptions` deserializes on the
@@ -54,5 +55,7 @@ the document / Markdown paths, or use the Rust `_with` APIs directly.
 
 ## Browser smoke page
 
-An end-to-end browser example lives under `test/wasm-test/`. See
-`test/wasm-test/README.md` for how to build and serve it.
+An end-to-end browser example lives under `demo/`. Build the wasm package
+with `wasm-pack build --release --target web --out-dir demo/pkg` (default
+features — the page imports document-level APIs), then serve it with
+`node demo/server.mjs`.

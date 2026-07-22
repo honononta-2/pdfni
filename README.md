@@ -29,8 +29,10 @@ the browser.
 cargo run --release -- input.pdf output.json
 ```
 
-Prints the table `Document` JSON to `output.json`. See [docs/CLI.md](docs/CLI.md)
-for modes and encrypted PDFs.
+Prints the content JSON (text blocks and tables in reading order) to
+`output.json`. Use `--output tables` for the table-only `Document` JSON, or
+`--output doc` for the full document model. See [docs/CLI.md](docs/CLI.md)
+for options, modes, and encrypted PDFs.
 
 ### Rust
 

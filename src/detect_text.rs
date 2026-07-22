@@ -89,7 +89,7 @@ pub(crate) fn is_prose_cell(s: &str) -> bool {
 
 /// 文章比率が高くても表として受理する整列条件
 ///
-/// ほぼ全セルが埋まり各列の左端が揃う候補は長文セルの表とみなす
+/// ほぼ全セルが埋まり各列の左端が揃う候補は長文セルの表として受理
 fn aligned_full_grid(t: &Table, s: &TextSettings) -> bool {
     if t.n_rows < s.prose_override_min_rows {
         return false;
@@ -182,7 +182,7 @@ pub(crate) fn median(mut v: Vec<f64>) -> f64 {
     v[v.len() / 2]
 }
 
-/// 縦横どちらかでしか整列しないセグメントを反復して落とす
+/// 縦横どちらかでしか整列しないセグメントの反復除去
 fn connected_set(segs: &[Seg], tol: f64) -> Vec<usize> {
     let n0 = segs.len();
     let mut active: Vec<usize> = (0..n0).collect();
@@ -237,7 +237,7 @@ fn connected_set(segs: &[Seg], tol: f64) -> Vec<usize> {
     active
 }
 
-/// 水平に重なるセグメントの x 区間をまとめて列帯にする
+/// 水平に重なるセグメントの x 区間の列帯化
 pub(crate) fn column_bands(segs: &[Seg], members: &[usize], gap: f64) -> Vec<(f64, f64)> {
     let mut iv: Vec<(f64, f64)> = members
         .iter()
@@ -330,7 +330,7 @@ fn bands_match(a: &[(f64, f64)], b: &[(f64, f64)]) -> bool {
 
 /// 文字整列方式による1ページの表検出
 pub fn detect(segs: &[Seg], s: &TextSettings, scale: Option<f64>) -> Vec<Table> {
-    // 最小個数ゲートは 1 以上として扱う
+    // 最小個数ゲートは 1 以上
     let min_segs = s.min_table_segs.max(1);
     if segs.len() < min_segs {
         return Vec::new();
@@ -491,9 +491,9 @@ pub fn detect(segs: &[Seg], s: &TextSettings, scale: Option<f64>) -> Vec<Table> 
     tables
 }
 
-/// 1つの行グループから1表を組み立てる
+/// 1行グループからの表組み立て
 ///
-/// 表とセルごとのリーダー由来フラグを返す
+/// 返り値は表とセルごとのリーダー由来フラグ
 fn build_table(
     segs: &[Seg],
     active: &[usize],
