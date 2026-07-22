@@ -1,10 +1,11 @@
 [package]
 name = "pdfni"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Extract tables and Markdown from text-embedded PDFs, with a built-in pure-Rust PDF reader adapted from Mozilla pdf.js."
 license = "Apache-2.0"
+repository = "https://github.com/honononta-2/pdfni"
 readme = "README.md"
 include = ["/src/**", "/examples/**", "/data/bcmaps/**", "/README.md", "/LICENSE", "/NOTICE", "!.DS_Store"]
 
