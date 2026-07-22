@@ -228,6 +228,7 @@ fn finalize_parts(
             g
         })
         .collect();
+    dedup_overlaid_parts(&mut glyphs);
     let spaces = synth_word_spaces(&glyphs);
     glyphs.extend(spaces);
     ExtractedParts {
@@ -655,6 +656,36 @@ fn dedup_overlaid_glyphs(chars: &mut Vec<PendingTextChar>) {
             rot_q: c.rot_q,
             upright: c.upright,
             bits,
+        })
+    });
+}
+
+/// 重複グリフ除去の完全一致キー（parts 側）
+#[derive(PartialEq, Eq, Hash)]
+struct PartDedupKey {
+    ch: char,
+    upright: bool,
+    rot: i32,
+    fs_bits: Option<u64>,
+    bits: [u64; 4],
+}
+
+/// 重ね印字の重複グリフ除去（parts 側）
+///
+/// 完全一致の再描画をストリーム先勝ちで1つに畳む。合成空白の生成前に呼ぶ
+fn dedup_overlaid_parts(glyphs: &mut Vec<GlyphPart>) {
+    let mut seen = HashSet::new();
+    glyphs.retain(|g| {
+        let vals = [g.left, g.right, g.top, g.bottom];
+        if vals.iter().any(|v| !v.is_finite()) || g.font_size.is_some_and(|v| !v.is_finite()) {
+            return true;
+        }
+        seen.insert(PartDedupKey {
+            ch: g.ch,
+            upright: g.upright,
+            rot: g.rot,
+            fs_bits: g.font_size.map(norm_f64_bits),
+            bits: vals.map(norm_f64_bits),
         })
     });
 }
@@ -3605,6 +3636,108 @@ Q
             dedup_glyph("C", 10.0),
         ];
         assert_eq!(dedup_texts(&mut v), vec!["A", "B", "C"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // 重複グリフ除去 parts 側（dedup_overlaid_parts）
+    // -----------------------------------------------------------------------
+
+    /// 除去テスト用の基準 parts グリフ
+    fn dedup_part(ch: char, x: f64) -> GlyphPart {
+        GlyphPart {
+            ch,
+            left: x,
+            right: x + 5.0,
+            top: 10.0,
+            bottom: 20.0,
+            font_size: Some(10.0),
+            upright: true,
+            rot: 0,
+        }
+    }
+
+    /// 完全一致2個は先頭のみ残り順序が保たれる
+    #[test]
+    fn dedup_parts_exact_pair_keeps_first() {
+        let mut v = vec![
+            dedup_part('A', 0.0),
+            dedup_part('B', 5.0),
+            dedup_part('A', 0.0),
+        ];
+        dedup_overlaid_parts(&mut v);
+        let chs: Vec<char> = v.iter().map(|g| g.ch).collect();
+        assert_eq!(chs, vec!['A', 'B']);
+    }
+
+    /// キーのいずれか1箇所だけが違う組は両方残る
+    #[test]
+    fn dedup_parts_single_field_difference_keeps_both() {
+        let variants: Vec<(&str, Box<dyn Fn(&mut GlyphPart)>)> = vec![
+            ("ch", Box::new(|g| g.ch = 'B')),
+            ("left", Box::new(|g| g.left += 0.5)),
+            ("right", Box::new(|g| g.right += 0.5)),
+            ("top", Box::new(|g| g.top += 0.5)),
+            ("bottom", Box::new(|g| g.bottom += 0.5)),
+            ("font_size", Box::new(|g| g.font_size = Some(11.0))),
+            ("font_size_none", Box::new(|g| g.font_size = None)),
+            ("upright", Box::new(|g| g.upright = false)),
+            ("rot", Box::new(|g| g.rot = 180)),
+        ];
+        for (name, mutate) in variants {
+            let mut b = dedup_part('A', 0.0);
+            mutate(&mut b);
+            let mut v = vec![dedup_part('A', 0.0), b];
+            dedup_overlaid_parts(&mut v);
+            assert_eq!(v.len(), 2, "field {name}");
+        }
+    }
+
+    /// 非有限値を含むグリフは残る
+    #[test]
+    fn dedup_parts_keeps_nonfinite() {
+        let muts: Vec<Box<dyn Fn(&mut GlyphPart)>> = vec![
+            Box::new(|g| g.top = f64::INFINITY),
+            Box::new(|g| g.font_size = Some(f64::NAN)),
+        ];
+        for (i, m) in muts.into_iter().enumerate() {
+            let mut a = dedup_part('A', 0.0);
+            m(&mut a);
+            let mut b = dedup_part('A', 0.0);
+            m(&mut b);
+            let mut v = vec![a, b];
+            dedup_overlaid_parts(&mut v);
+            assert_eq!(v.len(), 2, "case {i}");
+        }
+    }
+
+    /// +0.0 と -0.0 は同一視する
+    #[test]
+    fn dedup_parts_zero_sign_normalized() {
+        let mut a = dedup_part('A', 0.0);
+        a.left = 0.0;
+        let mut b = dedup_part('A', 0.0);
+        b.left = -0.0;
+        let mut v = vec![a, b];
+        dedup_overlaid_parts(&mut v);
+        assert_eq!(v.len(), 1);
+    }
+
+    /// 同一テキストの二重描画が合成空白の生成前に畳まれる（extract_parts 経由）
+    #[test]
+    fn extract_parts_dedup_double_draw() {
+        let contents = b"BT /F1 10 Tf 1 0 0 1 0 50 Tm (AB) Tj 1 0 0 1 0 50 Tm (AB) Tj 1 0 0 1 13 50 Tm (CD) Tj ET";
+        let ExtractedParts { glyphs, .. } = extract_parts(
+            contents,
+            &Dict::new(),
+            default_view(),
+            ContentCtx {
+                data: &[],
+                xref: None,
+            },
+            0,
+        );
+        let chs: Vec<char> = glyphs.iter().map(|g| g.ch).collect();
+        assert_eq!(chs, vec!['A', 'B', 'C', 'D', ' '], "got {chs:?}");
     }
 
     /// 縦書きフォントの二重描画も先頭の1回分だけ残る（extract_text 経由）
