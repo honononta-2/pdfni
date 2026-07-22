@@ -97,6 +97,13 @@ pub struct TextWord {
     pub chars: Vec<u32>,
 }
 
+/// 中心点が矩形内にある文字だけ残す
+pub fn retain_chars_in_region(page: &mut TextPage, region: &crate::query::Region) {
+    page.chars.retain(|c| {
+        region.contains_point((c.left + c.right) / 2.0, (c.top + c.bottom) / 2.0)
+    });
+}
+
 // pdf.js evaluator の閾値（fontSize 比）
 const TRACKING_SPACE_FACTOR: f64 = 0.102;
 const NOT_A_SPACE_FACTOR: f64 = 0.03;
@@ -2158,5 +2165,30 @@ mod tests {
         assert_eq!(lines[0].chars, vec![0, 1]);
         assert_eq!(lines[1].words[0].text, "CD");
         assert_eq!(lines[1].chars, vec![2, 3]);
+    }
+
+    #[test]
+    fn retain_chars_in_region_keeps_center_inside() {
+        use crate::query::Region;
+
+        let mut page = TextPage {
+            width: 100.0,
+            height: 100.0,
+            fonts: vec![font(false)],
+            chars: vec![
+                ch("A", 0.0, 0.0, 10.0, 0.0, 10.0, false),
+                ch("B", 40.0, 40.0, 10.0, 0.0, 10.0, false),
+                ch("C", 80.0, 80.0, 10.0, 0.0, 10.0, false),
+            ],
+        };
+        let region = Region::from_ltrb(30.0, 30.0, 60.0, 60.0);
+        retain_chars_in_region(&mut page, &region);
+        assert_eq!(page.chars.len(), 1);
+        assert_eq!(page.chars[0].text, "B");
+
+        // 境界上の中心は含む
+        let region = Region::from_ltrb(45.0, 45.0, 60.0, 60.0);
+        retain_chars_in_region(&mut page, &region);
+        assert_eq!(page.chars.len(), 1);
     }
 }

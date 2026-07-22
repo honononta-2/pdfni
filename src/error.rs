@@ -18,6 +18,9 @@ pub enum Error {
     #[error("page read failed: {0}")]
     PageRead(String),
 
+    #[error("invalid page selection: {0}")]
+    InvalidPageSelection(String),
+
     #[error("pure Rust reader error: {0}")]
     Reader(String),
 }

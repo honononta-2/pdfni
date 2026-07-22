@@ -40,6 +40,31 @@
     padding: 28px 20px 60px;
   }
 
+  .page-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 26px;
+  }
+  .page-title {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+  }
+  .gh-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 13px;
+    transition: color .15s;
+  }
+  .gh-link:hover { color: var(--accent); }
+  .gh-link svg { width: 16px; height: 16px; fill: currentColor; }
+
   .field { margin-bottom: 22px; }
 
   .field-label {
@@ -100,7 +125,9 @@
   }
   .remove-btn:hover { color: var(--danger); border-color: var(--danger); }
 
-  input[type="password"] {
+  input[type="password"],
+  input[type="text"],
+  input[type="number"] {
     width: 100%;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius);
@@ -110,12 +137,86 @@
     font-family: var(--sans);
     color: var(--text);
   }
-  input[type="password"]:focus {
+  input[type="password"]:focus,
+  input[type="text"]:focus,
+  input[type="number"]:focus {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-soft);
   }
-  input[type="password"]:disabled { opacity: .5; }
+  input[type="password"]:disabled,
+  input[type="text"]:disabled,
+  input[type="number"]:disabled { opacity: .5; }
+
+  .region-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .region-row input { flex: 1 1 90px; min-width: 70px; width: auto; }
+  .region-row .head-btn { padding: 8px 12px; flex: none; }
+  .region-row .head-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  #pv-dialog {
+    padding: 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--panel);
+    color: var(--text);
+    max-width: none;
+  }
+  #pv-dialog::backdrop { background: rgba(31, 31, 28, .5); }
+  .pv-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 10px;
+  }
+  .pv-nav, .pv-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .pv-canvas-wrap {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  #pv-canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    cursor: crosshair;
+    touch-action: none;
+  }
+  .pv-select {
+    position: absolute;
+    border: 1.5px solid var(--accent);
+    background: rgba(47, 111, 106, .15);
+    pointer-events: none;
+  }
+  .pv-page {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+  .pv-hint {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .pv-error {
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--danger);
+    border-radius: var(--radius);
+    color: var(--danger);
+    font-size: 13px;
+  }
 
   .radios {
     display: grid;
@@ -256,6 +357,14 @@
 <body>
   <div class="wrap">
 
+    <header class="page-head">
+      <h1 class="page-title">pdfni demo</h1>
+      <a class="gh-link" href="https://github.com/honononta-2/pdfni" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </header>
+
     <div class="field">
       <span class="field-label">PDF File</span>
       <div class="dropzone disabled" id="dropzone">
@@ -275,6 +384,42 @@
       <label class="field-label" for="password">Password</label>
       <input type="password" id="password" autocomplete="off" disabled>
     </div>
+
+    <div class="field">
+      <label class="field-label" for="pages">Pages</label>
+      <input type="text" id="pages" placeholder="1,3-5,7" autocomplete="off" disabled>
+    </div>
+
+    <div class="field">
+      <span class="field-label">Region</span>
+      <div class="region-row">
+        <input type="number" id="rg-left" placeholder="left" step="any" disabled>
+        <input type="number" id="rg-top" placeholder="top" step="any" disabled>
+        <input type="number" id="rg-right" placeholder="right" step="any" disabled>
+        <input type="number" id="rg-bottom" placeholder="bottom" step="any" disabled>
+        <button type="button" class="head-btn" id="preview-btn" disabled>Select on preview</button>
+      </div>
+    </div>
+
+    <dialog id="pv-dialog">
+      <div class="pv-head">
+        <div class="pv-nav">
+          <button type="button" class="head-btn" id="pv-prev">&#8592;</button>
+          <span class="pv-page" id="pv-page"></span>
+          <button type="button" class="head-btn" id="pv-next">&#8594;</button>
+        </div>
+        <span class="pv-hint">Drag on the page to select a region</span>
+        <div class="pv-actions">
+          <button type="button" class="head-btn" id="pv-apply">Apply</button>
+          <button type="button" class="head-btn" id="pv-cancel">Cancel</button>
+        </div>
+      </div>
+      <div class="pv-error" id="pv-error" hidden></div>
+      <div class="pv-canvas-wrap">
+        <canvas id="pv-canvas"></canvas>
+        <div class="pv-select" id="pv-select" hidden></div>
+      </div>
+    </dialog>
 
     <div class="field">
       <span class="field-label">Output Mode</span>
@@ -337,9 +482,15 @@ const controls = { tabs: $('tabs'), picker: $('table-picker'), csv: $('csv'), co
 const panes = { text: $('text-out'), table: $('table-out'), preview: $('md-preview') };
 
 let wasm = null;
+let wasmReady = false;
 let currentFile = null;
 const results = { reader: null, tables: null, doc: null, md: null };
 const activeTab = { tables: 'preview', md: 'preview' };
+
+const PDFJS_ROOT = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38';
+const pvState = { lib: null, doc: null, pageNum: 1, base: null, drag: null, sel: null };
+const pvCanvas = $('pv-canvas');
+const pvDialog = $('pv-dialog');
 
 try {
   wasm = await import('./pkg/pdfni.js');
@@ -347,6 +498,8 @@ try {
   dropzone.classList.remove('disabled');
   $('password').disabled = false;
   document.querySelectorAll('input[name=mode]').forEach((r) => { r.disabled = false; });
+  wasmReady = true;
+  updateFilterState();
 } catch (e) {
   showError('Failed to load wasm: ' + (e?.message ?? e));
 }
@@ -382,6 +535,7 @@ function acceptFile(file) {
   $('dz-file').hidden = false;
   dropzone.classList.add('has-file');
   runBtn.disabled = false;
+  updateFilterState();
 }
 
 function clearFile() {
@@ -391,6 +545,7 @@ function clearFile() {
   $('dz-file').hidden = true;
   dropzone.classList.remove('has-file');
   runBtn.disabled = true;
+  updateFilterState();
 }
 
 dropzone.addEventListener('click', () => {
@@ -416,6 +571,199 @@ $('remove').addEventListener('click', (e) => {
 });
 dropzone.addEventListener('drop', (e) => acceptFile(e.dataTransfer.files[0]));
 
+function updateFilterState() {
+  const on = wasmReady;
+  $('pages').disabled = !on;
+  for (const id of ['rg-left', 'rg-top', 'rg-right', 'rg-bottom']) $(id).disabled = !on;
+  $('preview-btn').disabled = !on || !currentFile;
+  if (!on || !currentFile) closePreview();
+}
+
+function filterOptionsJson() {
+  const opts = {};
+  const pages = $('pages').value.trim();
+  if (pages) opts.pages = pages;
+  const vals = ['rg-left', 'rg-top', 'rg-right', 'rg-bottom'].map((id) => $(id).value.trim());
+  if (vals.every((v) => v !== '')) {
+    const [left, top, right, bottom] = vals.map(Number);
+    opts.region = { left, top, right, bottom };
+  } else if (vals.some((v) => v !== '')) {
+    throw new Error('Region needs all of left, top, right, bottom.');
+  }
+  return Object.keys(opts).length ? JSON.stringify(opts) : undefined;
+}
+
+$('preview-btn').addEventListener('click', () => { openPreview(); });
+$('pv-cancel').addEventListener('click', () => pvDialog.close());
+$('pv-apply').addEventListener('click', () => {
+  if (pvState.sel) {
+    const round = (v) => Math.round(v * 100) / 100;
+    $('rg-left').value = round(pvState.sel.left);
+    $('rg-top').value = round(pvState.sel.top);
+    $('rg-right').value = round(pvState.sel.right);
+    $('rg-bottom').value = round(pvState.sel.bottom);
+  }
+  pvDialog.close();
+});
+$('pv-prev').addEventListener('click', () => {
+  showPreviewPage(pvState.pageNum - 1).catch(showPreviewError);
+});
+$('pv-next').addEventListener('click', () => {
+  showPreviewPage(pvState.pageNum + 1).catch(showPreviewError);
+});
+pvDialog.addEventListener('close', () => {
+  pvState.doc?.destroy();
+  pvState.doc = null;
+  pvState.drag = null;
+});
+
+function showPreviewError(e) {
+  if (!pvDialog.open) return;
+  const el = $('pv-error');
+  el.textContent = 'Preview failed: ' + (e?.message ?? e);
+  el.hidden = false;
+}
+
+async function openPreview() {
+  if (!currentFile) return;
+  pvDialog.showModal();
+  $('pv-error').hidden = true;
+  $('pv-page').textContent = '';
+  $('pv-select').hidden = true;
+  try {
+    if (!pvState.lib) {
+      pvState.lib = await import(`${PDFJS_ROOT}/build/pdf.min.mjs`);
+      pvState.lib.GlobalWorkerOptions.workerSrc = `${PDFJS_ROOT}/build/pdf.worker.min.mjs`;
+    }
+    const bytes = new Uint8Array(await currentFile.arrayBuffer());
+    const password = $('password').value || undefined;
+    // cMapUrl / standardFontDataUrl are required to draw text of CID-font PDFs
+    const doc = await pvState.lib.getDocument({
+      data: bytes,
+      password,
+      cMapUrl: `${PDFJS_ROOT}/cmaps/`,
+      cMapPacked: true,
+      standardFontDataUrl: `${PDFJS_ROOT}/standard_fonts/`,
+    }).promise;
+    if (!pvDialog.open) {
+      doc.destroy();
+      return;
+    }
+    pvState.doc = doc;
+    pvState.sel = selFromInputs();
+    await showPreviewPage(1);
+  } catch (e) {
+    showPreviewError(e);
+  }
+}
+
+async function showPreviewPage(n) {
+  if (!pvState.doc) return;
+  const num = Math.min(Math.max(n, 1), pvState.doc.numPages);
+  pvState.pageNum = num;
+  const page = await pvState.doc.getPage(num);
+  const base = page.getViewport({ scale: 1 });
+  pvState.base = { width: base.width, height: base.height };
+  const maxW = Math.max(window.innerWidth * 0.9 - 32, 280);
+  const maxH = Math.max(window.innerHeight * 0.85 - 80, 280);
+  const scale = Math.min(maxW / base.width, maxH / base.height);
+  const dpr = window.devicePixelRatio || 1;
+  const viewport = page.getViewport({ scale });
+  pvCanvas.width = Math.floor(viewport.width * dpr);
+  pvCanvas.height = Math.floor(viewport.height * dpr);
+  pvCanvas.style.width = `${Math.floor(viewport.width)}px`;
+  pvCanvas.style.height = `${Math.floor(viewport.height)}px`;
+  const ctx = pvCanvas.getContext('2d');
+  await page.render({
+    canvasContext: ctx,
+    viewport,
+    transform: dpr === 1 ? undefined : [dpr, 0, 0, dpr, 0, 0],
+  }).promise;
+  $('pv-page').textContent = `${num} / ${pvState.doc.numPages}`;
+  drawSelection();
+}
+
+function closePreview() {
+  if (pvDialog.open) pvDialog.close();
+}
+
+// Region inputs -> initial selection, in PDF points (top-left origin)
+function selFromInputs() {
+  const vals = ['rg-left', 'rg-top', 'rg-right', 'rg-bottom'].map((id) => $(id).value.trim());
+  if (vals.some((v) => v === '')) return null;
+  const [left, top, right, bottom] = vals.map(Number);
+  if (![left, top, right, bottom].every(Number.isFinite)) return null;
+  if (right <= left || bottom <= top) return null;
+  return { left, top, right, bottom };
+}
+
+function toPagePoint(e) {
+  const rect = pvCanvas.getBoundingClientRect();
+  const clamp = (v, hi) => Math.min(Math.max(v, 0), hi);
+  return {
+    x: clamp(e.clientX - rect.left, rect.width) * (pvState.base.width / rect.width),
+    y: clamp(e.clientY - rect.top, rect.height) * (pvState.base.height / rect.height),
+  };
+}
+
+pvCanvas.addEventListener('pointerdown', (e) => {
+  if (!pvState.doc) return;
+  e.preventDefault();
+  pvCanvas.setPointerCapture(e.pointerId);
+  pvState.drag = toPagePoint(e);
+  dragTo(e);
+});
+pvCanvas.addEventListener('pointermove', (e) => {
+  if (pvState.drag) dragTo(e);
+});
+pvCanvas.addEventListener('pointerup', (e) => {
+  if (!pvState.drag) return;
+  dragTo(e);
+  // treat a tiny drag as a click that clears the selection
+  const s = pvState.sel;
+  if (s && (s.right - s.left < 2 || s.bottom - s.top < 2)) pvState.sel = null;
+  pvState.drag = null;
+  drawSelection();
+});
+
+function dragTo(e) {
+  const p = toPagePoint(e);
+  const d = pvState.drag;
+  pvState.sel = {
+    left: Math.min(d.x, p.x),
+    top: Math.min(d.y, p.y),
+    right: Math.max(d.x, p.x),
+    bottom: Math.max(d.y, p.y),
+  };
+  drawSelection();
+}
+
+// Draw the current selection over the canvas, clipped to the shown page
+function drawSelection() {
+  const box = $('pv-select');
+  const sel = pvState.sel;
+  if (!sel || !pvState.base) {
+    box.hidden = true;
+    return;
+  }
+  const rect = pvCanvas.getBoundingClientRect();
+  const sx = rect.width / pvState.base.width;
+  const sy = rect.height / pvState.base.height;
+  const left = Math.max(sel.left, 0) * sx;
+  const top = Math.max(sel.top, 0) * sy;
+  const right = Math.min(sel.right, pvState.base.width) * sx;
+  const bottom = Math.min(sel.bottom, pvState.base.height) * sy;
+  if (right <= left || bottom <= top) {
+    box.hidden = true;
+    return;
+  }
+  box.style.left = `${left}px`;
+  box.style.top = `${top}px`;
+  box.style.width = `${right - left}px`;
+  box.style.height = `${bottom - top}px`;
+  box.hidden = false;
+}
+
 runBtn.addEventListener('click', run);
 
 function currentMode() {
@@ -423,7 +771,10 @@ function currentMode() {
 }
 
 document.querySelectorAll('input[name=mode]').forEach((r) => {
-  r.addEventListener('change', render);
+  r.addEventListener('change', () => {
+    updateFilterState();
+    render();
+  });
 });
 
 async function run() {
@@ -435,16 +786,17 @@ async function run() {
   try {
     const bytes = new Uint8Array(await currentFile.arrayBuffer());
     const password = $('password').value || undefined;
+    const optionsJson = filterOptionsJson();
     if (mode === 'reader') {
-      results.reader = { text: pretty(wasm.extract_text_from_pdf(bytes, password, undefined)) };
+      results.reader = { text: pretty(wasm.extract_text_from_pdf(bytes, password, optionsJson)) };
     } else if (mode === 'doc') {
-      results.doc = { text: pretty(wasm.extract_document_from_pdf(bytes, undefined, password)) };
+      results.doc = { text: pretty(wasm.extract_document_from_pdf(bytes, optionsJson, password)) };
     } else if (mode === 'tables') {
-      const json = wasm.extract_tables_from_pdf(bytes, undefined, password);
+      const json = wasm.extract_tables_from_pdf(bytes, optionsJson, password);
       results.tables = { json: pretty(json), tables: collectTables(JSON.parse(json)) };
       buildPicker(results.tables.tables);
     } else {
-      const md = wasm.extract_markdown_from_pdf(bytes, undefined, password);
+      const md = wasm.extract_markdown_from_pdf(bytes, optionsJson, password);
       results.md = { text: md };
       renderMarkdownPreview(md);
     }
@@ -551,7 +903,7 @@ function collectTables(doc) {
     let idx = 0;
     for (const t of p.tables ?? []) {
       tables.push({
-        page: p.page_number,
+        page: p.index,
         index: idx,
         method: t.extraction_method ?? '?',
         rows: t.n_rows ?? (t.data?.length ?? 0),

@@ -45,7 +45,8 @@ cargo run --release -- --password-stdin input.pdf output.json < password.txt
 ## Output
 
 The output is the same JSON shape returned by `extract_from_bytes` — a
-`Document { source, pages: [Page { page_number, width, height, tables: [Table { extraction_method, bbox, n_rows, n_cols, data }] }], warnings: [...] }`.
+`Document { source, pages: [Page { index, width, height, tables: [Table { extraction_method, bbox, n_rows, n_cols, data }] }], warnings: [...] }`.
+The `index` field is the zero-based position of the page entry in the `pages` array.
 Coordinates are top-down PDF points. The `warnings` field lists non-fatal
 reader diagnostics and is omitted from the JSON when empty. See the API
 reference on [docs.rs](https://docs.rs/pdfni) for the full type definitions.

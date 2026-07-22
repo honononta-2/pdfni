@@ -94,7 +94,8 @@ pub struct Table {
 /// 1ページ分の出力
 #[derive(Debug, Clone, Serialize)]
 pub struct Page {
-    pub page_number: usize,
+    /// pages 配列内の 0 始まり位置
+    pub index: usize,
     pub width: f64,
     pub height: f64,
     pub tables: Vec<Table>,

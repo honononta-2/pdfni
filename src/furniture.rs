@@ -432,7 +432,7 @@ mod tests {
 
     fn candidate_page(width: f64, height: f64) -> crate::document::DocPage {
         crate::document::DocPage {
-            page_number: 1,
+            index: 0,
             width,
             height,
             fonts: vec![],

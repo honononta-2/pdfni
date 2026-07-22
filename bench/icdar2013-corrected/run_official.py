@@ -142,7 +142,7 @@ def write_reg_xml(doc, path):
             x1, y1 = b["left"], h - b["bottom"]
             x2, y2 = b["right"], h - b["top"]
             lines.append(f'  <table id="{tid}">')
-            lines.append(f'    <region page="{pg["page_number"]}">')
+            lines.append(f'    <region page="{pg["index"] + 1}">')
             lines.append(
                 f'      <bounding-box x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}"/>'
             )
@@ -160,7 +160,7 @@ def write_str_xml(doc, path):
             tid += 1
             lines.append(f'  <table id="{tid}">')
             lines.append(
-                f'    <region page="{pg["page_number"]}" col-increment="0" row-increment="0">'
+                f'    <region page="{pg["index"] + 1}" col-increment="0" row-increment="0">'
             )
             for r0, r1, c0, c1, text in table_cells(t):
                 attrs = (

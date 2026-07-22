@@ -15,6 +15,7 @@ mod extract;
 mod furniture;
 mod model;
 mod par;
+mod query;
 #[cfg(feature = "reader")]
 mod reader;
 #[cfg(feature = "text")]
@@ -30,7 +31,8 @@ pub use detect_text::TextSettings;
 pub use document::{
     DocBlock, DocDoc, DocPage, TextBlock, TextBlockKind, TextBlockRole, assign_header_footer,
     assign_headings, assign_lists, build_blocks, extract_document_from_bytes,
-    extract_markdown_from_bytes,
+    extract_document_from_bytes_with_query, extract_markdown_from_bytes,
+    extract_markdown_from_bytes_with_query,
 };
 pub use error::{Error, Result};
 pub use extract::{
@@ -38,13 +40,16 @@ pub use extract::{
     extract_from_parts,
 };
 pub use model::{BBox, Cell, Document, Orientation, Page, Table};
+pub use query::{ExtractQuery, PageSelection, Region, retain_parts_in_region};
 #[cfg(feature = "reader")]
 pub use reader::{
-    PartsView, ReaderDump, ReaderDumpPage, TextView, extract_from_bytes, extract_text_from_bytes,
-    extract_text_from_bytes_with, read_pages, read_pages_full, read_pages_full_with, read_pages_with,
+    PartsView, ReaderDump, ReaderDumpPage, TextView, extract_from_bytes,
+    extract_from_bytes_with_query, extract_text_from_bytes, extract_text_from_bytes_with,
+    extract_text_from_bytes_with_query, read_pages, read_pages_full, read_pages_full_with,
+    read_pages_with,
 };
 #[cfg(feature = "text")]
 pub use text::{
     TextChar, TextDoc, TextFont, TextItem, TextLine, TextPage, TextWord, build_text_items,
-    build_text_items_with, build_text_lines, build_text_lines_with,
+    build_text_items_with, build_text_lines, build_text_lines_with, retain_chars_in_region,
 };

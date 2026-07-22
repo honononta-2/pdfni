@@ -1269,7 +1269,7 @@ fn detect_page(pi: usize, part: PagePart, options: &ExtractOptions) -> Page {
         }
     }
     Page {
-        page_number: pi + 1,
+        index: pi,
         width,
         height,
         tables,

@@ -8,6 +8,7 @@ use crate::extract::ExtractOptions;
 use crate::furniture;
 use crate::model::{BBox, Cell, Table};
 use crate::extract::extract_from_parts;
+use crate::query::ExtractQuery;
 use crate::reader::read_pages_and_text;
 use crate::text::{
     TextChar, TextFont, TextLine, TextPage, TextWord, build_text_lines_with, derotate_xy,
@@ -42,7 +43,8 @@ pub struct DocDoc {
 /// 1ページ分の文書モデル
 #[derive(Debug, Clone, Serialize)]
 pub struct DocPage {
-    pub page_number: usize,
+    /// pages 配列内の 0 始まり位置
+    pub index: usize,
     pub width: f64,
     pub height: f64,
     pub fonts: Vec<TextFont>,
@@ -616,7 +618,17 @@ pub fn extract_markdown_from_bytes(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<String> {
-    let doc = extract_document_from_bytes(data, password, options)?;
+    extract_markdown_from_bytes_with_query(data, password, options, &ExtractQuery::default())
+}
+
+/// ページ・矩形で絞った Markdown 生成
+pub fn extract_markdown_from_bytes_with_query(
+    data: &[u8],
+    password: Option<&str>,
+    options: &ExtractOptions,
+    query: &ExtractQuery,
+) -> Result<String> {
+    let doc = extract_document_from_bytes_with_query(data, password, options, query)?;
     Ok(document_to_markdown(&doc, options.escape_markdown))
 }
 
@@ -626,7 +638,18 @@ pub fn extract_document_from_bytes(
     password: Option<&str>,
     options: &ExtractOptions,
 ) -> Result<DocDoc> {
-    let (parts, text_pages, warnings) = read_pages_and_text(data, password, &options.reader)?;
+    extract_document_from_bytes_with_query(data, password, options, &ExtractQuery::default())
+}
+
+/// ページ・矩形で絞った文書モデル構築
+pub fn extract_document_from_bytes_with_query(
+    data: &[u8],
+    password: Option<&str>,
+    options: &ExtractOptions,
+    query: &ExtractQuery,
+) -> Result<DocDoc> {
+    let (parts, text_pages, warnings) =
+        read_pages_and_text(data, password, &options.reader, query)?;
     let tables_doc = extract_from_parts(parts, options);
 
     let mut pages = Vec::with_capacity(text_pages.len());
@@ -638,7 +661,7 @@ pub fn extract_document_from_bytes(
     {
         let blocks = build_blocks_owned(&text_page, page.tables, options.bidi);
         pages.push(DocPage {
-            page_number: i + 1,
+            index: i,
             width: text_page.width,
             height: text_page.height,
             fonts: text_page.fonts,
@@ -2634,7 +2657,7 @@ mod tests {
     fn doc_from_para_lines(chars: Vec<TextChar>, lines: Vec<TextLine>) -> DocDoc {
         DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: 600.0,
                 height: 800.0,
                 fonts: vec![],
@@ -2921,7 +2944,7 @@ mod tests {
     fn doc_from_blocks(chars: Vec<TextChar>, blocks: Vec<DocBlock>) -> DocDoc {
         DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: 600.0,
                 height: 800.0,
                 fonts: vec![],
@@ -3055,7 +3078,7 @@ mod tests {
         let blocks = build_blocks(&p, &[]);
         DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: p.width,
                 height: p.height,
                 fonts: p.fonts,
@@ -3141,7 +3164,7 @@ mod tests {
         let blocks = build_blocks(&p, &[]);
         let mut doc = DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: p.width,
                 height: p.height,
                 fonts: p.fonts,
@@ -3183,7 +3206,7 @@ mod tests {
         let blocks = build_blocks(&p, &[]);
         let mut doc = DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: p.width,
                 height: p.height,
                 fonts: p.fonts,
@@ -3215,7 +3238,7 @@ mod tests {
         let blocks = build_blocks(&p, &[t.clone()]);
         let mut doc = DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: p.width,
                 height: p.height,
                 fonts: p.fonts,
@@ -3253,7 +3276,7 @@ mod tests {
         let blocks = build_blocks(&p, &[t]);
         let mut doc = DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: p.width,
                 height: p.height,
                 fonts: p.fonts,
@@ -3289,7 +3312,7 @@ mod tests {
     fn doc_with_blocks(blocks: Vec<DocBlock>) -> DocDoc {
         DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: 600.0,
                 height: 800.0,
                 fonts: vec![],
@@ -3536,7 +3559,7 @@ mod tests {
         let doc = DocDoc {
             pages: vec![
                 DocPage {
-                    page_number: 1,
+                    index: 0,
                     width: 600.0,
                     height: 800.0,
                     fonts: vec![],
@@ -3547,7 +3570,7 @@ mod tests {
                     ],
                 },
                 DocPage {
-                    page_number: 2,
+                    index: 1,
                     width: 600.0,
                     height: 800.0,
                     fonts: vec![],
@@ -3555,7 +3578,7 @@ mod tests {
                     blocks: vec![], // 空ページは要素を出さない
                 },
                 DocPage {
-                    page_number: 3,
+                    index: 2,
                     width: 600.0,
                     height: 800.0,
                     fonts: vec![],
@@ -3576,7 +3599,7 @@ mod tests {
 
         let empty_pages = DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: 1.0,
                 height: 1.0,
                 fonts: vec![],
@@ -3883,7 +3906,7 @@ mod tests {
         let blocks = build_blocks(&p, &[]);
         let mut doc = DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: p.width,
                 height: p.height,
                 fonts: p.fonts.clone(),
@@ -3971,14 +3994,14 @@ mod tests {
     }
 
     fn furniture_page(
-        page_number: usize,
+        index: usize,
         width: f64,
         height: f64,
         blocks: Vec<TextBlock>,
         chars: Vec<TextChar>,
     ) -> DocPage {
         DocPage {
-            page_number,
+            index,
             width,
             height,
             fonts: vec![],
@@ -4046,8 +4069,8 @@ mod tests {
         let bd2 = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut cb);
         let mut doc = DocDoc {
             pages: vec![
-                furniture_page(1, 400.0, h, vec![h1, bd1], ca),
-                furniture_page(2, 400.0, h, vec![h2, bd2], cb),
+                furniture_page(0, 400.0, h, vec![h1, bd1], ca),
+                furniture_page(1, 400.0, h, vec![h2, bd2], cb),
             ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
@@ -4068,8 +4091,8 @@ mod tests {
         let bd2 = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut cb);
         let mut doc = DocDoc {
             pages: vec![
-                furniture_page(1, 400.0, h, vec![bd1, f1], ca),
-                furniture_page(2, 400.0, h, vec![bd2, f2], cb),
+                furniture_page(0, 400.0, h, vec![bd1, f1], ca),
+                furniture_page(1, 400.0, h, vec![bd2, f2], cb),
             ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
@@ -4088,7 +4111,7 @@ mod tests {
             let a = furniture_block("A", 10.0, 5.0, 40.0, 20.0, 10.0, &mut chars);
             let b = furniture_block("B", 10.0, 50.0, 40.0, 65.0, 10.0, &mut chars);
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
-            pages.push(furniture_page(pi + 1, 400.0, h, vec![a, b, body], chars));
+            pages.push(furniture_page(pi, 400.0, h, vec![a, b, body], chars));
         }
         let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
@@ -4113,7 +4136,7 @@ mod tests {
             let a = furniture_block("A", 10.0, 5.0, 40.0, 20.0, 10.0, &mut chars);
             let b = furniture_block("B", 10.0, 51.0, 40.0, 66.0, 10.0, &mut chars);
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
-            pages.push(furniture_page(pi + 1, 400.0, h, vec![a, b, body], chars));
+            pages.push(furniture_page(pi, 400.0, h, vec![a, b, body], chars));
         }
         let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
@@ -4142,8 +4165,8 @@ mod tests {
         let bb = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut cb);
         let mut doc = DocDoc {
             pages: vec![
-                furniture_page(1, 400.0, h, vec![a, ba], ca),
-                furniture_page(2, 400.0, h, vec![b, bb], cb),
+                furniture_page(0, 400.0, h, vec![a, ba], ca),
+                furniture_page(1, 400.0, h, vec![b, bb], cb),
             ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
@@ -4159,8 +4182,8 @@ mod tests {
         let bb = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut cb);
         let mut doc = DocDoc {
             pages: vec![
-                furniture_page(1, 400.0, h, vec![a, ba], ca),
-                furniture_page(2, 400.0, h, vec![b, bb], cb),
+                furniture_page(0, 400.0, h, vec![a, ba], ca),
+                furniture_page(1, 400.0, h, vec![b, bb], cb),
             ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
@@ -4180,8 +4203,8 @@ mod tests {
         let bb = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut cb);
         let mut doc = DocDoc {
             pages: vec![
-                furniture_page(1, 400.0, h, vec![a, ba], ca),
-                furniture_page(2, 400.0, h, vec![b, bb], cb),
+                furniture_page(0, 400.0, h, vec![a, ba], ca),
+                furniture_page(1, 400.0, h, vec![b, bb], cb),
             ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
@@ -4199,7 +4222,7 @@ mod tests {
             let a = furniture_block("A", 10.0, 10.0, 40.0, 25.0, 10.0, &mut chars);
             let b = furniture_block("B", 50.0, 10.0, 80.0, 25.0, 10.0, &mut chars);
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
-            pages.push(furniture_page(pi + 1, 400.0, h, vec![a, b, body], chars));
+            pages.push(furniture_page(pi, 400.0, h, vec![a, b, body], chars));
         }
         let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
@@ -4227,8 +4250,8 @@ mod tests {
 
         let mut pages = DocDoc {
             pages: vec![
+                furniture_page(0, 400.0, 600.0, vec![], vec![]),
                 furniture_page(1, 400.0, 600.0, vec![], vec![]),
-                furniture_page(2, 400.0, 600.0, vec![], vec![]),
             ], warnings: Vec::new(),
         };
         assign_header_footer(&mut pages);
@@ -4240,7 +4263,7 @@ mod tests {
         let mut chars = Vec::new();
         let h = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.0, &mut chars);
         let mut doc = DocDoc {
-            pages: vec![furniture_page(1, 400.0, 600.0, vec![h], chars)], warnings: Vec::new(),
+            pages: vec![furniture_page(0, 400.0, 600.0, vec![h], chars)], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
         assert_eq!(roles_of(&doc)[0][0], TextBlockRole::Body);
@@ -4254,8 +4277,8 @@ mod tests {
         let b = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.0, &mut cb);
         let mut doc = DocDoc {
             pages: vec![
-                furniture_page(1, 400.0, 0.0, vec![a], ca),
-                furniture_page(2, 400.0, f64::NAN, vec![b], cb),
+                furniture_page(0, 400.0, 0.0, vec![a], ca),
+                furniture_page(1, 400.0, f64::NAN, vec![b], cb),
             ], warnings: Vec::new(),
         };
         assign_header_footer(&mut doc);
@@ -4278,7 +4301,7 @@ mod tests {
             let left = if pi % 2 == 0 { 100.0 } else { 120.0 };
             let f = furniture_block(&text, left, 520.0, left + 80.0, 540.0, 10.0, &mut chars);
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
-            pages.push(furniture_page(pi + 1, 400.0, h, vec![body, f], chars));
+            pages.push(furniture_page(pi, 400.0, h, vec![body, f], chars));
         }
         let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
@@ -4298,7 +4321,7 @@ mod tests {
             let mut chars = Vec::new();
             let f = furniture_block(text, 50.0, 520.0, 150.0, 540.0, 10.0, &mut chars);
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
-            pages.push(furniture_page(pi + 1, 400.0, h, vec![body, f], chars));
+            pages.push(furniture_page(pi, 400.0, h, vec![body, f], chars));
         }
         let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
@@ -4313,7 +4336,7 @@ mod tests {
                 role,
                 Some(TextBlockRole::Footer),
                 "page {}",
-                page.page_number
+                page.index
             );
         }
     }
@@ -4326,7 +4349,7 @@ mod tests {
             let mut chars = Vec::new();
             let hd = furniture_block("HDR", 10.0, 10.0, 50.0, 25.0, 10.0, &mut chars);
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
-            pages.push(furniture_page(pi + 1, 400.0, h, vec![hd, body], chars));
+            pages.push(furniture_page(pi, 400.0, h, vec![hd, body], chars));
         }
         let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
@@ -4351,7 +4374,7 @@ mod tests {
             // 見出し候補（本文の 1.8 倍 = 18）
             let title = furniture_block("Title", 10.0, 100.0, 80.0, 120.0, 18.0, &mut chars);
             pages.push(furniture_page(
-                pi + 1,
+                pi,
                 400.0,
                 h,
                 vec![hd, title, body],
@@ -4471,7 +4494,7 @@ mod tests {
             let mut chars = Vec::new();
             let hd = furniture_block("Company", 10.0, 10.0, 80.0, 25.0, 10.0, &mut chars);
             let body = furniture_block("body", 10.0, 200.0, 50.0, 220.0, 10.0, &mut chars);
-            pages.push(furniture_page(pi + 1, 400.0, h, vec![hd, body], chars));
+            pages.push(furniture_page(pi, 400.0, h, vec![hd, body], chars));
         }
         let mut doc = DocDoc { pages, warnings: Vec::new() };
         assign_header_footer(&mut doc);
@@ -4595,7 +4618,7 @@ mod tests {
             .fold(f64::NEG_INFINITY, f64::max);
         DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: 600.0,
                 height: 800.0,
                 fonts,
@@ -4803,7 +4826,7 @@ mod tests {
         };
         let doc = DocDoc {
             pages: vec![DocPage {
-                page_number: 1,
+                index: 0,
                 width: 600.0,
                 height: 800.0,
                 fonts,
