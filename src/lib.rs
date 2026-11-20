@@ -11,6 +11,8 @@ mod document;
 mod edges_geom;
 mod error;
 mod extract;
+#[cfg(all(not(target_arch = "wasm32"), feature = "ffi"))]
+mod ffi;
 #[cfg(feature = "document")]
 mod furniture;
 mod model;

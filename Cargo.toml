@@ -1,6 +1,6 @@
 [package]
 name = "pdfni"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Extract tables and Markdown from text-embedded PDFs, with a built-in pure-Rust PDF reader adapted from Mozilla pdf.js."
@@ -48,6 +48,9 @@ reader = [
 
 # Document model and Markdown output
 document = ["reader"]
+
+# Native C ABI entrypoints
+ffi = ["reader"]
 
 # Predefined CMap groups; effective only when `reader` is enabled
 cmap-gb1    = []
