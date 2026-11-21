@@ -45,7 +45,8 @@ EXTRA_ARGS = []
 # ---------- extraction ----------
 
 def extract(pdf, out_json):
-    r = subprocess.run([PDFNI, pdf, out_json], capture_output=True, text=True)
+    r = subprocess.run([PDFNI, "--output", "tables", pdf, out_json],
+                       capture_output=True, text=True)
     if r.returncode != 0:
         json.dump({"source": pdf, "pages": []}, open(out_json, "w"))
         return f"pdfni failed: {r.stderr.strip()[:200]}"

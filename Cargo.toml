@@ -1,6 +1,6 @@
 [package]
 name = "pdfni"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.85"
 description = "Extract tables and Markdown from text-embedded PDFs, with a built-in pure-Rust PDF reader adapted from Mozilla pdf.js."

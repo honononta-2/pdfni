@@ -23,6 +23,10 @@ const EPS: f64 = 0.8;
 /// 角丸矩形の四隅や塗り罫線の短辺とチャート要素の区別
 const GRAPHICS_MIN_FRAC: f64 = 0.25;
 
+/// 塗りだけのサブパスを面とみなす短辺の下限（pt）
+/// 格子検出が近接線をまとめる許容幅の既定値と同じ値
+const FILL_AREA_MIN_SHORT_SIDE: f64 = 3.0;
+
 /// Form XObject のネスト上限。正当な入力を弾かない上限
 const MAX_FORM_DEPTH: usize = 20;
 
@@ -991,13 +995,51 @@ fn axis_edge(a: (f64, f64), b: (f64, f64), view: [f64; 4]) -> Option<EdgePart> {
     }
 }
 
+/// パスのペイント方法
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Paint {
+    Stroke,
+    Fill,
+    FillStroke,
+}
+
+/// MoveTo ごとのサブパスの面判定
+fn area_subpaths(segs: &[Seg], ctm: [f64; 6]) -> Vec<bool> {
+    let is_area = |b: [f64; 4]| (b[2] - b[0]).min(b[3] - b[1]) > FILL_AREA_MIN_SHORT_SIDE;
+    let mut out = Vec::new();
+    let mut bbox: Option<[f64; 4]> = None;
+    for seg in segs {
+        match seg {
+            Seg::MoveTo(x, y) => {
+                if let Some(b) = bbox.take() {
+                    out.push(is_area(b));
+                }
+                let (px, py) = apply_ctm(ctm, *x, *y);
+                bbox = Some([px, py, px, py]);
+            }
+            Seg::LineTo(x, y) | Seg::CurveTo(x, y) => {
+                if let Some(b) = &mut bbox {
+                    let (px, py) = apply_ctm(ctm, *x, *y);
+                    *b = [b[0].min(px), b[1].min(py), b[2].max(px), b[3].max(py)];
+                }
+            }
+            Seg::Close => {}
+        }
+    }
+    if let Some(b) = bbox {
+        out.push(is_area(b));
+    }
+    out
+}
+
 /// パスの辺化とバッファのクリア
 ///
 /// 軸平行にならない線分と曲線はパス1回分の外接矩形として graphics へ集約
 /// 弦長比率で軸平行辺が支配的なパスは罫線描画とみなし集約の対象外
+/// 塗りだけで短辺が閾値を超えるサブパスは面とみなし辺化の対象外
 fn finalize_path(
     path: &mut PathBuilder,
-    filled: bool,
+    paint: Paint,
     ctm: [f64; 6],
     view: [f64; 4],
     edges: &mut Vec<EdgePart>,
@@ -1006,15 +1048,26 @@ fn finalize_path(
     let segs = std::mem::take(&mut path.segs);
     path.current = None;
 
+    let filled = paint != Paint::Stroke;
+    let area_flags = if paint == Paint::Fill {
+        area_subpaths(&segs, ctm)
+    } else {
+        Vec::new()
+    };
+    let mut next_sub = 0;
+    let mut area = false;
+
     let apply = |x: f64, y: f64| apply_ctm(ctm, x, y);
     let (ox, oy) = (view[0], view[3]);
     let mut gbox: Option<[f64; 4]> = None;
     let mut axis_len = 0.0;
     let mut gbox_len = 0.0;
-    let mut emit = |a: (f64, f64), b: (f64, f64), curve: bool| {
+    let mut emit = |a: (f64, f64), b: (f64, f64), curve: bool, area: bool| {
         if !curve && let Some(e) = axis_edge(a, b, view) {
             axis_len += (a.0 - b.0).hypot(a.1 - b.1);
-            edges.push(e);
+            if !area {
+                edges.push(e);
+            }
             return;
         }
         if (a.0 - b.0).abs() <= 0.01 && (a.1 - b.1).abs() <= 0.01 {
@@ -1038,29 +1091,31 @@ fn finalize_path(
                 let pt = apply(x, y);
                 if filled {
                     if let (Some(s), Some(p)) = (sub_start, prev) {
-                        emit(p, s, false);
+                        emit(p, s, false, area);
                     }
                 }
+                area = area_flags.get(next_sub).copied().unwrap_or(false);
+                next_sub += 1;
                 sub_start = Some(pt);
                 prev = Some(pt);
             }
             Seg::LineTo(x, y) => {
                 let pt = apply(x, y);
                 if let Some(p) = prev {
-                    emit(p, pt, false);
+                    emit(p, pt, false, area);
                 }
                 prev = Some(pt);
             }
             Seg::CurveTo(x, y) => {
                 let pt = apply(x, y);
                 if let Some(p) = prev {
-                    emit(p, pt, true);
+                    emit(p, pt, true, area);
                 }
                 prev = Some(pt);
             }
             Seg::Close => {
                 if let (Some(s), Some(p)) = (sub_start, prev) {
-                    emit(p, s, false);
+                    emit(p, s, false, area);
                     prev = Some(s);
                 }
             }
@@ -1069,7 +1124,7 @@ fn finalize_path(
 
     if filled {
         if let (Some(s), Some(p)) = (sub_start, prev) {
-            emit(p, s, false);
+            emit(p, s, false, area);
         }
     }
     if let Some(g) = gbox
@@ -1317,7 +1372,7 @@ impl Evaluator<'_, '_> {
         &mut self,
         path: &mut PathBuilder,
         ctm: [f64; 6],
-        fill: bool,
+        paint: Paint,
         close: bool,
         collect_paths: bool,
     ) {
@@ -1328,7 +1383,7 @@ impl Evaluator<'_, '_> {
         if close {
             path.close();
         }
-        finalize_path(path, fill, ctm, self.view, self.edges, self.graphics);
+        finalize_path(path, paint, ctm, self.view, self.edges, self.graphics);
     }
 
     fn interpret(&mut self, contents: &[u8], resources: &Dict, ctm0: [f64; 6]) {
@@ -1474,13 +1529,16 @@ impl Evaluator<'_, '_> {
             }
 
             // ペイント（close 系は確定前に閉じを追加。text_sink 経路は捨てる）
-            Op::S => self.paint_or_drop(path, *ctm, false, false, *collect_paths),
-            Op::LowerS => self.paint_or_drop(path, *ctm, false, true, *collect_paths),
-            Op::LowerF | Op::F | Op::LowerFStar | Op::B | Op::BStar => {
-                self.paint_or_drop(path, *ctm, true, false, *collect_paths)
+            Op::S => self.paint_or_drop(path, *ctm, Paint::Stroke, false, *collect_paths),
+            Op::LowerS => self.paint_or_drop(path, *ctm, Paint::Stroke, true, *collect_paths),
+            Op::LowerF | Op::F | Op::LowerFStar => {
+                self.paint_or_drop(path, *ctm, Paint::Fill, false, *collect_paths)
+            }
+            Op::B | Op::BStar => {
+                self.paint_or_drop(path, *ctm, Paint::FillStroke, false, *collect_paths)
             }
             Op::LowerB | Op::LowerBStar => {
-                self.paint_or_drop(path, *ctm, true, true, *collect_paths)
+                self.paint_or_drop(path, *ctm, Paint::FillStroke, true, *collect_paths)
             }
             Op::LowerN => path.clear(),
 
@@ -2411,9 +2469,9 @@ Q
     /// 塗りの三角形で暗黙閉じ線が辺化（軸平行分のみ）
     #[test]
     fn fill_triangle_implicit_close() {
-        // (0,0) → (10,0) → (10,10) → 暗黙閉じ (10,10)→(0,0) は斜め → 捨て
-        // 辺: 水平 (0,0)-(10,0)、垂直 (10,0)-(10,10)
-        let edges = edges_of(b"0 0 m 10 0 l 10 10 l f", default_view());
+        // (0,0) → (10,0) → (10,2) → 暗黙閉じ (10,2)→(0,0) は斜め → 捨て
+        // 辺: 水平 (0,0)-(10,0)、垂直 (10,0)-(10,2)
+        let edges = edges_of(b"0 0 m 10 0 l 10 2 l f", default_view());
         assert_eq!(edges.len(), 2, "got {edges:?}");
         assert!(find_edge(
             &edges,
@@ -2428,7 +2486,7 @@ Q
             Orientation::Vertical,
             10.0,
             10.0,
-            190.0,
+            198.0,
             200.0
         ));
     }
@@ -2437,8 +2495,8 @@ Q
     #[test]
     fn fill_implicit_close_axis() {
         // (0,0)-(10,0)-(10,0) wait: (0,5)-(10,5)-(10,15) close implicit (10,15)-(0,5) 斜め
-        // (0,0)-(20,0)-(20,10)-(0,10) without h, fill → 暗黙閉じが左縦辺
-        let edges = edges_of(b"0 0 m 20 0 l 20 10 l 0 10 l f", default_view());
+        // (0,0)-(20,0)-(20,2)-(0,2) without h, fill → 暗黙閉じが左縦辺
+        let edges = edges_of(b"0 0 m 20 0 l 20 2 l 0 2 l f", default_view());
         // 3 明示辺 + 1 暗黙閉じ = 4
         assert_eq!(edges.len(), 4, "got {edges:?}");
         assert!(find_edge(
@@ -2446,7 +2504,7 @@ Q
             Orientation::Vertical,
             0.0,
             0.0,
-            190.0,
+            198.0,
             200.0
         ));
     }
@@ -2479,7 +2537,7 @@ Q
                      110 60 l 110 63 108 65 105 65 c 15 65 l 12 65 10 63 10 60 c h f";
         let parts = parts_of(body, default_view());
         assert!(parts.graphics.is_empty(), "got {:?}", parts.graphics);
-        assert_eq!(parts.edges.len(), 4, "got {:?}", parts.edges);
+        assert!(parts.edges.is_empty(), "got {:?}", parts.edges);
     }
 
     /// 曲線・斜め線が主体のパスは従来どおり graphics に登録する
@@ -2503,6 +2561,36 @@ Q
         assert!(parts.graphics.is_empty(), "got {:?}", parts.graphics);
         // 長辺2本は従来どおり辺化される
         assert_eq!(parts.edges.len(), 2, "got {:?}", parts.edges);
+    }
+
+    /// 塗りだけの広い矩形は辺にしない
+    #[test]
+    fn fill_only_area_no_edges() {
+        let edges = edges_of(b"10 20 72 9.72 re f", default_view());
+        assert!(edges.is_empty(), "got {edges:?}");
+    }
+
+    /// 塗りだけでも短辺が閾値以下の矩形は辺化
+    #[test]
+    fn fill_only_thin_rect_edges() {
+        let edges = edges_of(b"10 20 100 3 re f", default_view());
+        assert_eq!(edges.len(), 4, "got {edges:?}");
+    }
+
+    /// 塗りと線の広い矩形は辺化
+    #[test]
+    fn fill_stroke_area_edges() {
+        let edges = edges_of(b"10 20 72 9.72 re B", default_view());
+        assert_eq!(edges.len(), 4, "got {edges:?}");
+    }
+
+    /// 面の判定はサブパス単位
+    #[test]
+    fn fill_only_area_per_subpath() {
+        let edges = edges_of(b"10 20 72 9.72 re 10 50 100 0.48 re f", default_view());
+        // 細い矩形の長辺2本のみ
+        assert_eq!(edges.len(), 2, "got {edges:?}");
+        assert!(edges.iter().all(|e| e.orientation == Orientation::Horizontal));
     }
 
     /// n は辺にしない

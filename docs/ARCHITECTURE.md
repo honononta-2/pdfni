@@ -101,6 +101,7 @@ src/
   document.rs      DocDoc, headings/lists, Markdown
   columns.rs       multi-column layout for the document model
   wasm.rs          JS exports
+  ffi.rs           native C ABI entry points (feature `ffi`)
   bin/main.rs      CLI (content / tables / doc)
 examples/          reader_probe, text_probe, ...
 demo/              browser smoke page

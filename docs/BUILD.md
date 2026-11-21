@@ -25,6 +25,7 @@ below them, so you only need to enable the top layer you want.
 | --- | --- | --- |
 | `document` (default) | Document blocks + Markdown (`extract_document_from_bytes`, `extract_markdown_from_bytes`) | `reader` |
 | `reader` | PDF byte input (`extract_from_bytes`, `extract_text_from_bytes`, `read_pages`, CLI) | `text` |
+| `ffi` | Native C ABI entry points (`pdfni_extract_tables_json`, ...). Not available on wasm — see [FFI.md](FFI.md) | `reader` |
 | `text` | Coordinate-tagged text (`TextDoc`, items, lines) | — |
 | _(none)_ | Table detection from parts JSON (`extract_from_parts`) — always available | — |
 | `cmap-japan1` (default) | Predefined CJK CMap group Adobe-Japan1 | — |
@@ -58,6 +59,9 @@ cargo build --release --no-default-features --features text
 
 # Table detection only (parts JSON in, tables out) — smallest build
 cargo build --release --no-default-features
+
+# Native shared library with the C ABI entry points
+cargo build --release --features ffi
 ```
 
 ## wasm builds

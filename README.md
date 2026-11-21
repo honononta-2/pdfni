@@ -55,10 +55,10 @@ official evaluation tool. Scripts and test data live under
 
 | Benchmark | Task | Precision | Recall | F1 |
 | --- | --- | --- | --- | --- |
-| [ICDAR 2013 original](http://www.tamirhassan.com/html/dataset.html) (eu + us) | Region detection (char-level) | 0.9347 | 0.9316 | 0.9332 |
-| [ICDAR 2013 original](http://www.tamirhassan.com/html/dataset.html) (eu + us) | Structure (cell adjacency) | 0.9403 | 0.9335 | 0.9369 |
-| [ICDAR 2013 corrected](https://huggingface.co/datasets/bsmock/ICDAR-2013-Table-Competition-Corrected) (eu + us) | Region detection (char-level) | 0.9347 | 0.9316 | 0.9332 |
-| [ICDAR 2013 corrected](https://huggingface.co/datasets/bsmock/ICDAR-2013-Table-Competition-Corrected) (eu + us) | Structure (cell adjacency) | 0.9403 | 0.9335 | 0.9369 |
+| [ICDAR 2013 original](http://www.tamirhassan.com/html/dataset.html) (eu + us) | Region detection (char-level) | 0.9382 | 0.9316 | 0.9349 |
+| [ICDAR 2013 original](http://www.tamirhassan.com/html/dataset.html) (eu + us) | Structure (cell adjacency) | 0.9522 | 0.9414 | 0.9468 |
+| [ICDAR 2013 corrected](https://huggingface.co/datasets/bsmock/ICDAR-2013-Table-Competition-Corrected) (eu + us) | Region detection (char-level) | 0.9382 | 0.9316 | 0.9349 |
+| [ICDAR 2013 corrected](https://huggingface.co/datasets/bsmock/ICDAR-2013-Table-Competition-Corrected) (eu + us) | Structure (cell adjacency) | 0.9522 | 0.9414 | 0.9468 |
 | [SciTSR](https://github.com/Academic-Hammer/SciTSR) test (3,000 tables) | Structure (cell adjacency, macro) | 0.9254 | 0.8997 | 0.9124 |
 
 ## Documentation
@@ -66,6 +66,7 @@ official evaluation tool. Scripts and test data live under
 - [Building and feature flags](docs/BUILD.md)
 - [CLI usage](docs/CLI.md)
 - [WebAssembly (Node.js and browser)](docs/WASM.md)
+- [C ABI (native)](docs/FFI.md)
 - [Architecture and internals](docs/ARCHITECTURE.md)
 - [API reference on docs.rs](https://docs.rs/pdfni)
 

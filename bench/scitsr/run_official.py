@@ -3,7 +3,7 @@
 # Pipeline per document (single-table PDFs, 3,000 test docs):
 #   1. pdfni CLI (../../target/release/pdfni) -> tables JSON
 #   2. convert to SciTSR cell format; cell spans reconstructed from cell
-#      bboxes (shared code: ../icdar2013/run_official.py); relations of all
+#      bboxes (shared code: ../icdar2013-corrected/run_official.py); relations of all
 #      detected tables in a document are merged
 #   3. score with the official scitsr.eval code (tools/SciTSR):
 #      json2Table / Table2Relations / compare_rel with cmp_blank=True
@@ -25,7 +25,7 @@ WORK = os.path.join(HERE, "work")
 RESULTS = os.path.join(HERE, "results")
 
 sys.path.insert(0, os.path.join(HERE, "tools", "SciTSR"))
-sys.path.insert(0, os.path.join(HERE, "..", "icdar2013"))
+sys.path.insert(0, os.path.join(HERE, "..", "icdar2013-corrected"))
 
 from scitsr.eval import json2Table, Table2Relations, compare_rel  # noqa: E402
 from run_official import table_cells  # noqa: E402
@@ -84,7 +84,8 @@ def main():
             continue
         out_json = os.path.join(WORK, stem + ".json")
         if force or not os.path.exists(out_json):
-            r = subprocess.run([PDFNI, os.path.join(pdf_dir, pdf_name), out_json],
+            r = subprocess.run([PDFNI, "--output", "tables",
+                                os.path.join(pdf_dir, pdf_name), out_json],
                                capture_output=True, text=True)
             if r.returncode != 0:
                 json.dump({"source": pdf_name, "pages": []}, open(out_json, "w"))
