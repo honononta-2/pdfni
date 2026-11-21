@@ -1,8 +1,10 @@
 //! 座標付き文字を JSON で出力する
 
+#[cfg(feature = "markdown")]
+use pdfni::extract_markdown_from_bytes;
 use pdfni::{
     build_text_items_with, build_text_lines_with, extract_document_from_bytes,
-    extract_markdown_from_bytes, extract_text_from_bytes, ExtractOptions,
+    extract_text_from_bytes, ExtractOptions,
 };
 use std::io::{BufRead, IsTerminal};
 
@@ -155,6 +157,12 @@ fn main() {
                     );
                 }
             }
+            #[cfg(not(feature = "markdown"))]
+            Mode::Md { .. } => {
+                eprintln!("md modes require the `markdown` feature");
+                std::process::exit(1);
+            }
+            #[cfg(feature = "markdown")]
             Mode::Md { .. } => {
                 let md =
                     match extract_markdown_from_bytes(&bytes, password.as_deref(), &options) {

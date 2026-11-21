@@ -8,7 +8,7 @@ PDF bytes
       ├→ read_pages_full        → ReaderDump (parts + text) JSON
       ├→ extract_from_bytes     → Document (tables) JSON
       ├→ extract_document_from_bytes → DocDoc (blocks + tables) JSON
-      └→ extract_markdown_from_bytes → Markdown string
+      └→ extract_markdown_from_bytes → Markdown string (feature `markdown`)
 
   ↘ TextDoc → items / lines
 ```
@@ -17,7 +17,8 @@ Each byte-input entry point covers one output level and is a one-shot API:
 `read_pages_full` returns the reader's full dump (parts + text) in one pass,
 `extract_from_bytes` runs table detection, `extract_document_from_bytes` adds
 block-level structure (headings / lists / header / footer), and
-`extract_markdown_from_bytes` finishes with Markdown. The document and Markdown
+`extract_markdown_from_bytes` (opt-in `markdown` feature) finishes with
+Markdown. The document and Markdown
 entries share the single content-stream pass through the reader so it is not
 run twice.
 
@@ -98,12 +99,16 @@ src/
   extract.rs       parts → table detection orchestration
   detect_*.rs      lattice / text detectors
   text.rs          TextDoc, items, lines
-  document.rs      DocDoc, headings/lists, Markdown
+  document.rs      DocDoc, headings/lists
+  document/markdown.rs  Markdown output (feature `markdown`)
   columns.rs       multi-column layout for the document model
+  options_json.rs  options JSON shared by the JS / C / Python entry points
   wasm.rs          JS exports
   ffi.rs           native C ABI entry points (feature `ffi`)
+  python.rs        Python entry points (feature `python`)
   bin/main.rs      CLI (content / tables / doc)
 examples/          reader_probe, text_probe, ...
+pytests/           tests for the Python package
 demo/              browser smoke page
 data/              source .bcmap files used when regenerating bundled data
 ```

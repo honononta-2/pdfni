@@ -1114,6 +1114,15 @@ fn fs_threshold_scale(glyphs: &[GlyphPart]) -> Option<f64> {
     Some(med_fs * coef)
 }
 
+/// parts 入力の入口が受け取る JSON
+#[cfg(any(target_arch = "wasm32", feature = "python"))]
+#[derive(Deserialize)]
+pub(crate) struct PartsInput {
+    pub pages: Vec<PagePart>,
+    #[serde(default)]
+    pub options: ExtractOptions,
+}
+
 /// 外部リーダーが取り出した文字と線分からの全ページ表抽出
 pub fn extract_from_parts(pages: Vec<PagePart>, options: &ExtractOptions) -> Document {
     let out = crate::par::map_ordered(pages, || (), |_, pi, part| detect_page(pi, part, options));

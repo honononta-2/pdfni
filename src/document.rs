@@ -6,7 +6,7 @@ use crate::columns::{Participant, ParticipantKind, split_regions};
 use crate::error::Result;
 use crate::extract::ExtractOptions;
 use crate::furniture;
-use crate::model::{BBox, Cell, Table};
+use crate::model::{BBox, Table};
 use crate::extract::extract_from_parts;
 use crate::query::ExtractQuery;
 use crate::reader::read_pages_and_text;
@@ -14,6 +14,12 @@ use crate::text::{
     TextChar, TextFont, TextLine, TextPage, TextWord, build_text_lines_with, derotate_xy,
     is_whitespace_str,
 };
+
+#[cfg(feature = "markdown")]
+mod markdown;
+
+#[cfg(feature = "markdown")]
+pub use markdown::{extract_markdown_from_bytes, extract_markdown_from_bytes_with_query};
 
 /// 段落併合の行送り上限（代表 font_size 比）
 const PARA_LEADING_FACTOR: f64 = 1.8;
@@ -257,445 +263,6 @@ pub fn assign_headings(doc: &mut DocDoc) {
     }
 }
 
-pub(crate) fn document_to_markdown(doc: &DocDoc, escape_markdown: bool) -> String {
-    let mut parts = Vec::new();
-    for page in &doc.pages {
-        for block in &page.blocks {
-            if let Some(s) = block_to_markdown(block, page, escape_markdown) {
-                parts.push(s);
-            }
-        }
-    }
-    parts.join("\n\n")
-}
-
-/// 空表・空白のみ本文は None
-fn block_to_markdown(block: &DocBlock, page: &DocPage, escape_markdown: bool) -> Option<String> {
-    match block {
-        DocBlock::Text(tb) => {
-            if tb.role != TextBlockRole::Body {
-                return None;
-            }
-            match &tb.kind {
-                TextBlockKind::Heading { level } => {
-                    let prefix = "#".repeat(*level as usize);
-                    let out: Vec<String> = format_text_block_lines(tb, page, escape_markdown)
-                        .into_iter()
-                        .filter(|l| !l.trim().is_empty())
-                        .map(|l| format!("{prefix} {l}"))
-                        .collect();
-                    if out.is_empty() {
-                        return None;
-                    }
-                    Some(out.join("\n"))
-                }
-                TextBlockKind::Paragraph => {
-                    let body = format_text_block_lines(tb, page, escape_markdown)
-                        .into_iter()
-                        .filter(|l| !l.trim().is_empty())
-                        .collect::<Vec<_>>()
-                        .join(HARD_BREAK);
-                    if body.trim().is_empty() {
-                        return None;
-                    }
-                    Some(body)
-                }
-                TextBlockKind::List { ordered } => {
-                    list_to_markdown(tb, page, *ordered, escape_markdown)
-                }
-            }
-        }
-        DocBlock::Table(table) => table_to_markdown(table),
-    }
-}
-
-/// 段落内の行を縦に保つハード改行
-const HARD_BREAK: &str = "  \n";
-
-/// 行ごとの Markdown 化。書体があればインライン強調
-/// 行情報が使えない場合は結合済み text の1要素
-fn format_text_block_lines(tb: &TextBlock, page: &DocPage, escape_markdown: bool) -> Vec<String> {
-    if join_paragraph_text(&tb.lines) == tb.text {
-        if let Some(lines) = styled_md_lines(&tb.lines, &page.fonts, &page.chars, escape_markdown)
-        {
-            return lines;
-        }
-        let plain = plain_md_lines(&tb.lines, escape_markdown);
-        if !plain.is_empty() {
-            return plain;
-        }
-    }
-    vec![format_md_body(&tb.text, escape_markdown)]
-}
-
-/// 見出し・段落・リスト項目本文のエスケープ適用
-fn format_md_body(text: &str, escape_markdown: bool) -> String {
-    if escape_markdown {
-        escape_text_block_text(text)
-    } else {
-        sanitize_md_text(text)
-    }
-}
-
-fn list_to_markdown(
-    tb: &TextBlock,
-    page: &DocPage,
-    ordered: bool,
-    escape_markdown: bool,
-) -> Option<String> {
-    let mut out_lines = Vec::new();
-    for (num, body_lines) in list_item_body_groups(&tb.lines) {
-        let rendered = styled_md_lines(&body_lines, &page.fonts, &page.chars, escape_markdown)
-            .unwrap_or_else(|| plain_md_lines(&body_lines, escape_markdown));
-        let body = rendered.join(HARD_BREAK);
-        if body.trim().is_empty() {
-            continue;
-        }
-        if ordered {
-            let Some(n) = num else {
-                continue;
-            };
-            out_lines.push(format!("{n}. {body}"));
-        } else {
-            out_lines.push(format!("- {body}"));
-        }
-    }
-    if out_lines.is_empty() {
-        None
-    } else {
-        Some(out_lines.join("\n"))
-    }
-}
-
-/// 書体属性
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MdStyle {
-    bold: bool,
-    italic: bool,
-}
-
-impl MdStyle {
-    fn normal() -> Self {
-        Self {
-            bold: false,
-            italic: false,
-        }
-    }
-
-    fn is_normal(self) -> bool {
-        !self.bold && !self.italic
-    }
-}
-
-/// 行内の本文断片
-enum MdUnit {
-    /// グリフ由来の文字列
-    Text { text: String, style: MdStyle },
-    /// 単語間に挿入する空白
-    Gap(String),
-}
-
-/// 行ごとの書体付き Markdown。強調は行内で完結
-fn styled_md_lines(
-    lines: &[TextLine],
-    fonts: &[TextFont],
-    chars: &[TextChar],
-    escape_markdown: bool,
-) -> Option<Vec<String>> {
-    if !lines_have_char_refs(lines) {
-        return None;
-    }
-    let mut out = Vec::new();
-    for line in lines {
-        let units = line_to_md_units(line, fonts, chars)?;
-        let runs = coalesce_md_units(&units);
-        let rendered = render_md_runs(&runs, escape_markdown);
-        if !rendered.trim().is_empty() {
-            out.push(rendered);
-        }
-    }
-    Some(out)
-}
-
-fn plain_md_lines(lines: &[TextLine], escape_markdown: bool) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in lines {
-        let text = join_line_words(line);
-        if text.trim().is_empty() {
-            continue;
-        }
-        out.push(format_md_body(&text, escape_markdown));
-    }
-    out
-}
-
-/// 装飾に使える文字参照があるか
-fn lines_have_char_refs(lines: &[TextLine]) -> bool {
-    lines
-        .iter()
-        .any(|l| l.words.iter().any(|w| !w.chars.is_empty()))
-}
-
-fn line_to_md_units(
-    line: &TextLine,
-    fonts: &[TextFont],
-    chars: &[TextChar],
-) -> Option<Vec<MdUnit>> {
-    let mut units = Vec::new();
-    for (i, word) in line.words.iter().enumerate() {
-        if i > 0 {
-            units.push(MdUnit::Gap(" ".into()));
-        }
-        units.extend(word_to_md_units(word, fonts, chars)?);
-    }
-    Some(units)
-}
-
-fn word_to_md_units(
-    word: &TextWord,
-    fonts: &[TextFont],
-    chars: &[TextChar],
-) -> Option<Vec<MdUnit>> {
-    if word.chars.is_empty() {
-        if word.text.is_empty() {
-            return Some(Vec::new());
-        }
-        // 文字参照が無く本文だけある単語は復元不能
-        return None;
-    }
-    let mut units = Vec::with_capacity(word.chars.len());
-    let mut rebuilt = String::new();
-    for &ci in &word.chars {
-        let Some(ch) = chars.get(ci as usize) else {
-            // 不正な文字インデックス
-            return None;
-        };
-        let style = md_style_of_font(fonts, ch.font);
-        rebuilt.push_str(&ch.text);
-        units.push(MdUnit::Text {
-            text: ch.text.clone(),
-            style,
-        });
-    }
-    if rebuilt != word.text {
-        return None;
-    }
-    Some(units)
-}
-
-fn md_style_of_font(fonts: &[TextFont], font_idx: u32) -> MdStyle {
-    match fonts.get(font_idx as usize) {
-        Some(f) => MdStyle {
-            bold: f.bold,
-            italic: f.italic,
-        },
-        None => MdStyle::normal(),
-    }
-}
-
-/// 同一書体の断片の結合。間の挿入空白は区間へ取り込み
-fn coalesce_md_units(units: &[MdUnit]) -> Vec<(String, MdStyle)> {
-    let mut runs: Vec<(String, MdStyle)> = Vec::new();
-    let mut pending_gap = String::new();
-
-    for unit in units {
-        match unit {
-            MdUnit::Gap(g) => pending_gap.push_str(g),
-            MdUnit::Text { text, style } => {
-                if text.is_empty() {
-                    continue;
-                }
-                if let Some((last_text, last_style)) = runs.last_mut() {
-                    if *last_style == *style {
-                        last_text.push_str(&pending_gap);
-                        last_text.push_str(text);
-                        pending_gap.clear();
-                        continue;
-                    }
-                }
-                if !pending_gap.is_empty() {
-                    if let Some((last_text, last_style)) = runs.last_mut() {
-                        if last_style.is_normal() {
-                            last_text.push_str(&pending_gap);
-                        } else {
-                            runs.push((std::mem::take(&mut pending_gap), MdStyle::normal()));
-                        }
-                    } else {
-                        runs.push((std::mem::take(&mut pending_gap), MdStyle::normal()));
-                    }
-                    pending_gap.clear();
-                }
-                if let Some((last_text, last_style)) = runs.last_mut() {
-                    if *last_style == *style {
-                        last_text.push_str(text);
-                        continue;
-                    }
-                }
-                runs.push((text.clone(), *style));
-            }
-        }
-    }
-    if !pending_gap.is_empty() {
-        if let Some((last_text, last_style)) = runs.last_mut() {
-            if last_style.is_normal() {
-                last_text.push_str(&pending_gap);
-            } else {
-                runs.push((pending_gap, MdStyle::normal()));
-            }
-        } else {
-            runs.push((pending_gap, MdStyle::normal()));
-        }
-    }
-    runs
-}
-
-fn render_md_runs(runs: &[(String, MdStyle)], escape_markdown: bool) -> String {
-    let mut out = String::new();
-    for (text, style) in runs {
-        out.push_str(&render_md_run(text, *style, escape_markdown));
-    }
-    out
-}
-
-fn render_md_run(text: &str, style: MdStyle, escape_markdown: bool) -> String {
-    if style.is_normal() {
-        return format_md_body(text, escape_markdown);
-    }
-    // 区間端の空白は強調の外
-    let lead = text.chars().take_while(|&c| c == ' ').count();
-    let trail = text
-        .chars()
-        .rev()
-        .take_while(|&c| c == ' ')
-        .count()
-        .min(text.chars().count().saturating_sub(lead));
-    let core: String = text
-        .chars()
-        .skip(lead)
-        .take(text.chars().count() - lead - trail)
-        .collect();
-    let mut out = String::with_capacity(text.len() + 6);
-    for _ in 0..lead {
-        out.push(' ');
-    }
-    if !core.is_empty() {
-        let body = format_md_body(&core, escape_markdown);
-        let marker = if style.bold && style.italic {
-            "***"
-        } else if style.bold {
-            "**"
-        } else {
-            "*"
-        };
-        out.push_str(marker);
-        out.push_str(&body);
-        out.push_str(marker);
-    }
-    for _ in 0..trail {
-        out.push(' ');
-    }
-    out
-}
-
-/// リスト項目の番号とマーカー除去後の本文行
-fn list_item_body_groups(lines: &[TextLine]) -> Vec<(Option<u32>, Vec<TextLine>)> {
-    let mut entries = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        if list_marker_kind(&lines[i]).is_none() {
-            i += 1;
-            continue;
-        }
-        let num = match list_marker_kind(&lines[i]) {
-            Some(ListMarkerKind::Ordered { n, .. }) => Some(n),
-            _ => None,
-        };
-        let start = i;
-        i += 1;
-        while i < lines.len() && list_marker_kind(&lines[i]).is_none() {
-            i += 1;
-        }
-        let body_lines = list_item_body_lines(&lines[start..i]);
-        entries.push((num, body_lines));
-    }
-    entries
-}
-
-/// GFM パイプテーブルへの直列化
-fn table_to_markdown(table: &Table) -> Option<String> {
-    if table.n_rows == 0 || table.n_cols == 0 {
-        return None;
-    }
-    let n_cols = table.n_cols;
-    let mut lines = Vec::with_capacity(table.data.len().max(1) + 1);
-
-    let header = table.data.first().map(|r| r.as_slice()).unwrap_or(&[]);
-    lines.push(format_table_row(header, n_cols));
-
-    let mut sep = String::from("|");
-    for _ in 0..n_cols {
-        sep.push_str(" --- |");
-    }
-    lines.push(sep);
-
-    for row in table.data.iter().skip(1) {
-        lines.push(format_table_row(row, n_cols));
-    }
-
-    Some(lines.join("\n"))
-}
-
-fn format_table_row(row: &[Cell], n_cols: usize) -> String {
-    let mut s = String::from("|");
-    for i in 0..n_cols {
-        s.push(' ');
-        if let Some(cell) = row.get(i) {
-            s.push_str(&escape_cell_text(&cell.text));
-        }
-        s.push_str(" |");
-    }
-    s
-}
-
-/// セル text の制御文字置換と GFM エスケープ
-fn escape_cell_text(text: &str) -> String {
-    let sanitized = sanitize_md_text(text);
-    let mut out = String::with_capacity(sanitized.len());
-    for c in sanitized.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '|' => out.push_str("\\|"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// 見出し・段落 text の制御文字置換と本文エスケープ
-fn escape_text_block_text(text: &str) -> String {
-    let sanitized = sanitize_md_text(text);
-    let mut body = String::with_capacity(sanitized.len() + 1);
-    for c in sanitized.chars() {
-        if c == '\\' {
-            body.push_str("\\\\");
-        } else {
-            body.push(c);
-        }
-    }
-    // エスケープは先頭の連続 U+0020 直後のブロック構文文字1文字だけ
-    let n_space = body.bytes().take_while(|&b| b == b' ').count();
-    if let Some(first) = body[n_space..].chars().next() {
-        if matches!(first, '#' | '*' | '-' | '+' | '>' | '|') {
-            let mut out = String::with_capacity(body.len() + 1);
-            out.push_str(&body[..n_space]);
-            out.push('\\');
-            out.push_str(&body[n_space..]);
-            return out;
-        }
-    }
-    body
-}
-
 /// 改行・タブ・C0 制御文字の U+0020 置換
 pub(crate) fn sanitize_md_text(text: &str) -> String {
     text.chars()
@@ -706,25 +273,6 @@ pub(crate) fn sanitize_md_text(text: &str) -> String {
 /// Markdown 直列化で空白へ置換する制御文字か
 fn is_md_control_char(c: char) -> bool {
     matches!(c, '\u{0000}'..='\u{001F}' | '\u{2028}' | '\u{2029}')
-}
-
-pub fn extract_markdown_from_bytes(
-    data: &[u8],
-    password: Option<&str>,
-    options: &ExtractOptions,
-) -> Result<String> {
-    extract_markdown_from_bytes_with_query(data, password, options, &ExtractQuery::default())
-}
-
-/// ページ・矩形で絞った Markdown 生成
-pub fn extract_markdown_from_bytes_with_query(
-    data: &[u8],
-    password: Option<&str>,
-    options: &ExtractOptions,
-    query: &ExtractQuery,
-) -> Result<String> {
-    let doc = extract_document_from_bytes_with_query(data, password, options, query)?;
-    Ok(document_to_markdown(&doc, options.escape_markdown))
 }
 
 pub fn extract_content_from_bytes(
@@ -2058,6 +1606,8 @@ fn is_cjk(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "markdown")]
+    use super::markdown::document_to_markdown;
     use crate::model::Cell;
 
     fn font(vertical: bool) -> TextFont {
@@ -2798,6 +2348,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn list_two_bullet_items_become_list() {
         let fs = 10.0;
@@ -2820,6 +2371,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "- Alpha\n- Beta");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn list_single_bullet_stays_paragraph() {
         let fs = 10.0;
@@ -2839,6 +2391,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "• Only");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn list_hanging_continuation_hard_break() {
         let fs = 10.0;
@@ -2884,6 +2437,7 @@ mod tests {
         assert!(tb.iter().all(|t| t.kind == TextBlockKind::Paragraph));
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn list_ordered_number_detected() {
         let fs = 10.0;
@@ -2951,6 +2505,7 @@ mod tests {
         assert_eq!(list.text, "B\nC");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn list_paren_number_detected() {
         let fs = 10.0;
@@ -2967,6 +2522,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "1. One\n2. Two");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn list_lparen_number_detected() {
         let fs = 10.0;
@@ -2997,6 +2553,7 @@ mod tests {
         assert!(tb.iter().all(|t| t.kind == TextBlockKind::Paragraph));
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn list_ascii_dash_two_items() {
         let fs = 10.0;
@@ -3012,6 +2569,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "- red\n- blue");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn list_item_body_escape_leading_hash() {
         let fs = 10.0;
@@ -3424,6 +2982,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "markdown")]
     fn text_block(kind: TextBlockKind, text: &str) -> DocBlock {
         DocBlock::Text(TextBlock {
             kind,
@@ -3439,6 +2998,7 @@ mod tests {
         })
     }
 
+    #[cfg(feature = "markdown")]
     fn doc_with_blocks(blocks: Vec<DocBlock>) -> DocDoc {
         DocDoc {
             pages: vec![DocPage {
@@ -3453,6 +3013,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_heading_and_paragraph() {
         let doc = doc_with_blocks(vec![
@@ -3467,6 +3028,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_gfm_table_shape() {
         let t = Table {
@@ -3501,6 +3063,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_table_single_row_header_only() {
         let t = Table {
@@ -3525,6 +3088,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_table_empty_cells_from_merge() {
         // 結合セル由来の空セル
@@ -3556,6 +3120,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_table_pad_and_truncate_cells() {
         let t = Table {
@@ -3586,6 +3151,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_escape_backslash_before_pipe() {
         // `\` を先に `\\` へ、その後 `|` を `\|` へ
@@ -3605,6 +3171,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "| a\\\\b\\|c |\n| --- |");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_control_chars_to_space() {
         let mixed = "a\nb\rc\u{2028}d\u{2029}e\tf\u{0001}g";
@@ -3635,6 +3202,7 @@ mod tests {
         assert!(!md.contains('\u{0001}'));
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_escape_leading_block_markers() {
         let doc = doc_with_blocks(vec![
@@ -3657,6 +3225,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_escape_markdown_false_skips_body_escape() {
         let doc = doc_with_blocks(vec![
@@ -3684,6 +3253,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_join_pages_and_blocks() {
         let doc = DocDoc {
@@ -3722,6 +3292,7 @@ mod tests {
         assert!(!md.ends_with('\n'));
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_empty_doc_and_empty_paragraph() {
         let empty = DocDoc { pages: vec![], warnings: Vec::new() };
@@ -3747,6 +3318,7 @@ mod tests {
         assert_eq!(document_to_markdown(&empty_para, true), "x");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_skips_zero_dim_tables() {
         let zero_rows = Table {
@@ -3782,6 +3354,7 @@ mod tests {
     }
 
     /// 制御文字・空白のみの見出し・段落は Markdown に出さない
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_skips_whitespace_only_text_blocks() {
         let doc = doc_with_blocks(vec![
@@ -4012,6 +3585,7 @@ mod tests {
         assert_eq!(vert[0].lines[0].words.len(), 1);
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn columns_headings_and_markdown_pipeline() {
         let fs = 10.0;
@@ -4530,6 +4104,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn furniture_markdown_skips_non_body() {
         let doc = doc_with_blocks(vec![
@@ -4616,6 +4191,7 @@ mod tests {
         assert!(json.contains(r#""role":"header""#));
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn furniture_static_header_two_pages() {
         let h = 600.0;
@@ -4633,6 +4209,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "body\n\nbody");
     }
 
+    #[cfg(feature = "markdown")]
     fn font_style(name: &str, bold: bool, italic: bool) -> TextFont {
         TextFont {
             name: name.into(),
@@ -4645,6 +4222,7 @@ mod tests {
     }
 
     /// 文字を追加しインデックスを返す
+    #[cfg(feature = "markdown")]
     fn push_styled_ch(chars: &mut Vec<TextChar>, text: &str, x: f64, y: f64, font_idx: u32) -> u32 {
         let idx = chars.len() as u32;
         let adv = (text.chars().count() as f64 * 5.0).max(1.0);
@@ -4666,6 +4244,7 @@ mod tests {
         idx
     }
 
+    #[cfg(feature = "markdown")]
     fn word_from_indices(chars: &[TextChar], indices: &[u32], left: f64, top: f64) -> TextWord {
         let text: String = indices
             .iter()
@@ -4685,6 +4264,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "markdown")]
     fn line_from_words(words: Vec<TextWord>) -> TextLine {
         let left = words.iter().map(|w| w.left).fold(f64::INFINITY, f64::min);
         let right = words
@@ -4706,6 +4286,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "markdown")]
     fn doc_styled(
         fonts: Vec<TextFont>,
         chars: Vec<TextChar>,
@@ -4770,6 +4351,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_four_styles() {
         let fonts = vec![
@@ -4796,6 +4378,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_mid_word_switch() {
         let fonts = vec![font_style("R", false, false), font_style("B", true, false)];
@@ -4807,6 +4390,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "**He**llo");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_merges_same_style_words() {
         let fonts = vec![font_style("B", true, false)];
@@ -4821,6 +4405,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "**foo bar**");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_per_line_hard_break() {
         let fonts = vec![font_style("I", false, true)];
@@ -4835,6 +4420,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "*hello*  \n*world*");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_cjk_hard_break() {
         let fonts = vec![font_style("B", true, false)];
@@ -4849,6 +4435,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "**漢**  \n**字**");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_heading_prefix_not_emphasized() {
         let fonts = vec![font_style("B", true, false)];
@@ -4864,6 +4451,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "## **Title**");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_list_marker_not_emphasized() {
         let fonts = vec![font_style("B", true, false), font_style("R", false, false)];
@@ -4887,6 +4475,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "- **Alpha**\n- **Beta**");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_ordered_list() {
         let fonts = vec![font_style("I", false, true)];
@@ -4909,6 +4498,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "1. *One*\n2. *Two*");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_escape_star_and_backslash() {
         let fonts = vec![font_style("B", true, false)];
@@ -4921,6 +4511,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, false), r"**a*b\c**");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_invalid_font_index_is_normal() {
         let fonts = vec![font_style("B", true, false)];
@@ -4932,6 +4523,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "x");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_invalid_char_index_falls_back() {
         let fonts = vec![font_style("B", true, false)];
@@ -4979,6 +4571,7 @@ mod tests {
         assert_eq!(document_to_markdown(&doc, true), "bold");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn markdown_emphasis_no_char_refs_falls_back() {
         let doc = doc_with_blocks(vec![text_block(TextBlockKind::Paragraph, "fallback")]);

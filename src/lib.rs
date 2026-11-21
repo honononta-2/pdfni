@@ -16,7 +16,14 @@ mod ffi;
 #[cfg(feature = "document")]
 mod furniture;
 mod model;
+#[cfg(all(
+    feature = "reader",
+    any(test, target_arch = "wasm32", feature = "ffi", feature = "python")
+))]
+mod options_json;
 mod par;
+#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
+mod python;
 mod query;
 #[cfg(feature = "reader")]
 mod reader;
@@ -35,8 +42,9 @@ pub use document::{
     TextBlock, TextBlockKind, TextBlockRole, assign_header_footer, assign_headings, assign_lists,
     build_blocks, extract_content_from_bytes, extract_content_from_bytes_with_query,
     extract_document_from_bytes, extract_document_from_bytes_with_query,
-    extract_markdown_from_bytes, extract_markdown_from_bytes_with_query,
 };
+#[cfg(feature = "markdown")]
+pub use document::{extract_markdown_from_bytes, extract_markdown_from_bytes_with_query};
 pub use error::{Error, Result};
 pub use extract::{
     DetectMode, EdgePart, ExtractOptions, GlyphPart, GraphicPart, PagePart, ReaderSettings,

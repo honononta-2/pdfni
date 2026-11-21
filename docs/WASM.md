@@ -21,8 +21,9 @@ wasm-pack build --release --target web \
 wasm-pack build --release --target web --no-default-features
 ```
 
-Swap `document` for `reader` if you don't need Markdown / document blocks,
-or drop it entirely to build a detector-only bundle that accepts parts JSON.
+Swap `document` for `markdown` to include the Markdown export, for `reader`
+if you don't need document blocks, or drop it entirely to build a
+detector-only bundle that accepts parts JSON.
 Trim the `cmap-*` list to only the scripts you need to shrink the wasm — but
 note that dropping every `cmap-*` feature causes PDFs using predefined CJK
 CMap names (`90ms-RKSJ-H`, `UniJIS-UTF16-H`, `GB-EUC-H`, `UniCNS-UTF16-H`,
@@ -40,7 +41,7 @@ for the full feature layering and the CMap trimming warning.
 | `extract_text_lines_from_pdf(bytes, password?, options_json?)` | `reader` | PDF bytes → line / word view per page |
 | `extract_document_from_pdf(bytes, options_json?, password?)` | `document` | PDF bytes → `DocDoc` JSON (blocks + tables) |
 | `extract_content_from_pdf(bytes, options_json?, password?)` | `document` | PDF bytes → `DocContent` JSON (blocks + tables, no per-glyph data) |
-| `extract_markdown_from_pdf(bytes, options_json?, password?)` | `document` | PDF bytes → Markdown string |
+| `extract_markdown_from_pdf(bytes, options_json?, password?)` | `markdown` | PDF bytes → Markdown string |
 
 `options_json` accepts the same JSON that `ExtractOptions` deserializes on the
 Rust side (fields like `mode`, `detect_lists`, `escape_markdown`, `bidi`,
@@ -56,6 +57,6 @@ the document / Markdown paths, or use the Rust `_with` APIs directly.
 ## Browser smoke page
 
 An end-to-end browser example lives under `demo/`. Build the wasm package
-with `wasm-pack build --release --target web --out-dir demo/pkg` (default
-features — the page imports document-level APIs), then serve it with
-`node demo/server.mjs`.
+with `wasm-pack build --release --target web --out-dir demo/pkg --features markdown`
+(default features plus `markdown` — the page imports document-level APIs and
+the Markdown export), then serve it with `node demo/server.mjs`.

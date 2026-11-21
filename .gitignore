@@ -3,6 +3,8 @@
 /pkg
 /pkg-pdfium
 node_modules/
+__pycache__/
+.pytest_cache/
 *.dll
 *.dylib
 .DS_Store

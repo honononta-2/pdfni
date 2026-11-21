@@ -1,9 +1,9 @@
 [package]
 name = "pdfni"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Extract tables and Markdown from text-embedded PDFs, with a built-in pure-Rust PDF reader adapted from Mozilla pdf.js."
+description = "Extract tables and structured text from text-embedded PDFs, with a built-in pure-Rust PDF reader adapted from Mozilla pdf.js."
 license = "Apache-2.0"
 repository = "https://github.com/honononta-2/pdfni"
 readme = "README.md"
@@ -46,11 +46,17 @@ reader = [
     "dep:flate2", "dep:aes", "dep:cbc", "dep:md-5", "dep:sha2",
 ]
 
-# Document model and Markdown output
+# Document model and content view
 document = ["reader"]
+
+# Markdown output from the document model
+markdown = ["document"]
 
 # Native C ABI entrypoints
 ffi = ["reader"]
+
+# Python extension module entrypoints
+python = ["document", "dep:pyo3", "dep:pythonize"]
 
 # Predefined CMap groups; effective only when `reader` is enabled
 cmap-gb1    = []
@@ -75,6 +81,9 @@ aes = { version = "0.8", optional = true }
 cbc = { version = "0.1", optional = true }
 md-5 = { version = "0.10", optional = true }
 sha2 = { version = "0.10", optional = true }
+# Python 拡張モジュールの入口用（python のみ）
+pyo3 = { version = "0.30", optional = true, features = ["abi3-py310"] }
+pythonize = { version = "0.30", optional = true }
 
 # wasm から JS へ公開する入口用
 [target.'cfg(target_arch = "wasm32")'.dependencies]

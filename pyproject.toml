@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.14,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "pdfni"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+dynamic = ["version", "description", "readme", "license", "urls"]
+
+[tool.maturin]
+features = ["python"]
+include = [{ path = "pdfni.pyi", format = "sdist" }]
