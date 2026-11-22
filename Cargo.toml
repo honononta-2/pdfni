@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 description = "Extract tables and structured text from text-embedded PDFs, with a built-in pure-Rust PDF reader adapted from Mozilla pdf.js."
 license = "Apache-2.0"
+homepage = "https://honononta-2.github.io/pdfni/"
 repository = "https://github.com/honononta-2/pdfni"
 readme = "README.md"
 include = ["/src/**", "/examples/**", "/data/bcmaps/**", "/README.md", "/LICENSE", "/NOTICE", "!.DS_Store"]

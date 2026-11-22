@@ -1,3 +1,4 @@
-# Benchmark scripts are measurement harness, not implementation —
+# Benchmark scripts and site assets are not core Rust implementation —
 # keep them out of the repository language statistics.
 bench/** linguist-vendored
+site/** linguist-vendored

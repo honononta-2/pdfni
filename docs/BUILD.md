@@ -92,13 +92,13 @@ cargo build --lib --target wasm32-unknown-unknown --no-default-features
 
 ## Browser package (wasm-pack)
 
-The browser smoke page lives under `demo/`. Build the package with the
+The browser demo page lives under `site/demo/`. Build the package with the
 default features plus `markdown` (the page imports document-level APIs and
-the Markdown export) and serve it:
+the Markdown export) and serve the site locally:
 
 ```sh
-wasm-pack build --release --target web --out-dir demo/pkg --features markdown
-node demo/server.mjs   # http://localhost:8080
+wasm-pack build --release --target web --out-dir site/demo/pkg --features markdown
+node site/server.mjs   # http://localhost:8080/demo/
 ```
 
 ## Python package (maturin)

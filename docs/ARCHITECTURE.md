@@ -109,6 +109,6 @@ src/
   bin/main.rs      CLI (content / tables / doc)
 examples/          reader_probe, text_probe, ...
 pytests/           tests for the Python package
-demo/              browser smoke page
+site/              GitHub Pages site and browser WebAssembly demo
 data/              source .bcmap files used when regenerating bundled data
 ```

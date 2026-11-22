@@ -1,10 +1,13 @@
 # pdfni
 
 [![Crates.io](https://img.shields.io/crates/v/pdfni.svg)](https://crates.io/crates/pdfni)
+[![PyPI](https://img.shields.io/pypi/v/pdfni.svg)](https://pypi.org/project/pdfni/)
 [![docs.rs](https://docs.rs/pdfni/badge.svg)](https://docs.rs/pdfni)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/honononta-2/pdfni/blob/master/LICENSE)
 
 A fast, rule-based PDF table extraction library for digital-native PDFs, written in pure Rust.
+
+[Website & Benchmarks](https://honononta-2.github.io/pdfni/) | [Live Browser Demo (WASM)](https://honononta-2.github.io/pdfni/demo/)
 
 > `pdfni` is currently in `0.x`; expect breaking changes before `1.0`.
 

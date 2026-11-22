@@ -3,25 +3,39 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>pdfni demo</title>
+<title>pdfni — Live Demo (WebAssembly)</title>
+<meta name="description" content="Try pdfni PDF table extraction, reading-order document parsing, and Markdown export directly in your browser via WebAssembly with no server uploads.">
+<link rel="canonical" href="https://honononta-2.github.io/pdfni/demo/">
+<meta property="og:site_name" content="pdfni">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://honononta-2.github.io/pdfni/demo/">
+<meta property="og:title" content="pdfni — Live Demo (WebAssembly)">
+<meta property="og:description" content="Try pdfni PDF table extraction, reading-order document parsing, and Markdown export directly in your browser via WebAssembly with no server uploads.">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="pdfni — Live Demo (WebAssembly)">
+<meta name="twitter:description" content="Try pdfni PDF table extraction, reading-order document parsing, and Markdown export directly in your browser via WebAssembly with no server uploads.">
 <style>
   :root {
     --bg: #ffffff;
     --panel: #ffffff;
+    --surface: #f7f7f4;
+    --surface-2: #efefea;
     --border: #e2e2dd;
     --border-strong: #cfcfc8;
     --text: #1f1f1c;
-    --muted: #7a7a72;
+    --muted: #66665e;
     --accent: #2f6f6a;
+    --accent-hover: #245753;
     --accent-soft: #e6f0ef;
     --danger: #b3402f;
-    --radius: 8px;
+    --radius: 10px;
+    --radius-sm: 6px;
     --mono: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
     --sans: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+    --max-w: 1080px;
   }
 
   * { box-sizing: border-box; }
-
   [hidden] { display: none !important; }
 
   body {
@@ -30,40 +44,138 @@
     color: var(--text);
     font-family: var(--sans);
     font-size: 14px;
-    line-height: 1.5;
+    line-height: 1.55;
     -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.9em;
+    background: var(--surface-2);
+    padding: 0.12em 0.36em;
+    border-radius: 4px;
   }
 
-  .wrap {
-    max-width: 720px;
+  /* Shared Topbar (matches index.html) */
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-inner {
+    max-width: var(--max-w);
     margin: 0 auto;
-    padding: 28px 20px 60px;
-  }
-
-  .page-head {
+    padding: 0 20px;
+    height: 58px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 26px;
+    gap: 16px;
   }
-  .page-title {
-    margin: 0;
-    font-size: 17px;
-    font-weight: 650;
-    letter-spacing: 0.01em;
-  }
-  .gh-link {
+  .brand {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    color: var(--muted);
+    color: var(--text);
+    font-weight: 700;
+    font-size: 17px;
+    letter-spacing: -0.01em;
     text-decoration: none;
-    font-size: 13px;
-    transition: color .15s;
   }
-  .gh-link:hover { color: var(--accent); }
-  .gh-link svg { width: 16px; height: 16px; fill: currentColor; }
+  .brand:hover { text-decoration: none; }
+  .nav-links {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    font-size: 13.5px;
+    color: var(--muted);
+  }
+  .nav-links a { color: var(--muted); font-weight: 500; }
+  .nav-links a:hover { color: var(--text); text-decoration: none; }
+  .nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 6px 11px;
+    border-radius: var(--radius-sm);
+    font-size: 12.5px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    font-family: var(--sans);
+  }
+  .btn:hover { text-decoration: none; }
+  .btn-outline {
+    background: var(--bg);
+    color: var(--text);
+    border-color: var(--border-strong);
+  }
+  .btn-outline:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .btn-active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  /* Page Hero Strip */
+  .demo-hero {
+    background: linear-gradient(180deg, #fafaf8 0%, #ffffff 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 32px 20px 26px;
+  }
+  .demo-hero-inner {
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .back-link:hover { color: var(--accent); text-decoration: none; }
+  .demo-hero h1 {
+    margin: 0 0 8px;
+    font-size: clamp(22px, 3.2vw, 28px);
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    font-weight: 700;
+  }
+  .demo-hero p {
+    margin: 0;
+    font-size: 14px;
+    color: var(--muted);
+  }
+
+  /* Demo Main */
+  main {
+    flex: 1;
+  }
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 28px 20px 60px;
+  }
 
   .field { margin-bottom: 22px; }
 
@@ -117,7 +229,7 @@
     border: 1px solid var(--border);
     background: var(--panel);
     color: var(--muted);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     padding: 5px 10px;
     font-size: 12px;
     font-family: var(--sans);
@@ -130,9 +242,9 @@
   input[type="number"] {
     width: 100%;
     border: 1px solid var(--border-strong);
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     background: var(--panel);
-    padding: 11px 12px;
+    padding: 10px 12px;
     font-size: 14px;
     font-family: var(--sans);
     color: var(--text);
@@ -148,6 +260,12 @@
   input[type="text"]:disabled,
   input[type="number"]:disabled { opacity: .5; }
 
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+
   .region-row {
     display: flex;
     gap: 8px;
@@ -155,7 +273,7 @@
     flex-wrap: wrap;
   }
   .region-row input { flex: 1 1 90px; min-width: 70px; width: auto; }
-  .region-row .head-btn { padding: 8px 12px; flex: none; }
+  .region-row .head-btn { padding: 9px 12px; flex: none; }
   .region-row .head-btn:disabled { opacity: .5; cursor: not-allowed; }
 
   #pv-dialog {
@@ -184,7 +302,7 @@
     display: inline-block;
     max-width: 100%;
     border: 1px solid var(--border-strong);
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     overflow: hidden;
   }
   #pv-canvas {
@@ -213,7 +331,7 @@
     margin-bottom: 10px;
     padding: 8px 10px;
     border: 1px solid var(--danger);
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     color: var(--danger);
     font-size: 13px;
   }
@@ -226,9 +344,9 @@
   .radio-card {
     position: relative;
     border: 1px solid var(--border-strong);
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     background: var(--panel);
-    padding: 12px 10px;
+    padding: 11px 10px;
     text-align: center;
     cursor: pointer;
     user-select: none;
@@ -237,7 +355,7 @@
   .radio-card input { position: absolute; opacity: 0; pointer-events: none; }
   .radio-card span {
     font-size: 13px;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--muted);
   }
   .radio-card:hover { border-color: var(--accent); }
@@ -257,23 +375,27 @@
   .run-btn {
     width: 100%;
     border: none;
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     background: var(--accent);
     color: #fff;
     font-size: 14px;
     font-weight: 600;
     letter-spacing: 0.02em;
     font-family: var(--sans);
-    padding: 13px;
+    padding: 12px;
     cursor: pointer;
     transition: background .15s, opacity .15s;
   }
-  .run-btn:hover:enabled { background: #275c58; }
+  .run-btn:hover:enabled { background: var(--accent-hover); }
   .run-btn:disabled { opacity: .5; cursor: not-allowed; }
 
   .error {
     margin-top: 10px;
-    font-size: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(179, 64, 47, 0.35);
+    background: rgba(179, 64, 47, 0.06);
+    border-radius: var(--radius-sm);
+    font-size: 12.5px;
     color: var(--danger);
   }
 
@@ -295,7 +417,7 @@
     border: 1px solid var(--border);
     background: var(--panel);
     color: var(--muted);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     padding: 4px 10px;
     font-size: 12px;
     font-family: var(--sans);
@@ -352,19 +474,63 @@
     width: 100%;
     height: 65vh;
   }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 24px 0 32px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .footer-inner {
+    max-width: var(--max-w);
+    margin: 0 auto;
+    padding: 0 20px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  @media (max-width: 860px) {
+    .nav-links { display: none; }
+  }
+  @media (max-width: 560px) {
+    .two-col { grid-template-columns: 1fr; }
+    .radios { grid-template-columns: repeat(2, 1fr); }
+  }
 </style>
 </head>
 <body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="../">pdfni</a>
+    <nav class="nav-links" aria-label="Primary navigation">
+      <a href="../#overview">Overview</a>
+      <a href="../#details">Details</a>
+      <a href="../#benchmarks">Benchmarks</a>
+      <a href="../#quickstart">Quick Start</a>
+      <a href="../#docs">Docs &amp; License</a>
+    </nav>
+    <div class="nav-actions">
+      <a class="btn btn-outline" href="https://github.com/honononta-2/pdfni" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-active" href="./" aria-current="page">Live Demo (WASM)</a>
+    </div>
+  </div>
+</header>
+
+<section class="demo-hero">
+  <div class="demo-hero-inner">
+    <a class="back-link" href="../">&larr; Back to Overview &amp; Benchmarks</a>
+    <h1>Browser Demo (WebAssembly)</h1>
+    <p>
+      Runs <code>pdfni</code> 100% locally in your browser via WebAssembly — PDF files never leave your device.
+    </p>
+  </div>
+</section>
+
+<main>
   <div class="wrap">
-
-    <header class="page-head">
-      <h1 class="page-title">pdfni demo</h1>
-      <a class="gh-link" href="https://github.com/honononta-2/pdfni" target="_blank" rel="noopener">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
-        GitHub
-      </a>
-    </header>
-
     <div class="field">
       <span class="field-label">PDF File</span>
       <div class="dropzone disabled" id="dropzone">
@@ -380,18 +546,20 @@
       <input type="file" id="file-input" accept="application/pdf,.pdf" hidden>
     </div>
 
-    <div class="field">
-      <label class="field-label" for="password">Password</label>
-      <input type="password" id="password" autocomplete="off" disabled>
+    <div class="two-col">
+      <div class="field">
+        <label class="field-label" for="password">Password</label>
+        <input type="password" id="password" placeholder="Optional" autocomplete="off" disabled>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="pages">Pages</label>
+        <input type="text" id="pages" placeholder="1,3-5,7" autocomplete="off" disabled>
+      </div>
     </div>
 
     <div class="field">
-      <label class="field-label" for="pages">Pages</label>
-      <input type="text" id="pages" placeholder="1,3-5,7" autocomplete="off" disabled>
-    </div>
-
-    <div class="field">
-      <span class="field-label">Region</span>
+      <span class="field-label">Region (PDF points, top-left origin)</span>
       <div class="region-row">
         <input type="number" id="rg-left" placeholder="left" step="any" disabled>
         <input type="number" id="rg-top" placeholder="top" step="any" disabled>
@@ -425,26 +593,26 @@
       <span class="field-label">Output Mode</span>
       <div class="radios">
         <label class="radio-card">
-          <input type="radio" name="mode" value="reader" checked disabled>
-          <span>Reader</span>
+          <input type="radio" name="mode" value="tables" checked disabled>
+          <span>Tables</span>
         </label>
         <label class="radio-card">
-          <input type="radio" name="mode" value="tables" disabled>
-          <span>Tables</span>
+          <input type="radio" name="mode" value="md" disabled>
+          <span>Markdown</span>
         </label>
         <label class="radio-card">
           <input type="radio" name="mode" value="doc" disabled>
           <span>Doc</span>
         </label>
         <label class="radio-card">
-          <input type="radio" name="mode" value="md" disabled>
-          <span>Markdown</span>
+          <input type="radio" name="mode" value="reader" disabled>
+          <span>Reader</span>
         </label>
       </div>
     </div>
 
     <div class="field">
-      <button class="run-btn" id="run" disabled>Run</button>
+      <button class="run-btn" id="run" disabled>Run Extraction</button>
       <div class="error" id="error" hidden></div>
     </div>
 
@@ -465,8 +633,21 @@
       <div class="table-scroll" id="table-out" hidden></div>
       <iframe class="preview" id="md-preview" sandbox referrerpolicy="no-referrer" title="markdown preview" hidden></iframe>
     </div>
-
   </div>
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <div><strong>pdfni</strong> &middot; Apache-2.0</div>
+    <div>
+      <a href="../">Overview</a> &middot;
+      <a href="https://github.com/honononta-2/pdfni" target="_blank" rel="noopener">GitHub</a> &middot;
+      <a href="https://crates.io/crates/pdfni" target="_blank" rel="noopener">crates.io</a> &middot;
+      <a href="https://pypi.org/project/pdfni/" target="_blank" rel="noopener">PyPI</a> &middot;
+      <a href="https://docs.rs/pdfni" target="_blank" rel="noopener">docs.rs</a>
+    </div>
+  </div>
+</footer>
 
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
         integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
@@ -501,7 +682,7 @@ try {
   wasmReady = true;
   updateFilterState();
 } catch (e) {
-  showError('Failed to load wasm: ' + (e?.message ?? e));
+  showError('WASM module (./pkg/pdfni.js) not loaded: ' + (e?.message ?? e));
 }
 
 function showError(msg) {
@@ -637,7 +818,6 @@ async function openPreview() {
     }
     const bytes = new Uint8Array(await currentFile.arrayBuffer());
     const password = $('password').value || undefined;
-    // cMapUrl / standardFontDataUrl are required to draw text of CID-font PDFs
     const doc = await pvState.lib.getDocument({
       data: bytes,
       password,
@@ -687,7 +867,6 @@ function closePreview() {
   if (pvDialog.open) pvDialog.close();
 }
 
-// Region inputs -> initial selection, in PDF points (top-left origin)
 function selFromInputs() {
   const vals = ['rg-left', 'rg-top', 'rg-right', 'rg-bottom'].map((id) => $(id).value.trim());
   if (vals.some((v) => v === '')) return null;
@@ -719,7 +898,6 @@ pvCanvas.addEventListener('pointermove', (e) => {
 pvCanvas.addEventListener('pointerup', (e) => {
   if (!pvState.drag) return;
   dragTo(e);
-  // treat a tiny drag as a click that clears the selection
   const s = pvState.sel;
   if (s && (s.right - s.left < 2 || s.bottom - s.top < 2)) pvState.sel = null;
   pvState.drag = null;
@@ -738,7 +916,6 @@ function dragTo(e) {
   drawSelection();
 }
 
-// Draw the current selection over the canvas, clipped to the shown page
 function drawSelection() {
   const box = $('pv-select');
   const sel = pvState.sel;
@@ -947,7 +1124,7 @@ controls.csv.addEventListener('click', () => {
   const t = currentTable();
   if (!t) return;
   const csv = t.cells.map((row) => row.map(csvCell).join(',')).join('\r\n');
-  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

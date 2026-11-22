@@ -54,9 +54,10 @@ Bidi is off in the `extract_text_items_from_pdf`
 and `extract_text_lines_from_pdf` helpers — enable it via `options_json` on
 the document / Markdown paths, or use the Rust `_with` APIs directly.
 
-## Browser smoke page
+## Browser demo page
 
-An end-to-end browser example lives under `demo/`. Build the wasm package
-with `wasm-pack build --release --target web --out-dir demo/pkg --features markdown`
+An end-to-end browser demo lives under `site/demo/`. Build the wasm package
+with `wasm-pack build --release --target web --out-dir site/demo/pkg --features markdown`
 (default features plus `markdown` — the page imports document-level APIs and
-the Markdown export), then serve it with `node demo/server.mjs`.
+the Markdown export), then serve the site locally with `node site/server.mjs`
+and open `http://localhost:8080/demo/`.

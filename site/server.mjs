@@ -1,4 +1,4 @@
-// Static server for this directory. Serves .wasm with the correct MIME type.
+// Static server for local preview of site/. Serves .wasm with the correct MIME type.
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
@@ -17,16 +17,28 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.pdf': 'application/pdf',
+  '.svg': 'image/svg+xml',
+  '.xml': 'application/xml; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.png': 'image/png',
 };
 
 const server = createServer(async (req, res) => {
   try {
-    const urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    const url = new URL(req.url, 'http://x');
+    const urlPath = decodeURIComponent(url.pathname);
     let rel = normalize(urlPath).replace(/^(\.\.[/\\])+/, '');
-    if (rel === '/' || rel === '\\') rel = '/index.html';
-    const file = join(ROOT, rel);
+    let file = join(ROOT, rel);
     if (!file.startsWith(ROOT)) { res.writeHead(403).end('forbidden'); return; }
-    const st = await stat(file).catch(() => null);
+    let st = await stat(file).catch(() => null);
+    if (st && st.isDirectory()) {
+      if (!urlPath.endsWith('/')) {
+        res.writeHead(301, { location: `${urlPath}/${url.search}` }).end();
+        return;
+      }
+      file = join(file, 'index.html');
+      st = await stat(file).catch(() => null);
+    }
     if (!st || !st.isFile()) { res.writeHead(404).end('not found'); return; }
     const body = await readFile(file);
     res.writeHead(200, { 'content-type': MIME[extname(file).toLowerCase()] || 'application/octet-stream' });
@@ -50,5 +62,6 @@ function lanAddresses() {
 server.listen(PORT, HOST, () => {
   console.log(`serving on ${HOST}:${PORT}/ (Ctrl+C to stop)`);
   console.log(`  local:  http://localhost:${PORT}/`);
+  console.log(`  demo:   http://localhost:${PORT}/demo/`);
   for (const ip of lanAddresses()) console.log(`  lan:    http://${ip}:${PORT}/`);
 });

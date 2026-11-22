@@ -1,0 +1,1946 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pdfni — Fast, Rule-Based PDF Table Extraction in Pure Rust</title>
+<meta name="description" content="pdfni is a fast, deterministic, rule-based PDF table extraction library written in pure Rust with a built-in PDF reader, Python/CLI/C/WebAssembly targets, and benchmark comparisons against tablers, pdf_oxide, PyMuPDF, pdfplumber, Camelot, and Tabula.">
+<link rel="canonical" href="https://honononta-2.github.io/pdfni/">
+<meta property="og:site_name" content="pdfni">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://honononta-2.github.io/pdfni/">
+<meta property="og:title" content="pdfni — Fast, Rule-Based PDF Table Extraction in Pure Rust">
+<meta property="og:description" content="Deterministic, rule-based PDF table extraction in pure Rust with a built-in PDF reader, zero runtime dependencies, benchmark comparisons, and a live WebAssembly demo.">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="pdfni — Fast, Rule-Based PDF Table Extraction in Pure Rust">
+<meta name="twitter:description" content="Deterministic, rule-based PDF table extraction in pure Rust with a built-in PDF reader, zero runtime dependencies, benchmark comparisons, and a live WebAssembly demo.">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "pdfni",
+  "version": "0.3.0",
+  "description": "A fast, deterministic, rule-based PDF table extraction library for digital-native PDFs written in pure Rust with a built-in PDF reader and Rust, CLI, Python, C ABI, and WebAssembly targets.",
+  "url": "https://honononta-2.github.io/pdfni/",
+  "codeRepository": "https://github.com/honononta-2/pdfni",
+  "license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "programmingLanguage": ["Rust", "Python", "WebAssembly", "C"],
+  "runtimePlatform": ["Rust", "Python 3.10+", "WebAssembly", "CLI"]
+}
+</script>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f7f7f4;
+    --surface-2: #efefea;
+    --border: #e2e2dd;
+    --border-strong: #cfcfc8;
+    --text: #1f1f1c;
+    --muted: #66665e;
+    --accent: #2f6f6a;
+    --accent-hover: #245753;
+    --accent-soft: #e6f0ef;
+    --accent-mid: #4e8e88;
+    --warn: #b45309;
+    --warn-soft: #fef3c7;
+    --danger: #b3402f;
+    --code-bg: #1b1e1d;
+    --code-text: #edf2f0;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --mono: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+    --max-w: 1080px;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: var(--surface-2);
+    padding: 0.14em 0.38em;
+    border-radius: 4px;
+  }
+  pre code { background: transparent; padding: 0; font-size: 13px; }
+
+  /* Sticky Top Nav */
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-inner {
+    max-width: var(--max-w);
+    margin: 0 auto;
+    padding: 0 20px;
+    height: 58px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text);
+    font-weight: 700;
+    font-size: 17px;
+    letter-spacing: -0.01em;
+    text-decoration: none;
+  }
+  .brand:hover { text-decoration: none; }
+  .nav-links {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    font-size: 13.5px;
+    color: var(--muted);
+  }
+  .nav-links a { color: var(--muted); font-weight: 500; }
+  .nav-links a:hover { color: var(--text); text-decoration: none; }
+  .nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 13.5px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    font-family: var(--sans);
+  }
+  .btn:hover { text-decoration: none; }
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-outline {
+    background: var(--bg);
+    color: var(--text);
+    border-color: var(--border-strong);
+  }
+  .btn-outline:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .btn-sm { padding: 6px 11px; font-size: 12.5px; }
+
+  /* Layout */
+  .container {
+    max-width: var(--max-w);
+    margin: 0 auto;
+    padding: 0 20px;
+  }
+  section {
+    padding: 52px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  section:last-of-type { border-bottom: none; }
+  .section-eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  h1 {
+    margin: 0 0 16px;
+    font-size: clamp(30px, 4.5vw, 44px);
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+    font-weight: 750;
+  }
+  h2 {
+    margin: 0 0 12px;
+    font-size: clamp(22px, 3vw, 28px);
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    font-weight: 700;
+  }
+  h3 {
+    margin: 28px 0 10px;
+    font-size: 17px;
+    font-weight: 650;
+  }
+  .lead {
+    font-size: 16.5px;
+    color: var(--muted);
+    max-width: 720px;
+    margin: 0 0 28px;
+  }
+
+  /* Hero */
+  .hero {
+    padding: 40px 0 36px;
+    background:
+      radial-gradient(600px 260px at 85% 0%, rgba(47, 111, 106, 0.09), transparent 70%),
+      linear-gradient(180deg, #fafaf8 0%, #ffffff 100%);
+  }
+  .hero h1 {
+    margin-bottom: 12px;
+  }
+  .hero .lead {
+    margin-bottom: 20px;
+  }
+  .hero-cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .hero-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: #fff;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--muted);
+  }
+  .pill strong { color: var(--text); font-weight: 600; }
+  .notice-banner {
+    margin-top: 14px;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  /* Architecture & Features */
+  .pipeline-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 22px;
+    margin: 24px 0 32px;
+    overflow-x: auto;
+  }
+  .pipeline-flow {
+    display: flex;
+    align-items: stretch;
+    gap: 12px;
+    min-width: 720px;
+  }
+  .pipe-node {
+    flex: 1;
+    background: #fff;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    padding: 14px;
+  }
+  .pipe-node.primary {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .pipe-title {
+    font-weight: 700;
+    font-size: 13.5px;
+    margin-bottom: 4px;
+  }
+  .pipe-desc {
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.45;
+  }
+  .pipe-arrow {
+    display: flex;
+    align-items: center;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 18px;
+    flex: none;
+  }
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  .feature-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    background: #fff;
+  }
+  .feature-card h3 {
+    margin: 0 0 8px;
+    font-size: 15.5px;
+  }
+  .feature-card p {
+    margin: 0;
+    font-size: 13.5px;
+    color: var(--muted);
+  }
+
+  /* Benchmark Section */
+  .chart-shell {
+    background: #fff;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin: 24px 0 32px;
+  }
+  .chart-toolbar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 18px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .tab-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .tab-btn {
+    border: 1px solid var(--border-strong);
+    background: #fff;
+    color: var(--muted);
+    border-radius: var(--radius-sm);
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: var(--sans);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .tab-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .tab-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .mode-switch {
+    display: inline-flex;
+    background: #fff;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+    gap: 2px;
+  }
+  .mode-btn {
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    border-radius: 4px;
+    padding: 5px 12px;
+    font-size: 12.5px;
+    font-weight: 600;
+    font-family: var(--sans);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .mode-btn:hover { color: var(--accent); }
+  .mode-btn.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .table-stage {
+    padding: 20px;
+  }
+  .table-stage .data-section-head {
+    margin-top: 0;
+  }
+  .table-stage .table-wrap {
+    margin-bottom: 0;
+  }
+  .bench-table-panel + .bench-table-panel {
+    margin-top: 28px;
+  }
+  .chart-shell:not(.js-ready) .chart-toolbar,
+  .chart-shell:not(.js-ready) .sub-toolbar,
+  .chart-shell:not(.js-ready) .chart-stage,
+  .qs-shell:not(.js-ready) .qs-tabs,
+  .chart-shell.js-ready [data-stage-hidden="true"],
+  .chart-shell.js-ready .bench-table-panel[data-panel-hidden="true"],
+  .chart-shell.js-ready .table-stage[data-table-filter="icdar_struct"] .col-reg,
+  .chart-shell.js-ready .table-stage[data-table-filter="icdar_struct"] .col-matched,
+  .chart-shell.js-ready .table-stage[data-table-filter="icdar_region"] .col-str,
+  .chart-shell.js-ready .table-stage[data-table-filter="icdar_region"] .col-matched,
+  .chart-shell.js-ready .table-stage[data-table-filter="scitsr_macro"] .col-micro {
+    display: none;
+  }
+  .sub-toolbar {
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: #fcfcfa;
+  }
+  .metric-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .metric-btn {
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 4px 11px;
+    font-size: 12.5px;
+    font-weight: 500;
+    font-family: var(--sans);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .metric-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .metric-btn.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .chart-options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .chart-options label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .chart-stage {
+    position: relative;
+    padding: 20px 20px 14px;
+  }
+  .chart-header-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .chart-title {
+    font-size: 15.5px;
+    font-weight: 700;
+    margin: 0;
+  }
+  .chart-subtitle {
+    font-size: 12.5px;
+    color: var(--muted);
+    margin: 0;
+  }
+  .svg-wrap {
+    width: 100%;
+    overflow-x: auto;
+  }
+  .svg-wrap svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-width: 600px;
+  }
+  .chart-note {
+    padding: 10px 18px 14px;
+    font-size: 12.5px;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .tooltip {
+    position: fixed;
+    pointer-events: none;
+    z-index: 99;
+    background: #1f1f1c;
+    color: #fff;
+    padding: 8px 11px;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+    opacity: 0;
+    transition: opacity 0.1s;
+    max-width: 280px;
+  }
+  .tooltip.show { opacity: 1; }
+  .tooltip strong { color: #8fd4cd; }
+
+  /* Raw Data Tables (Always present in HTML for AI & human inspection) */
+  .data-section-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 34px;
+    margin-bottom: 10px;
+  }
+  .data-section-head h3 { margin: 0; }
+  .ai-hint {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 3px 8px;
+    border-radius: 999px;
+  }
+  .table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 24px;
+    background: #fff;
+  }
+  table.bench-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  table.bench-table th,
+  table.bench-table td {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+    text-align: right;
+  }
+  table.bench-table th:first-child,
+  table.bench-table td:first-child,
+  table.bench-table th.text-left,
+  table.bench-table td.text-left {
+    text-align: left;
+  }
+  table.bench-table thead th {
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  table.bench-table tbody tr:last-child td { border-bottom: none; }
+  table.bench-table tbody tr.row-highlight {
+    background: rgba(47, 111, 106, 0.065);
+  }
+  table.bench-table tbody tr.row-highlight td:first-child {
+    font-weight: 700;
+    color: var(--accent-hover);
+  }
+  table.bench-table td.num-strong {
+    font-weight: 700;
+    font-family: var(--mono);
+  }
+  table.bench-table td.num {
+    font-family: var(--mono);
+  }
+  .tag-timeout {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--warn);
+    background: var(--warn-soft);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .protocol-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    font-size: 13.5px;
+  }
+  .protocol-box ul {
+    margin: 8px 0 0;
+    padding-left: 20px;
+  }
+  .protocol-box li { margin-bottom: 5px; }
+
+  /* Quick Start */
+  .qs-shell {
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: #fff;
+    margin-top: 20px;
+  }
+  .qs-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 14px;
+    gap: 8px;
+  }
+  .qs-panel {
+    padding: 20px;
+  }
+  .qs-shell.js-ready .qs-panel[data-qs-hidden="true"] { display: none; }
+  .code-block {
+    position: relative;
+    background: var(--code-bg);
+    color: var(--code-text);
+    border-radius: var(--radius-sm);
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 10px 0 16px;
+    font-family: var(--mono);
+    line-height: 1.55;
+  }
+  .code-block pre { margin: 0; }
+  .copy-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #dbe5e3;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 5px;
+    padding: 3px 9px;
+    font-size: 11.5px;
+    font-family: var(--sans);
+    cursor: pointer;
+  }
+  .copy-btn:hover { background: rgba(255, 255, 255, 0.2); }
+
+  /* Demo Callout */
+  .demo-callout {
+    margin-top: 32px;
+    border: 1.5px solid var(--accent);
+    background: linear-gradient(135deg, var(--accent-soft) 0%, #ffffff 70%);
+    border-radius: var(--radius);
+    padding: 24px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+  }
+  .demo-callout h3 { margin: 0 0 6px; font-size: 18px; }
+  .demo-callout p { margin: 0; font-size: 14px; color: var(--muted); max-width: 640px; }
+
+  /* Docs & License */
+  .docs-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin: 20px 0 28px;
+  }
+  .doc-card {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    background: #fff;
+    color: var(--text);
+    transition: border-color 0.15s, transform 0.15s;
+  }
+  .doc-card:hover {
+    border-color: var(--accent);
+    text-decoration: none;
+    transform: translateY(-1px);
+  }
+  .doc-card-title {
+    font-weight: 700;
+    font-size: 14.5px;
+    color: var(--accent);
+    margin-bottom: 4px;
+  }
+  .doc-card-desc {
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .license-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .license-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    font-size: 13.5px;
+  }
+  .license-card h3 { margin: 0 0 8px; font-size: 15px; }
+  .license-card p { margin: 0; color: var(--muted); }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 28px 0 40px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .footer-inner {
+    max-width: var(--max-w);
+    margin: 0 auto;
+    padding: 0 20px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  @media (max-width: 860px) {
+    .feature-grid, .docs-grid { grid-template-columns: repeat(2, 1fr); }
+    .license-grid { grid-template-columns: 1fr; }
+    .nav-links { display: none; }
+  }
+  @media (max-width: 560px) {
+    .feature-grid, .docs-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#overview">pdfni</a>
+    <nav class="nav-links" aria-label="Primary navigation">
+      <a href="#overview">Overview</a>
+      <a href="#details">Details</a>
+      <a href="#benchmarks">Benchmarks</a>
+      <a href="#quickstart">Quick Start</a>
+      <a href="#docs">Docs &amp; License</a>
+    </nav>
+    <div class="nav-actions">
+      <a class="btn btn-outline btn-sm" href="https://github.com/honononta-2/pdfni" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-primary btn-sm" href="./demo/">Live Demo (WASM)</a>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- 1. Overview -->
+  <section id="overview" class="hero">
+    <div class="container">
+      <h1>Fast, deterministic PDF table extraction in pure Rust.</h1>
+      <p class="lead">
+        <code>pdfni</code> extracts ruled and borderless tables — plus reading-order text blocks and Markdown — directly from digital-native PDFs without OCR, ML models, or external runtime dependencies. Run the same core engine in Rust, CLI, Python, C ABI, and WebAssembly.
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#benchmarks">Explore Benchmarks</a>
+        <a class="btn btn-outline" href="#quickstart">Quick Start</a>
+        <a class="btn btn-outline" href="./demo/">Try Browser Demo (WASM) &rarr;</a>
+      </div>
+
+      <div class="hero-badges" aria-label="Library highlights">
+        <span class="pill"><strong>Language</strong> Pure Rust</span>
+        <span class="pill"><strong>Engine</strong> Rule-Based &amp; Deterministic</span>
+        <span class="pill"><strong>Runtime Deps</strong> None (Built-in PDF Reader)</span>
+        <span class="pill"><strong>License</strong> Apache-2.0</span>
+      </div>
+
+      <div class="notice-banner">
+        <strong>Status:</strong> <code>pdfni</code> is currently in <code>0.x</code> (<code>0.3.0</code>); expect breaking API changes before <code>1.0</code>.
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. Detailed Explanation -->
+  <section id="details">
+    <div class="container">
+      <div class="section-eyebrow">Details &amp; Architecture</div>
+      <h2>Built end-to-end for coordinate accuracy and speed.</h2>
+      <p class="lead">
+        Table extraction quality depends on accurate glyph bounding boxes and vector ruling lines. Rather than wrapping an external PDF library, <code>pdfni</code> includes a pure-Rust PDF reader built on Mozilla pdf.js and tailored specifically for this library, resolving coordinates and layout in a single pass.
+      </p>
+
+      <div class="pipeline-box" aria-label="Processing pipeline">
+        <div class="pipeline-flow">
+          <div class="pipe-node">
+            <div class="pipe-title">1. PDF Bytes Input</div>
+            <div class="pipe-desc">Encrypted (RC4 / AES-128 / AES-256), rotated pages, CJK CMaps, page/region filters.</div>
+          </div>
+          <div class="pipe-arrow">&rarr;</div>
+          <div class="pipe-node primary">
+            <div class="pipe-title">2. Pure-Rust Reader</div>
+            <div class="pipe-desc">Built on Mozilla pdf.js and tailored for pdfni. Extracts top-down glyph coordinates, vector edges, and graphics in one pass.</div>
+          </div>
+          <div class="pipe-arrow">&rarr;</div>
+          <div class="pipe-node primary">
+            <div class="pipe-title">3. Dual Table Detectors</div>
+            <div class="pipe-desc"><code>lattice</code> (ruled edges) followed by <code>text</code> (borderless alignment) without overlap under <code>Auto</code>.</div>
+          </div>
+          <div class="pipe-arrow">&rarr;</div>
+          <div class="pipe-node">
+            <div class="pipe-title">4. Structured Outputs</div>
+            <div class="pipe-desc">Tables JSON (<code>Document</code>), reading-order blocks (<code>DocDoc</code> / <code>DocContent</code>), or Markdown.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="feature-grid">
+        <div class="feature-card">
+          <h3>Deterministic Rule-Based Engine</h3>
+          <p>Works directly from glyph coordinates and vector lines with no ML weights or OCR. Identical input always yields identical output.</p>
+        </div>
+        <div class="feature-card">
+          <h3>Ruled &amp; Borderless Auto Mode</h3>
+          <p>Automatically runs the ruled-line <code>lattice</code> detector first, masks confirmed regions, and runs the <code>text</code> alignment detector on remaining areas — or select either manually.</p>
+        </div>
+        <div class="feature-card">
+          <h3>Built-in Pure-Rust PDF Reader</h3>
+          <p>Built on Mozilla pdf.js and tailored specifically for <code>pdfni</code>. Handles encrypted PDFs (Standard Security Handler R2–R6), page rotation normalization, bundled Adobe CJK CMaps, and 512 MiB default decompression-bomb caps.</p>
+        </div>
+        <div class="feature-card">
+          <h3>Parallel Native &amp; GIL Release</h3>
+          <p>Processes pages in parallel on native targets and releases the Python GIL, while producing identical output ordering in sequential WebAssembly builds.</p>
+        </div>
+        <div class="feature-card">
+          <h3>Reading-Order &amp; Markdown</h3>
+          <p>Reuses the same single content-stream pass to emit headings, lists, headers/footers, and tables in reading order, plus opt-in Markdown export via the <code>markdown</code> feature.</p>
+        </div>
+        <div class="feature-card">
+          <h3>Multi-Target Distribution</h3>
+          <p>Available as a Rust crate, standalone CLI, dependency-free Python wheel (3.10+, free-threaded &amp; abi3t support), native C ABI library, and browser/Node.js WebAssembly module.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Benchmarks -->
+  <section id="benchmarks">
+    <div class="container">
+      <div class="section-eyebrow">Comparison &amp; Benchmarks</div>
+      <h2>Rule-based library benchmarks.</h2>
+      <p class="lead">
+        Full end-to-end comparison against 6 rule-based PDF table libraries (<code>tablers</code>, <code>pdf_oxide</code>, <code>pymupdf</code>, <code>pdfplumber</code>, <code>camelot</code>, <code>tabula</code>) with no ground-truth table regions given and no ML/OCR models enabled. Switch between datasets and toggle between interactive charts and full numerical tables below.
+      </p>
+
+      <!-- Interactive Chart & Table Switcher -->
+      <div class="chart-shell" id="chart-shell">
+        <div class="chart-toolbar">
+          <div class="tab-group" id="view-tabs" role="tablist" aria-label="Benchmark dataset">
+            <button type="button" class="tab-btn active" role="tab" aria-selected="true" data-view="scatter">Accuracy vs. Speed</button>
+            <button type="button" class="tab-btn" role="tab" aria-selected="false" data-view="icdar">ICDAR 2013 (67 PDFs)</button>
+            <button type="button" class="tab-btn" role="tab" aria-selected="false" data-view="scitsr">SciTSR (3,000 PDFs)</button>
+            <button type="button" class="tab-btn" role="tab" aria-selected="false" data-view="large">2,380-Page PDF</button>
+          </div>
+          <div class="mode-switch" id="display-mode" role="group" aria-label="Display mode">
+            <button type="button" class="mode-btn active" data-mode="chart" aria-pressed="true">Chart</button>
+            <button type="button" class="mode-btn" data-mode="table" aria-pressed="false">Table</button>
+          </div>
+        </div>
+
+        <div class="sub-toolbar" id="sub-toolbar">
+          <div class="metric-pills" id="metric-pills" aria-label="Metric selector"></div>
+          <div class="chart-options" id="chart-options">
+            <label id="opt-log-wrap">
+              <input type="checkbox" id="opt-log">
+              <span>Log scale</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="chart-stage" id="chart-stage">
+          <div class="chart-header-meta">
+            <h3 class="chart-title" id="chart-title">Accuracy vs. Throughput</h3>
+            <p class="chart-subtitle" id="chart-subtitle"></p>
+          </div>
+          <div class="svg-wrap" id="chart-svg-wrap"></div>
+        </div>
+
+        <!-- Complete Static HTML Data Tables (Always present in initial HTML for AI & human inspection) -->
+        <div class="table-stage" id="table-stage">
+          <div class="bench-table-panel" data-table-panel="icdar">
+            <div class="data-section-head">
+              <h3 id="icdar-table-title">ICDAR 2013 — Accuracy &amp; Speed (67 PDFs, 238 pages)</h3>
+              <span class="ai-hint">Original &amp; Corrected GT identical</span>
+            </div>
+            <p style="font-size:13.5px; color:var(--muted); margin:0 0 12px;">
+              Evaluated with the official ICDAR 2013 <code>dataset-tools</code> Java evaluator on both Original and Corrected ground truth (all 7 libraries produced identical scores on both variants).
+            </p>
+            <div class="table-wrap">
+              <table class="bench-table" id="table-icdar">
+                <thead>
+                  <tr>
+                    <th>Library</th>
+                    <th class="col-reg">Region P</th>
+                    <th class="col-reg">Region R</th>
+                    <th class="col-reg">Region F1</th>
+                    <th class="col-str">Struct P</th>
+                    <th class="col-str">Struct R</th>
+                    <th class="col-str">Struct F1</th>
+                    <th class="col-matched">Matched Struct F1</th>
+                    <th>Total Time</th>
+                    <th>Pages/sec</th>
+                    <th>Median/PDF</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="row-highlight">
+                    <td><code>pdfni</code> (Rust)</td>
+                    <td class="num col-reg">0.9382</td><td class="num col-reg">0.9316</td><td class="num-strong col-reg">0.9349</td>
+                    <td class="num col-str">0.9522</td><td class="num col-str">0.9414</td><td class="num-strong col-str">0.9468</td>
+                    <td class="num col-matched">0.9526</td><td class="num">0.17 s</td><td class="num-strong">1370.1</td><td class="num">2.12 ms</td>
+                  </tr>
+                  <tr class="row-highlight">
+                    <td><code>pdfni</code> (Python)</td>
+                    <td class="num col-reg">0.9382</td><td class="num col-reg">0.9316</td><td class="num-strong col-reg">0.9349</td>
+                    <td class="num col-str">0.9522</td><td class="num col-str">0.9414</td><td class="num-strong col-str">0.9468</td>
+                    <td class="num col-matched">0.9526</td><td class="num">0.16 s</td><td class="num-strong">1489.1</td><td class="num">2.0 ms</td>
+                  </tr>
+                  <tr class="row-highlight">
+                    <td><code>pdfni</code> (1 thread)</td>
+                    <td class="num col-reg">0.9382</td><td class="num col-reg">0.9316</td><td class="num-strong col-reg">0.9349</td>
+                    <td class="num col-str">0.9522</td><td class="num col-str">0.9414</td><td class="num-strong col-str">0.9468</td>
+                    <td class="num col-matched">0.9526</td><td class="num">0.30 s</td><td class="num-strong">791.2</td><td class="num">3.6 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>tablers</code></td>
+                    <td class="num col-reg">0.9411</td><td class="num col-reg">0.4382</td><td class="num-strong col-reg">0.5980</td>
+                    <td class="num col-str">0.8830</td><td class="num col-str">0.6457</td><td class="num-strong col-str">0.7459</td>
+                    <td class="num col-matched">0.7501</td><td class="num">0.65 s</td><td class="num">364.0</td><td class="num">7.9 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>pdf_oxide</code></td>
+                    <td class="num col-reg">0.9217</td><td class="num col-reg">0.3022</td><td class="num-strong col-reg">0.4552</td>
+                    <td class="num col-str">0.8976</td><td class="num col-str">0.6591</td><td class="num-strong col-str">0.7601</td>
+                    <td class="num col-matched">0.7716</td><td class="num">0.59 s</td><td class="num">403.6</td><td class="num">6.9 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>pymupdf</code></td>
+                    <td class="num col-reg">0.9189</td><td class="num col-reg">0.4626</td><td class="num-strong col-reg">0.6154</td>
+                    <td class="num col-str">0.8286</td><td class="num col-str">0.6493</td><td class="num-strong col-str">0.7281</td>
+                    <td class="num col-matched">0.7341</td><td class="num">9.01 s</td><td class="num">26.4</td><td class="num">104.4 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>pdfplumber</code></td>
+                    <td class="num col-reg">0.8125</td><td class="num col-reg">0.4187</td><td class="num-strong col-reg">0.5526</td>
+                    <td class="num col-str">0.8224</td><td class="num col-str">0.6317</td><td class="num-strong col-str">0.7145</td>
+                    <td class="num col-matched">0.7247</td><td class="num">9.46 s</td><td class="num">25.2</td><td class="num">118.8 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>camelot</code></td>
+                    <td class="num col-reg">0.5539</td><td class="num col-reg">0.9510</td><td class="num-strong col-reg">0.7000</td>
+                    <td class="num col-str">0.8468</td><td class="num col-str">0.7869</td><td class="num-strong col-str">0.8157</td>
+                    <td class="num col-matched">0.8456</td><td class="num">85.91 s</td><td class="num">2.8</td><td class="num">1098.2 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>tabula</code></td>
+                    <td class="num col-reg">0.6943</td><td class="num col-reg">0.9240</td><td class="num-strong col-reg">0.7928</td>
+                    <td class="num col-str">0.6500</td><td class="num col-str">0.5703</td><td class="num-strong col-str">0.6075</td>
+                    <td class="num col-matched">0.6223</td><td class="num">16.40 s</td><td class="num">14.5</td><td class="num">210.2 ms</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="bench-table-panel" data-table-panel="scitsr">
+            <div class="data-section-head">
+              <h3 id="scitsr-table-title">SciTSR Test Split — Accuracy &amp; Speed (3,000 single-table PDFs)</h3>
+              <span class="ai-hint">Official scitsr.eval scorer</span>
+            </div>
+            <div class="table-wrap">
+              <table class="bench-table" id="table-scitsr">
+                <thead>
+                  <tr>
+                    <th>Library</th>
+                    <th>Macro P</th>
+                    <th>Macro R</th>
+                    <th>Macro F1</th>
+                    <th class="col-micro">Micro F1</th>
+                    <th>Extract Time</th>
+                    <th>Docs/sec</th>
+                    <th>Median/PDF</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="row-highlight">
+                    <td><code>pdfni</code> (Rust)</td>
+                    <td class="num">0.9254</td><td class="num">0.8997</td>
+                    <td class="num-strong">0.9124</td><td class="num-strong col-micro">0.9496</td>
+                    <td class="num">1.21 s</td><td class="num-strong">2475.2</td><td class="num">0.35 ms</td>
+                  </tr>
+                  <tr class="row-highlight">
+                    <td><code>pdfni</code> (Python)</td>
+                    <td class="num">0.9254</td><td class="num">0.8997</td>
+                    <td class="num-strong">0.9124</td><td class="num-strong col-micro">0.9496</td>
+                    <td class="num">1.81 s</td><td class="num-strong">1653.0</td><td class="num">0.6 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>tablers</code></td>
+                    <td class="num">0.4395</td><td class="num">0.3775</td>
+                    <td class="num-strong">0.4062</td><td class="num col-micro">0.4314</td>
+                    <td class="num">3.80 s</td><td class="num">790.2</td><td class="num">1.1 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>pdf_oxide</code></td>
+                    <td class="num">0.6602</td><td class="num">0.3967</td>
+                    <td class="num-strong">0.4956</td><td class="num col-micro">0.5375</td>
+                    <td class="num">2.98 s</td><td class="num">1005.5</td><td class="num">0.8 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>pymupdf</code></td>
+                    <td class="num">0.4213</td><td class="num">0.3528</td>
+                    <td class="num-strong">0.3841</td><td class="num col-micro">0.4124</td>
+                    <td class="num">19.03 s</td><td class="num">157.7</td><td class="num">4.4 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>pdfplumber</code></td>
+                    <td class="num">0.4179</td><td class="num">0.3482</td>
+                    <td class="num-strong">0.3799</td><td class="num col-micro">0.4185</td>
+                    <td class="num">32.39 s</td><td class="num">92.6</td><td class="num">7.7 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>camelot</code> <span class="tag-timeout">2,643/3,000</span></td>
+                    <td class="num">0.7424</td><td class="num">0.6743</td>
+                    <td class="num-strong">0.7067</td><td class="num col-micro">0.6739</td>
+                    <td class="num">898.65 s</td><td class="num">2.9</td><td class="num">419.2 ms</td>
+                  </tr>
+                  <tr>
+                    <td><code>tabula</code></td>
+                    <td class="num">0.7708</td><td class="num">0.6439</td>
+                    <td class="num-strong">0.7017</td><td class="num col-micro">0.7778</td>
+                    <td class="num">76.39 s</td><td class="num">39.3</td><td class="num">36.2 ms</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="bench-table-panel" data-table-panel="large">
+            <div class="data-section-head">
+              <h3>Large Single-PDF Throughput &amp; Memory (2,380 pages = ICDAR 2013 &times; 10, ~52.2 MiB)</h3>
+              <span class="ai-hint">Timeout cap: 600 s</span>
+            </div>
+            <div class="table-wrap">
+              <table class="bench-table" id="table-large">
+                <thead>
+                  <tr>
+                    <th>Library</th>
+                    <th>Elapsed Time</th>
+                    <th>Pages/sec</th>
+                    <th>Peak RSS</th>
+                    <th>Tables Detected</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="row-highlight">
+                    <td><code>pdfni</code> (Rust)</td>
+                    <td class="num">0.53 s</td><td class="num-strong">4452.9</td><td class="num">712.8 MiB</td><td class="num">1640</td>
+                  </tr>
+                  <tr class="row-highlight">
+                    <td><code>pdfni</code> (Python)</td>
+                    <td class="num">0.62 s</td><td class="num-strong">3844.9</td><td class="num">863.4 MiB</td><td class="num">1640</td>
+                  </tr>
+                  <tr class="row-highlight">
+                    <td><code>pdfni</code> (CLI)</td>
+                    <td class="num">0.62 s</td><td class="num-strong">3809.2</td><td class="num">754.3 MiB</td><td class="num">1640</td>
+                  </tr>
+                  <tr class="row-highlight">
+                    <td><code>pdfni</code> (1 thread)</td>
+                    <td class="num">2.47 s</td><td class="num-strong">963.7</td><td class="num">893.0 MiB</td><td class="num">1640</td>
+                  </tr>
+                  <tr>
+                    <td><code>pdf_oxide</code></td>
+                    <td class="num">5.98 s</td><td class="num">398.1</td><td class="num">293.9 MiB</td><td class="num">1100</td>
+                  </tr>
+                  <tr>
+                    <td><code>tablers</code></td>
+                    <td class="num">6.11 s</td><td class="num">389.3</td><td class="num">320.2 MiB</td><td class="num">1300</td>
+                  </tr>
+                  <tr>
+                    <td><code>pymupdf</code></td>
+                    <td class="num">90.99 s</td><td class="num">26.2</td><td class="num">345.3 MiB</td><td class="num">1230</td>
+                  </tr>
+                  <tr>
+                    <td><code>pdfplumber</code></td>
+                    <td class="num">103.39 s</td><td class="num">23.0</td><td class="num">6236.2 MiB</td><td class="num">1590</td>
+                  </tr>
+                  <tr>
+                    <td><code>tabula</code></td>
+                    <td class="num">145.42 s</td><td class="num">16.4</td><td class="num">2111.2 MiB</td><td class="num">1930</td>
+                  </tr>
+                  <tr>
+                    <td><code>camelot</code></td>
+                    <td class="num"><span class="tag-timeout">&gt;600 s (timeout)</span></td><td class="num">-</td><td class="num">-</td><td class="num">-</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="chart-note" id="chart-note"></div>
+      </div>
+
+      <div class="protocol-box">
+        <strong>Environment, Versions &amp; Evaluation Protocol</strong>
+        <ul>
+          <li><strong>Machine:</strong> Apple M2 (8 cores), 16 GB RAM, macOS 27.2 &middot; Python 3.12.13 &middot; OpenJDK 17 (<code>-Xmx4g</code>).</li>
+          <li><strong>Libraries tested:</strong> <code>pdfni 0.3.0</code> (default <code>auto</code>), <code>tablers 0.9.0</code> (Rust + PDFium, <code>find_tables</code> + <code>to_list</code>), <code>pdf_oxide 0.3.78</code> (<code>PdfDocument.extract_tables</code>), <code>pymupdf 2.1</code> (<code>use_layout=False</code>, rule-based), <code>pdfplumber 0.11.11</code> (<code>page.find_tables</code>), <code>camelot 2.2.0</code> (<code>flavor='auto'</code>, non-ML), <code>tabula 2.11.0</code> (<code>tabula-java 1.0.5</code> via <code>jpype1</code>).</li>
+          <li><strong>Protocol:</strong> Full pipeline without ground-truth table regions; all outputs normalized to the same top-down <code>Document</code> JSON and scored by identical official evaluators (ICDAR 2013 <code>dataset-tools</code>, <code>scitsr.eval</code>). Speed measured in isolated subprocesses after a 1-PDF warmup, extracting full cell text. <code>pdfni (Rust)</code> is measured directly via <code>pdfni::extract_from_bytes</code> without Python dict conversion (Peak RSS: 17.6 MiB on ICDAR 2013, 11.2 MiB on SciTSR, 712.8 MiB on 2,380-page PDF).</li>
+          <li><strong>Observed timeouts:</strong> <code>camelot</code> hit the 900 s cap on SciTSR after 2,643 / 3,000 docs and timed out after 600 s on the 2,380-page PDF.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Quick Start -->
+  <section id="quickstart">
+    <div class="container">
+      <div class="section-eyebrow">Quick Start</div>
+      <h2>Install and run in seconds.</h2>
+      <p class="lead">
+        Use the same extraction engine across Rust, CLI, Python, and WebAssembly. Switch tabs below for each target.
+      </p>
+
+      <div class="qs-shell">
+        <div class="qs-tabs" role="tablist" aria-label="Target language">
+          <button type="button" class="tab-btn active" role="tab" aria-selected="true" data-qs="rust">Rust</button>
+          <button type="button" class="tab-btn" role="tab" aria-selected="false" data-qs="cli">CLI</button>
+          <button type="button" class="tab-btn" role="tab" aria-selected="false" data-qs="python">Python</button>
+          <button type="button" class="tab-btn" role="tab" aria-selected="false" data-qs="wasm">WebAssembly</button>
+        </div>
+
+        <div class="qs-panel" data-qs-panel="rust">
+          <strong>Install</strong>
+          <div class="code-block">
+            <button type="button" class="copy-btn" data-copy>Copy</button>
+            <pre><code>cargo add pdfni</code></pre>
+          </div>
+          <strong>Extract tables from bytes</strong>
+          <div class="code-block">
+            <button type="button" class="copy-btn" data-copy>Copy</button>
+            <pre><code>use pdfni::{ExtractOptions, extract_from_bytes};
+
+fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let bytes = std::fs::read("input.pdf")?;
+    let doc = extract_from_bytes(&amp;bytes, None, &amp;ExtractOptions::default())?;
+    println!("{}", serde_json::to_string_pretty(&amp;doc)?);
+    Ok(())
+}</code></pre>
+          </div>
+          <p style="font-size:13.5px; color:var(--muted); margin:0;">
+            Use <code>extract_content_from_bytes</code> or <code>extract_document_from_bytes</code> for reading-order blocks, or enable the <code>markdown</code> feature for <code>extract_markdown_from_bytes</code>.
+          </p>
+        </div>
+
+        <div class="qs-panel" data-qs-panel="cli">
+          <strong>Install</strong>
+          <div class="code-block">
+            <button type="button" class="copy-btn" data-copy>Copy</button>
+            <pre><code>cargo install pdfni</code></pre>
+          </div>
+          <strong>Run from terminal</strong>
+          <div class="code-block">
+            <button type="button" class="copy-btn" data-copy>Copy</button>
+            <pre><code># Extract tables only (Document JSON)
+pdfni --output tables input.pdf output.json
+
+# Extract ruled tables from selected pages to stdout
+pdfni --output tables --mode ruled --pages 1,3-5 input.pdf
+
+# Default: text blocks and tables in reading order (content JSON)
+pdfni input.pdf output.json</code></pre>
+          </div>
+          <p style="font-size:13.5px; color:var(--muted); margin:0;">
+            Use <code>--output doc</code> for the full document model, plus <code>--region</code>, <code>--detect-header-footer</code>, and password flags for encrypted PDFs.
+          </p>
+        </div>
+
+        <div class="qs-panel" data-qs-panel="python">
+          <strong>Install (Python 3.10+, zero runtime dependencies)</strong>
+          <div class="code-block">
+            <button type="button" class="copy-btn" data-copy>Copy</button>
+            <pre><code>pip install pdfni</code></pre>
+          </div>
+          <strong>Extract tables</strong>
+          <div class="code-block">
+            <button type="button" class="copy-btn" data-copy>Copy</button>
+            <pre><code>import pdfni
+
+doc = pdfni.extract_tables_from_pdf("input.pdf")
+for page in doc["pages"]:
+    for table in page["tables"]:
+        print([[cell["text"] for cell in row] for row in table["data"]])</code></pre>
+          </div>
+          <p style="font-size:13.5px; color:var(--muted); margin:0;">
+            For reading-order text blocks and tables together, use <code>extract_content_from_pdf</code> or <code>extract_document_from_pdf</code>. Supports <code>pages</code>, <code>region</code>, <code>mode</code>, and <code>password</code> keyword arguments.
+          </p>
+        </div>
+
+        <div class="qs-panel" data-qs-panel="wasm">
+          <strong>Build with wasm-pack</strong>
+          <div class="code-block">
+            <button type="button" class="copy-btn" data-copy>Copy</button>
+            <pre><code>wasm-pack build --release --target web</code></pre>
+          </div>
+          <strong>Run in the browser</strong>
+          <div class="code-block">
+            <button type="button" class="copy-btn" data-copy>Copy</button>
+            <pre><code>import init, { extract_tables_from_pdf } from "./pkg/pdfni.js";
+
+await init();
+const bytes = new Uint8Array(await file.arrayBuffer());
+const doc = JSON.parse(extract_tables_from_pdf(bytes));</code></pre>
+          </div>
+          <p style="font-size:13.5px; color:var(--muted); margin:0;">
+            Pass <code>--features markdown</code> to include <code>extract_markdown_from_pdf</code>, or trim <code>cmap-*</code> features to shrink bundle size.
+          </p>
+        </div>
+      </div>
+
+      <!-- Demo Page Link Callout -->
+      <div class="demo-callout">
+        <div>
+          <h3>Try pdfni directly in your browser (WebAssembly)</h3>
+          <p>
+            Drop any PDF into the standalone demo page to test table extraction, CSV download, reading-order JSON, Markdown preview, and visual region selection — 100% locally in your browser with no server uploads.
+          </p>
+        </div>
+        <a class="btn btn-primary" href="./demo/">Open WASM Demo Page &rarr;</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. Documentation & License -->
+  <section id="docs">
+    <div class="container">
+      <div class="section-eyebrow">Documentation &amp; License</div>
+      <h2>Guides, API reference, and legal notices.</h2>
+
+      <div class="docs-grid">
+        <a class="doc-card" href="https://github.com/honononta-2/pdfni/blob/master/docs/ARCHITECTURE.md" target="_blank" rel="noopener">
+          <div class="doc-card-title">Architecture &amp; Internals &rarr;</div>
+          <div class="doc-card-desc">Pipeline design, top-down coordinate system, detectors, encryption, and resource limits.</div>
+        </a>
+        <a class="doc-card" href="https://github.com/honononta-2/pdfni/blob/master/docs/PYTHON.md" target="_blank" rel="noopener">
+          <div class="doc-card-title">Python Guide &rarr;</div>
+          <div class="doc-card-desc">Keyword options (pages, region, mode, password), return shapes, and exceptions.</div>
+        </a>
+        <a class="doc-card" href="https://github.com/honononta-2/pdfni/blob/master/docs/CLI.md" target="_blank" rel="noopener">
+          <div class="doc-card-title">CLI Usage &rarr;</div>
+          <div class="doc-card-desc">Output modes (content, tables, doc), region filtering, and encrypted PDFs.</div>
+        </a>
+        <a class="doc-card" href="https://github.com/honononta-2/pdfni/blob/master/docs/WASM.md" target="_blank" rel="noopener">
+          <div class="doc-card-title">WebAssembly (Browser &amp; Node.js) &rarr;</div>
+          <div class="doc-card-desc">wasm-pack targets, JS exports, feature flags, and CMap trimming.</div>
+        </a>
+        <a class="doc-card" href="https://github.com/honononta-2/pdfni/blob/master/docs/FFI.md" target="_blank" rel="noopener">
+          <div class="doc-card-title">C ABI (Native FFI) &rarr;</div>
+          <div class="doc-card-desc">Shared library build and C entrypoints via the <code>ffi</code> feature.</div>
+        </a>
+        <a class="doc-card" href="https://github.com/honononta-2/pdfni/blob/master/docs/BUILD.md" target="_blank" rel="noopener">
+          <div class="doc-card-title">Building &amp; Feature Flags &rarr;</div>
+          <div class="doc-card-desc">Feature layering (text, reader, document, markdown, cmap-*) and crate build matrix.</div>
+        </a>
+        <a class="doc-card" href="https://docs.rs/pdfni" target="_blank" rel="noopener">
+          <div class="doc-card-title">Rust API Reference (docs.rs) &rarr;</div>
+          <div class="doc-card-desc">Complete rustdoc reference for types, options, and entry points.</div>
+        </a>
+        <a class="doc-card" href="https://crates.io/crates/pdfni" target="_blank" rel="noopener">
+          <div class="doc-card-title">crates.io Package &rarr;</div>
+          <div class="doc-card-desc">Published Rust crate versions, features, and release metadata.</div>
+        </a>
+        <a class="doc-card" href="https://pypi.org/project/pdfni/" target="_blank" rel="noopener">
+          <div class="doc-card-title">PyPI Package &rarr;</div>
+          <div class="doc-card-desc">Prebuilt Python wheels (3.10+, zero runtime dependencies) and release history.</div>
+        </a>
+        <a class="doc-card" href="https://github.com/honononta-2/pdfni/tree/master/bench" target="_blank" rel="noopener">
+          <div class="doc-card-title">Benchmark Setup &rarr;</div>
+          <div class="doc-card-desc"><code>pdfni</code>&rsquo;s official ICDAR 2013 and SciTSR evaluation scripts in the repository.</div>
+        </a>
+      </div>
+
+      <div class="license-grid">
+        <div class="license-card">
+          <h3>License</h3>
+          <p>
+            <code>pdfni</code> is licensed under the <a href="https://github.com/honononta-2/pdfni/blob/master/LICENSE" target="_blank" rel="noopener">Apache License, Version 2.0</a>.
+          </p>
+        </div>
+        <div class="license-card">
+          <h3>Third-Party Notices</h3>
+          <p>
+            The built-in PDF reader is adapted from <a href="https://github.com/mozilla/pdf.js" target="_blank" rel="noopener">Mozilla pdf.js</a> (v6.0.227, Apache-2.0). Bundled binary CMaps are derived from <a href="https://github.com/adobe-type-tools/cmap-resources" target="_blank" rel="noopener">Adobe CMap resources</a> (BSD-3-Clause). See <a href="https://github.com/honononta-2/pdfni/blob/master/NOTICE" target="_blank" rel="noopener">NOTICE</a> for details.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <div><strong>pdfni</strong> &middot; Apache-2.0</div>
+    <div>
+      <a href="https://github.com/honononta-2/pdfni" target="_blank" rel="noopener">GitHub</a> &middot;
+      <a href="https://crates.io/crates/pdfni" target="_blank" rel="noopener">crates.io</a> &middot;
+      <a href="https://pypi.org/project/pdfni/" target="_blank" rel="noopener">PyPI</a> &middot;
+      <a href="https://docs.rs/pdfni" target="_blank" rel="noopener">docs.rs</a> &middot;
+      <a href="./demo/">WASM Demo</a>
+    </div>
+  </div>
+</footer>
+
+<div class="tooltip" id="tooltip" role="tooltip"></div>
+
+<!-- Embedded benchmark JSON for charts & parsers -->
+<script id="benchmark-data" type="application/json">
+{
+  "generated": "2026-11-22",
+  "environment": {
+    "machine": "Apple M2 (8 cores), 16 GB RAM, macOS 27.2",
+    "python": "3.12.13",
+    "java": "OpenJDK 17 (-Xmx4g)"
+  },
+  "icdar2013": [
+    { "id": "pdfni_rust", "label": "pdfni (Rust)", "version": "0.3.0", "isPdfni": true, "regP": 0.9382, "regR": 0.9316, "regF1": 0.9349, "strP": 0.9522, "strR": 0.9414, "strF1": 0.9468, "matchedStrF1": 0.9526, "totalSec": 0.17, "pps": 1370.1, "medianMs": 2.12 },
+    { "id": "pdfni", "label": "pdfni (Python)", "version": "0.3.0", "isPdfni": true, "regP": 0.9382, "regR": 0.9316, "regF1": 0.9349, "strP": 0.9522, "strR": 0.9414, "strF1": 0.9468, "matchedStrF1": 0.9526, "totalSec": 0.16, "pps": 1489.1, "medianMs": 2.0 },
+    { "id": "pdfni_1t", "label": "pdfni (1 thread)", "version": "0.3.0", "isPdfni": true, "regP": 0.9382, "regR": 0.9316, "regF1": 0.9349, "strP": 0.9522, "strR": 0.9414, "strF1": 0.9468, "matchedStrF1": 0.9526, "totalSec": 0.30, "pps": 791.2, "medianMs": 3.6 },
+    { "id": "tablers", "label": "tablers", "version": "0.9.0", "isPdfni": false, "regP": 0.9411, "regR": 0.4382, "regF1": 0.5980, "strP": 0.8830, "strR": 0.6457, "strF1": 0.7459, "matchedStrF1": 0.7501, "totalSec": 0.65, "pps": 364.0, "medianMs": 7.9 },
+    { "id": "pdf_oxide", "label": "pdf_oxide", "version": "0.3.78", "isPdfni": false, "regP": 0.9217, "regR": 0.3022, "regF1": 0.4552, "strP": 0.8976, "strR": 0.6591, "strF1": 0.7601, "matchedStrF1": 0.7716, "totalSec": 0.59, "pps": 403.6, "medianMs": 6.9 },
+    { "id": "pymupdf", "label": "pymupdf", "version": "2.1", "isPdfni": false, "regP": 0.9189, "regR": 0.4626, "regF1": 0.6154, "strP": 0.8286, "strR": 0.6493, "strF1": 0.7281, "matchedStrF1": 0.7341, "totalSec": 9.01, "pps": 26.4, "medianMs": 104.4 },
+    { "id": "pdfplumber", "label": "pdfplumber", "version": "0.11.11", "isPdfni": false, "regP": 0.8125, "regR": 0.4187, "regF1": 0.5526, "strP": 0.8224, "strR": 0.6317, "strF1": 0.7145, "matchedStrF1": 0.7247, "totalSec": 9.46, "pps": 25.2, "medianMs": 118.8 },
+    { "id": "camelot", "label": "camelot", "version": "2.2.0", "isPdfni": false, "regP": 0.5539, "regR": 0.9510, "regF1": 0.7000, "strP": 0.8468, "strR": 0.7869, "strF1": 0.8157, "matchedStrF1": 0.8456, "totalSec": 85.91, "pps": 2.8, "medianMs": 1098.2 },
+    { "id": "tabula", "label": "tabula", "version": "2.11.0", "isPdfni": false, "regP": 0.6943, "regR": 0.9240, "regF1": 0.7928, "strP": 0.6500, "strR": 0.5703, "strF1": 0.6075, "matchedStrF1": 0.6223, "totalSec": 16.40, "pps": 14.5, "medianMs": 210.2 }
+  ],
+  "scitsr": [
+    { "id": "pdfni_rust", "label": "pdfni (Rust)", "docs": 3000, "timeout": false, "isPdfni": true, "macroP": 0.9254, "macroR": 0.8997, "macroF1": 0.9124, "microF1": 0.9496, "totalSec": 1.21, "dps": 2475.2, "medianMs": 0.35 },
+    { "id": "pdfni", "label": "pdfni (Python)", "docs": 3000, "timeout": false, "isPdfni": true, "macroP": 0.9254, "macroR": 0.8997, "macroF1": 0.9124, "microF1": 0.9496, "totalSec": 1.81, "dps": 1653.0, "medianMs": 0.6 },
+    { "id": "tablers", "label": "tablers", "docs": 3000, "timeout": false, "isPdfni": false, "macroP": 0.4395, "macroR": 0.3775, "macroF1": 0.4062, "microF1": 0.4314, "totalSec": 3.80, "dps": 790.2, "medianMs": 1.1 },
+    { "id": "pdf_oxide", "label": "pdf_oxide", "docs": 3000, "timeout": false, "isPdfni": false, "macroP": 0.6602, "macroR": 0.3967, "macroF1": 0.4956, "microF1": 0.5375, "totalSec": 2.98, "dps": 1005.5, "medianMs": 0.8 },
+    { "id": "pymupdf", "label": "pymupdf", "docs": 3000, "timeout": false, "isPdfni": false, "macroP": 0.4213, "macroR": 0.3528, "macroF1": 0.3841, "microF1": 0.4124, "totalSec": 19.03, "dps": 157.7, "medianMs": 4.4 },
+    { "id": "pdfplumber", "label": "pdfplumber", "docs": 3000, "timeout": false, "isPdfni": false, "macroP": 0.4179, "macroR": 0.3482, "macroF1": 0.3799, "microF1": 0.4185, "totalSec": 32.39, "dps": 92.6, "medianMs": 7.7 },
+    { "id": "camelot", "label": "camelot (2643/3000)", "docs": 2643, "timeout": true, "isPdfni": false, "macroP": 0.7424, "macroR": 0.6743, "macroF1": 0.7067, "microF1": 0.6739, "totalSec": 898.65, "dps": 2.9, "medianMs": 419.2 },
+    { "id": "tabula", "label": "tabula", "docs": 3000, "timeout": false, "isPdfni": false, "macroP": 0.7708, "macroR": 0.6439, "macroF1": 0.7017, "microF1": 0.7778, "totalSec": 76.39, "dps": 39.3, "medianMs": 36.2 }
+  ],
+  "large2380": [
+    { "id": "pdfni_rust", "label": "pdfni (Rust)", "isPdfni": true, "status": "ok", "elapsedSec": 0.53, "pps": 4452.9, "rssMb": 712.8, "tables": 1640 },
+    { "id": "pdfni", "label": "pdfni (Python)", "isPdfni": true, "status": "ok", "elapsedSec": 0.62, "pps": 3844.9, "rssMb": 863.4, "tables": 1640 },
+    { "id": "pdfni_cli", "label": "pdfni (CLI)", "isPdfni": true, "status": "ok", "elapsedSec": 0.62, "pps": 3809.2, "rssMb": 754.3, "tables": 1640 },
+    { "id": "pdfni_1t", "label": "pdfni (1 thread)", "isPdfni": true, "status": "ok", "elapsedSec": 2.47, "pps": 963.7, "rssMb": 893.0, "tables": 1640 },
+    { "id": "pdf_oxide", "label": "pdf_oxide", "isPdfni": false, "status": "ok", "elapsedSec": 5.98, "pps": 398.1, "rssMb": 293.9, "tables": 1100 },
+    { "id": "tablers", "label": "tablers", "isPdfni": false, "status": "ok", "elapsedSec": 6.11, "pps": 389.3, "rssMb": 320.2, "tables": 1300 },
+    { "id": "pymupdf", "label": "pymupdf", "isPdfni": false, "status": "ok", "elapsedSec": 90.99, "pps": 26.2, "rssMb": 345.3, "tables": 1230 },
+    { "id": "pdfplumber", "label": "pdfplumber", "isPdfni": false, "status": "ok", "elapsedSec": 103.39, "pps": 23.0, "rssMb": 6236.2, "tables": 1590 },
+    { "id": "tabula", "label": "tabula", "isPdfni": false, "status": "ok", "elapsedSec": 145.42, "pps": 16.4, "rssMb": 2111.2, "tables": 1930 },
+    { "id": "camelot", "label": "camelot", "isPdfni": false, "status": "timeout", "elapsedSec": null, "pps": null, "rssMb": null, "tables": null }
+  ]
+}
+</script>
+
+<script>
+(() => {
+  const DATA = JSON.parse(document.getElementById('benchmark-data').textContent);
+
+  const COLORS = {
+    pdfni: '#2f6f6a',
+    pdfni_1t: '#5a9c96',
+    pdfni_rust: '#1d4f4b',
+    pdfni_cli: '#3c807a',
+    tablers: '#64748b',
+    pdf_oxide: '#7c8ca3',
+    pymupdf: '#8c96a5',
+    pdfplumber: '#a1a8b3',
+    camelot: '#b47b56',
+    tabula: '#948678'
+  };
+
+  const VIEWS = {
+    scatter: {
+      metrics: [
+        { id: 'icdar_struct', label: 'ICDAR 2013 (Struct F1 vs pages/s)' },
+        { id: 'icdar_region', label: 'ICDAR 2013 (Region F1 vs pages/s)' },
+        { id: 'scitsr_macro', label: 'SciTSR (Macro F1 vs docs/s)' }
+      ],
+      supportsLog: false
+    },
+    icdar: {
+      metrics: [
+        { id: 'strF1', label: 'Struct F1' },
+        { id: 'regF1', label: 'Region F1' },
+        { id: 'pr_struct', label: 'Struct Precision & Recall' },
+        { id: 'pr_region', label: 'Region Precision & Recall' },
+        { id: 'pps', label: 'Throughput (pages/s)' },
+        { id: 'totalSec', label: 'Total Time (s)' }
+      ],
+      supportsLog: true
+    },
+    scitsr: {
+      metrics: [
+        { id: 'macroF1', label: 'Macro F1' },
+        { id: 'microF1', label: 'Micro F1' },
+        { id: 'pr_macro', label: 'Macro Precision & Recall' },
+        { id: 'dps', label: 'Throughput (docs/s)' },
+        { id: 'totalSec', label: 'Extract Time (s)' }
+      ],
+      supportsLog: true
+    },
+    large: {
+      metrics: [
+        { id: 'pps', label: 'Throughput (pages/s)' },
+        { id: 'elapsedSec', label: 'Elapsed Time (s)' },
+        { id: 'rssMb', label: 'Peak RSS (MiB)' }
+      ],
+      supportsLog: true
+    }
+  };
+
+  const state = {
+    view: 'scatter',
+    metric: 'icdar_struct',
+    displayMode: 'chart',
+    logScale: false
+  };
+
+  const els = {
+    chartShell: document.getElementById('chart-shell'),
+    viewTabs: document.getElementById('view-tabs'),
+    displayMode: document.getElementById('display-mode'),
+    subToolbar: document.getElementById('sub-toolbar'),
+    chartStage: document.getElementById('chart-stage'),
+    tableStage: document.getElementById('table-stage'),
+    tablePanels: Array.from(document.querySelectorAll('[data-table-panel]')),
+    chartOptions: document.getElementById('chart-options'),
+    metricPills: document.getElementById('metric-pills'),
+    optLog: document.getElementById('opt-log'),
+    optLogWrap: document.getElementById('opt-log-wrap'),
+    icdarTableTitle: document.getElementById('icdar-table-title'),
+    scitsrTableTitle: document.getElementById('scitsr-table-title'),
+    title: document.getElementById('chart-title'),
+    subtitle: document.getElementById('chart-subtitle'),
+    svgWrap: document.getElementById('chart-svg-wrap'),
+    note: document.getElementById('chart-note'),
+    tooltip: document.getElementById('tooltip')
+  };
+
+  function syncDisplayMode() {
+    els.chartShell.classList.add('js-ready');
+    const isTable = state.displayMode === 'table';
+    els.displayMode.querySelectorAll('.mode-btn').forEach(b => {
+      const active = b.dataset.mode === state.displayMode;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    els.chartStage.dataset.stageHidden = isTable ? 'true' : 'false';
+    els.tableStage.dataset.stageHidden = isTable ? 'false' : 'true';
+    els.subToolbar.dataset.stageHidden = (isTable && state.view !== 'scatter') ? 'true' : 'false';
+    els.chartOptions.style.display = isTable ? 'none' : 'flex';
+
+    const targetTable = state.view === 'scatter'
+      ? (state.metric === 'scitsr_macro' ? 'scitsr' : 'icdar')
+      : state.view;
+    els.tableStage.dataset.tableFilter = state.view === 'scatter' ? state.metric : 'all';
+
+    if (els.icdarTableTitle) {
+      if (state.view === 'scatter' && state.metric === 'icdar_struct') {
+        els.icdarTableTitle.textContent = 'ICDAR 2013 — Structure F1 vs. Throughput (67 PDFs, 238 pages)';
+      } else if (state.view === 'scatter' && state.metric === 'icdar_region') {
+        els.icdarTableTitle.textContent = 'ICDAR 2013 — Region F1 vs. Throughput (67 PDFs, 238 pages)';
+      } else {
+        els.icdarTableTitle.textContent = 'ICDAR 2013 — Accuracy & Speed (67 PDFs, 238 pages)';
+      }
+    }
+    if (els.scitsrTableTitle) {
+      els.scitsrTableTitle.textContent = (state.view === 'scatter' && state.metric === 'scitsr_macro')
+        ? 'SciTSR — Macro F1 vs. Throughput (3,000 single-table PDFs)'
+        : 'SciTSR Test Split — Accuracy & Speed (3,000 single-table PDFs)';
+    }
+
+    els.tablePanels.forEach(p => {
+      p.dataset.panelHidden = p.dataset.tablePanel === targetTable ? 'false' : 'true';
+    });
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function showTip(e, html) {
+    els.tooltip.innerHTML = html;
+    els.tooltip.classList.add('show');
+    moveTip(e);
+  }
+  function moveTip(e) {
+    const pad = 14;
+    const w = els.tooltip.offsetWidth || 200;
+    const h = els.tooltip.offsetHeight || 60;
+    let x = e.clientX + pad;
+    let y = e.clientY + pad;
+    if (x + w > window.innerWidth - 10) x = e.clientX - w - pad;
+    if (y + h > window.innerHeight - 10) y = e.clientY - h - pad;
+    els.tooltip.style.left = x + 'px';
+    els.tooltip.style.top = y + 'px';
+  }
+  function hideTip() {
+    els.tooltip.classList.remove('show');
+  }
+
+  function bindTooltips() {
+    els.svgWrap.querySelectorAll('[data-tip]').forEach(node => {
+      node.style.cursor = 'pointer';
+      node.addEventListener('mouseenter', e => showTip(e, node.getAttribute('data-tip')));
+      node.addEventListener('mousemove', moveTip);
+      node.addEventListener('mouseleave', hideTip);
+    });
+  }
+
+  function buildMetricPills() {
+    const cfg = VIEWS[state.view];
+    els.metricPills.innerHTML = cfg.metrics.map(m =>
+      `<button type="button" class="metric-btn${m.id === state.metric ? ' active' : ''}" data-metric="${m.id}">${esc(m.label)}</button>`
+    ).join('');
+    els.metricPills.querySelectorAll('.metric-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.metric = btn.dataset.metric;
+        buildMetricPills();
+        renderChart();
+        syncDisplayMode();
+      });
+    });
+
+    const isRatioMetric = ['strF1', 'regF1', 'macroF1', 'microF1', 'pr_struct', 'pr_region', 'pr_macro'].includes(state.metric);
+    els.optLogWrap.style.display = (cfg.supportsLog && !isRatioMetric) ? 'inline-flex' : 'none';
+  }
+
+  // Horizontal Bar Chart Renderer
+  function renderBarChart({ rows, valueKey, formatVal, maxFixed, useLog }) {
+    const W = 860;
+    const labelW = 162;
+    const rightPad = 98;
+    const topPad = 24;
+    const rowH = 40;
+    const barH = 22;
+    const H = topPad + rows.length * rowH + 34;
+    const plotW = W - labelW - rightPad;
+
+    const validVals = rows.map(r => r[valueKey]).filter(v => typeof v === 'number' && v > 0);
+    const maxVal = maxFixed || Math.max(...validVals, 1) * 1.12;
+    const minLog = Math.pow(10, Math.floor(Math.log10(Math.min(...validVals, 1))));
+    const maxLog = Math.pow(10, Math.ceil(Math.log10(Math.max(...validVals, 10))));
+
+    const xOf = v => {
+      if (useLog && v > 0) {
+        const t = (Math.log10(v) - Math.log10(minLog)) / (Math.log10(maxLog) - Math.log10(minLog));
+        return labelW + Math.max(0.02, t) * plotW;
+      }
+      return labelW + (v / maxVal) * plotW;
+    };
+
+    // Grid ticks
+    let ticks = [];
+    if (useLog) {
+      for (let p = Math.round(Math.log10(minLog)); p <= Math.round(Math.log10(maxLog)); p++) {
+        ticks.push(Math.pow(10, p));
+      }
+    } else if (maxFixed === 1) {
+      ticks = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
+    } else {
+      const step = niceStep(maxVal / 5);
+      for (let v = 0; v <= maxVal; v += step) ticks.push(v);
+    }
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img">`;
+    // Grid lines
+    ticks.forEach(t => {
+      const x = useLog ? xOf(t) : labelW + (t / maxVal) * plotW;
+      if (x < labelW - 1 || x > labelW + plotW + 2) return;
+      svg += `<line x1="${x.toFixed(1)}" y1="${topPad - 6}" x2="${x.toFixed(1)}" y2="${H - 28}" stroke="#ecece7" stroke-width="1"/>`;
+      const lbl = maxFixed === 1 ? t.toFixed(1) : (t >= 1000 ? (t / 1000) + 'k' : String(Number(t.toFixed(2))));
+      svg += `<text x="${x.toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="11" fill="#7a7a72" font-family="ui-monospace, monospace">${lbl}</text>`;
+    });
+
+    rows.forEach((r, i) => {
+      const y = topPad + i * rowH;
+      const cy = y + barH / 2 + 4;
+      const val = r[valueKey];
+      const color = COLORS[r.id] || '#7c8ca3';
+      const isHighlight = r.isPdfni;
+
+      svg += `<text x="${labelW - 12}" y="${cy}" text-anchor="end" font-size="13" font-weight="${isHighlight ? '700' : '500'}" fill="${isHighlight ? '#1f1f1c' : '#4a4a44'}" font-family="ui-monospace, monospace">${esc(r.label)}</text>`;
+
+      if (val === null || val === undefined) {
+        svg += `<rect x="${labelW}" y="${y}" width="${plotW}" height="${barH}" rx="4" fill="#fef3c7" stroke="#f59e0b" stroke-dasharray="4 3"/>`;
+        svg += `<text x="${labelW + 10}" y="${cy}" font-size="12" font-weight="600" fill="#b45309">Timed out (&gt;600 s)</text>`;
+      } else {
+        const tip = r._tip || `<strong>${esc(r.label)}</strong><br>${formatVal(val)}`;
+        const bw = Math.max(4, xOf(val) - labelW);
+        svg += `<g data-tip="${esc(tip)}">`;
+        svg += `<rect x="${labelW}" y="${y}" width="${plotW}" height="${barH}" rx="4" fill="#f7f7f4"/>`;
+        svg += `<rect x="${labelW}" y="${y}" width="${bw.toFixed(1)}" height="${barH}" rx="4" fill="${color}" opacity="${isHighlight ? '1' : '0.85'}"/>`;
+        svg += `<text x="${(labelW + bw + 8).toFixed(1)}" y="${cy}" font-size="12.5" font-weight="${isHighlight ? '700' : '600'}" fill="${isHighlight ? '#245753' : '#3a3a35'}" font-family="ui-monospace, monospace">${formatVal(val)}${r.timeout ? ' *' : ''}</text>`;
+        svg += `</g>`;
+      }
+    });
+
+    svg += `</svg>`;
+    els.svgWrap.innerHTML = svg;
+    bindTooltips();
+  }
+
+  // Grouped Precision / Recall Bar Chart
+  function renderGroupedPRChart(rows, pKey, rKey, f1Key) {
+    const W = 860;
+    const labelW = 162;
+    const rightPad = 95;
+    const topPad = 30;
+    const rowH = 48;
+    const H = topPad + rows.length * rowH + 34;
+    const plotW = W - labelW - rightPad;
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img">`;
+    // Legend
+    svg += `<rect x="${labelW}" y="6" width="12" height="10" rx="2" fill="#2f6f6a"/><text x="${labelW + 18}" y="15" font-size="12" fill="#4a4a44">Precision</text>`;
+    svg += `<rect x="${labelW + 96}" y="6" width="12" height="10" rx="2" fill="#7fb3ae"/><text x="${labelW + 114}" y="15" font-size="12" fill="#4a4a44">Recall</text>`;
+
+    [0, 0.2, 0.4, 0.6, 0.8, 1.0].forEach(t => {
+      const x = labelW + t * plotW;
+      svg += `<line x1="${x.toFixed(1)}" y1="${topPad - 4}" x2="${x.toFixed(1)}" y2="${H - 28}" stroke="#ecece7"/>`;
+      svg += `<text x="${x.toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="11" fill="#7a7a72" font-family="ui-monospace, monospace">${t.toFixed(1)}</text>`;
+    });
+
+    rows.forEach((r, i) => {
+      const y = topPad + i * rowH;
+      const pVal = r[pKey], rVal = r[rKey], fVal = r[f1Key];
+      const pW = pVal * plotW;
+      const rW = rVal * plotW;
+      const pCol = r.isPdfni ? '#2f6f6a' : '#64748b';
+      const rCol = r.isPdfni ? '#6cb0a9' : '#a8b3c2';
+      const tip = `<strong>${esc(r.label)}</strong><br>Precision: ${pVal.toFixed(4)}<br>Recall: ${rVal.toFixed(4)}<br>F1: ${fVal.toFixed(4)}`;
+
+      svg += `<text x="${labelW - 12}" y="${y + 20}" text-anchor="end" font-size="13" font-weight="${r.isPdfni ? '700' : '500'}" fill="${r.isPdfni ? '#1f1f1c' : '#4a4a44'}" font-family="ui-monospace, monospace">${esc(r.label)}</text>`;
+      svg += `<g data-tip="${esc(tip)}">`;
+      svg += `<rect x="${labelW}" y="${y + 4}" width="${plotW}" height="12" rx="3" fill="#f7f7f4"/>`;
+      svg += `<rect x="${labelW}" y="${y + 4}" width="${pW.toFixed(1)}" height="12" rx="3" fill="${pCol}"/>`;
+      svg += `<text x="${(labelW + pW + 6).toFixed(1)}" y="${y + 14}" font-size="11.5" fill="#3a3a35" font-family="ui-monospace, monospace">P ${pVal.toFixed(4)}</text>`;
+
+      svg += `<rect x="${labelW}" y="${y + 20}" width="${plotW}" height="12" rx="3" fill="#f7f7f4"/>`;
+      svg += `<rect x="${labelW}" y="${y + 20}" width="${rW.toFixed(1)}" height="12" rx="3" fill="${rCol}"/>`;
+      svg += `<text x="${(labelW + rW + 6).toFixed(1)}" y="${y + 30}" font-size="11.5" fill="#66665e" font-family="ui-monospace, monospace">R ${rVal.toFixed(4)}</text>`;
+      svg += `</g>`;
+    });
+
+    svg += `</svg>`;
+    els.svgWrap.innerHTML = svg;
+    bindTooltips();
+  }
+
+  // Scatter Chart (Accuracy vs Throughput on Log X Axis)
+  function renderScatterChart({ rows, xKey, yKey, xLabel, yLabel }) {
+    const W = 860, H = 400;
+    const padL = 70, padR = 44, padT = 28, padB = 56;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+
+    const xMinLog = 0; // 10^0 = 1
+    const xMaxLog = 3.5; // ~3162
+    const yMin = 0.30;
+    const yMax = 1.00;
+
+    const xOf = v => padL + ((Math.log10(Math.max(v, 1)) - xMinLog) / (xMaxLog - xMinLog)) * plotW;
+    const yOf = v => padT + (1 - (v - yMin) / (yMax - yMin)) * plotH;
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img">`;
+
+    // Y grid
+    for (let yv = 0.3; yv <= 1.001; yv += 0.1) {
+      const y = yOf(yv);
+      svg += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + plotW}" y2="${y.toFixed(1)}" stroke="#ecece7"/>`;
+      svg += `<text x="${padL - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#7a7a72" font-family="ui-monospace, monospace">${yv.toFixed(1)}</text>`;
+    }
+    // X grid (log ticks)
+    [1, 3, 10, 30, 100, 300, 1000, 3000].forEach(xv => {
+      const x = xOf(xv);
+      if (x > padL + plotW + 2) return;
+      svg += `<line x1="${x.toFixed(1)}" y1="${padT}" x2="${x.toFixed(1)}" y2="${padT + plotH}" stroke="#ecece7"/>`;
+      svg += `<text x="${x.toFixed(1)}" y="${padT + plotH + 18}" text-anchor="middle" font-size="11" fill="#7a7a72" font-family="ui-monospace, monospace">${xv}</text>`;
+    });
+
+    // Axes labels
+    svg += `<text x="${padL + plotW / 2}" y="${H - 12}" text-anchor="middle" font-size="12.5" font-weight="600" fill="#4a4a44">${esc(xLabel)} (log scale)</text>`;
+    svg += `<text x="18" y="${padT + plotH / 2}" text-anchor="middle" font-size="12.5" font-weight="600" fill="#4a4a44" transform="rotate(-90 18 ${padT + plotH / 2})">${esc(yLabel)}</text>`;
+
+    // Label offset overrides to prevent overlap
+    const offsets = {
+      pdfni_rust: [8, 22, 'end'],
+      pdfni: [-6, -14, 'end'],
+      pdfni_1t: [-14, 4, 'end'],
+      tablers: [-12, 16, 'end'],
+      pdf_oxide: [12, -8, 'start'],
+      pymupdf: [12, -8, 'start'],
+      pdfplumber: [12, 16, 'start'],
+      camelot: [12, -8, 'start'],
+      tabula: [12, 4, 'start']
+    };
+
+    rows.forEach(r => {
+      const cx = xOf(r[xKey]);
+      const cy = yOf(r[yKey]);
+      const col = COLORS[r.id] || '#64748b';
+      const rad = r.isPdfni ? (r.id === 'pdfni' || r.id === 'pdfni_rust' ? 8.5 : 7) : 6.5;
+      const [dx, dy, anchor] = offsets[r.id] || [10, -8, 'start'];
+      const tip = `<strong>${esc(r.label)}</strong><br>${esc(yLabel)}: <strong>${r[yKey].toFixed(4)}</strong><br>${esc(xLabel)}: <strong>${r[xKey].toFixed(1)}</strong>`;
+
+      svg += `<g data-tip="${esc(tip)}">`;
+      if (r.id === 'pdfni' || r.id === 'pdfni_rust') {
+        svg += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="14" fill="rgba(47,111,106,0.14)"/>`;
+      }
+      svg += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${rad}" fill="${col}" stroke="#fff" stroke-width="2"/>`;
+      svg += `<text x="${(cx + dx).toFixed(1)}" y="${(cy + dy).toFixed(1)}" text-anchor="${anchor}" font-size="${r.isPdfni ? '12.5' : '12'}" font-weight="${r.isPdfni ? '700' : '600'}" fill="${r.isPdfni ? '#1d4f4b' : '#4a4a44'}" font-family="ui-monospace, monospace">${esc(r.label)}</text>`;
+      svg += `</g>`;
+    });
+
+    svg += `</svg>`;
+    els.svgWrap.innerHTML = svg;
+    bindTooltips();
+  }
+
+  function niceStep(raw) {
+    const pow = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+    const n = raw / pow;
+    if (n <= 1) return pow;
+    if (n <= 2) return 2 * pow;
+    if (n <= 5) return 5 * pow;
+    return 10 * pow;
+  }
+
+  function renderChart() {
+    const v = state.view;
+    const m = state.metric;
+
+    if (v === 'scatter') {
+      if (m === 'scitsr_macro') {
+        els.title.textContent = 'SciTSR (3,000 PDFs) — Macro F1 vs. Throughput';
+        els.subtitle.textContent = 'Upper-right indicates higher accuracy and higher speed';
+        els.note.textContent = 'Note: camelot hit the 900 s timeout cap after 2,643 / 3,000 documents (scored on completed docs).';
+        renderScatterChart({
+          rows: DATA.scitsr,
+          xKey: 'dps',
+          yKey: 'macroF1',
+          xLabel: 'Throughput (docs/sec)',
+          yLabel: 'Official Macro F1'
+        });
+      } else {
+        const isStruct = m === 'icdar_struct';
+        const rows = DATA.icdar2013;
+        els.title.textContent = `ICDAR 2013 (67 PDFs) — ${isStruct ? 'Structure F1' : 'Region F1'} vs. Throughput`;
+        els.subtitle.textContent = 'Upper-right indicates higher accuracy and higher speed';
+        els.note.textContent = 'Full end-to-end pipeline with no ground-truth table regions. Original and Corrected GT produced identical scores across all 7 libraries.';
+        renderScatterChart({
+          rows,
+          xKey: 'pps',
+          yKey: isStruct ? 'strF1' : 'regF1',
+          xLabel: 'Throughput (pages/sec)',
+          yLabel: isStruct ? 'Structure F1 (Cell Adjacency)' : 'Region F1 (Char-Level)'
+        });
+      }
+      return;
+    }
+
+    if (v === 'icdar') {
+      const rows = DATA.icdar2013;
+      els.note.textContent = 'ICDAR 2013 (eu + us, 67 PDFs / 238 pages). Scored via official dataset-tools Java evaluator; Original and Corrected ground truth yielded identical metrics.';
+      if (m === 'pr_struct') {
+        els.title.textContent = 'ICDAR 2013 — Structure Precision & Recall';
+        els.subtitle.textContent = 'Cell adjacency precision vs. recall';
+        renderGroupedPRChart(rows, 'strP', 'strR', 'strF1');
+      } else if (m === 'pr_region') {
+        els.title.textContent = 'ICDAR 2013 — Region Precision & Recall';
+        els.subtitle.textContent = 'Character-level table region precision vs. recall';
+        renderGroupedPRChart(rows, 'regP', 'regR', 'regF1');
+      } else if (m === 'strF1' || m === 'regF1') {
+        const isStr = m === 'strF1';
+        els.title.textContent = `ICDAR 2013 — ${isStr ? 'Structure F1' : 'Region F1'}`;
+        els.subtitle.textContent = isStr ? 'Cell adjacency F1 across all 156 GT tables' : 'Character-level region detection F1';
+        const sorted = [...rows].sort((a, b) => b[m] - a[m]).map(r => ({
+          ...r,
+          _tip: `<strong>${esc(r.label)}</strong><br>F1: ${r[m].toFixed(4)}<br>P: ${r[isStr ? 'strP' : 'regP'].toFixed(4)} / R: ${r[isStr ? 'strR' : 'regR'].toFixed(4)}`
+        }));
+        renderBarChart({ rows: sorted, valueKey: m, formatVal: x => x.toFixed(4), maxFixed: 1, useLog: false });
+      } else if (m === 'pps') {
+        els.title.textContent = 'ICDAR 2013 — Throughput (pages/sec)';
+        els.subtitle.textContent = '67 PDFs / 238 pages, excluding 1-PDF warmup';
+        const sorted = [...rows].sort((a, b) => b.pps - a.pps).map(r => ({
+          ...r,
+          _tip: `<strong>${esc(r.label)}</strong><br>Throughput: ${r.pps.toFixed(1)} pages/s<br>Total: ${r.totalSec.toFixed(2)} s (median ${r.medianMs} ms/PDF)`
+        }));
+        renderBarChart({ rows: sorted, valueKey: 'pps', formatVal: x => `${x.toFixed(1)} p/s`, useLog: state.logScale });
+      } else {
+        els.title.textContent = 'ICDAR 2013 — Total Extraction Time (seconds)';
+        els.subtitle.textContent = 'Lower is faster (67 PDFs / 238 pages)';
+        const sorted = [...rows].sort((a, b) => a.totalSec - b.totalSec).map(r => ({
+          ...r,
+          _tip: `<strong>${esc(r.label)}</strong><br>Total Time: ${r.totalSec.toFixed(2)} s<br>Throughput: ${r.pps.toFixed(1)} pages/s`
+        }));
+        renderBarChart({ rows: sorted, valueKey: 'totalSec', formatVal: x => `${x.toFixed(2)} s`, useLog: state.logScale });
+      }
+      return;
+    }
+
+    if (v === 'scitsr') {
+      const rows = DATA.scitsr;
+      els.note.textContent = '* camelot hit the 900 s cap after 2,643 / 3,000 PDFs. All other libraries completed all 3,000 PDFs with 0 errors.';
+      if (m === 'pr_macro') {
+        els.title.textContent = 'SciTSR (3,000 PDFs) — Macro Precision & Recall';
+        els.subtitle.textContent = 'Official scitsr.eval macro-averaged precision and recall';
+        renderGroupedPRChart(rows, 'macroP', 'macroR', 'macroF1');
+      } else if (m === 'macroF1' || m === 'microF1') {
+        const isMac = m === 'macroF1';
+        els.title.textContent = `SciTSR (3,000 PDFs) — ${isMac ? 'Official Macro F1' : 'Micro F1'}`;
+        els.subtitle.textContent = isMac ? 'Document-averaged cell adjacency F1' : 'Global cell adjacency F1 across all tables';
+        const sorted = [...rows].sort((a, b) => b[m] - a[m]).map(r => ({
+          ...r,
+          _tip: `<strong>${esc(r.label)}</strong><br>${isMac ? 'Macro' : 'Micro'} F1: ${r[m].toFixed(4)}<br>Docs scored: ${r.docs}`
+        }));
+        renderBarChart({ rows: sorted, valueKey: m, formatVal: x => x.toFixed(4), maxFixed: 1, useLog: false });
+      } else if (m === 'dps') {
+        els.title.textContent = 'SciTSR (3,000 PDFs) — Throughput (docs/sec)';
+        els.subtitle.textContent = 'Higher is faster';
+        const sorted = [...rows].sort((a, b) => b.dps - a.dps).map(r => ({
+          ...r,
+          _tip: `<strong>${esc(r.label)}</strong><br>${r.dps.toFixed(1)} docs/s<br>Time: ${r.totalSec.toFixed(2)} s (median ${r.medianMs} ms/PDF)`
+        }));
+        renderBarChart({ rows: sorted, valueKey: 'dps', formatVal: x => `${x.toFixed(1)} d/s`, useLog: state.logScale });
+      } else {
+        els.title.textContent = 'SciTSR (3,000 PDFs) — Total Extraction Time (seconds)';
+        els.subtitle.textContent = 'Lower is faster';
+        const sorted = [...rows].sort((a, b) => a.totalSec - b.totalSec).map(r => ({
+          ...r,
+          _tip: `<strong>${esc(r.label)}</strong><br>Extract Time: ${r.totalSec.toFixed(2)} s<br>${r.dps.toFixed(1)} docs/s`
+        }));
+        renderBarChart({ rows: sorted, valueKey: 'totalSec', formatVal: x => `${x.toFixed(2)} s`, useLog: state.logScale });
+      }
+      return;
+    }
+
+    if (v === 'large') {
+      const rows = DATA.large2380;
+      els.note.textContent = '2,380-page single PDF (ICDAR 2013 x 10, ~52.2 MiB). Peak RSS measured via ru_maxrss in an isolated process. Timeout cap: 600 s (camelot timed out).';
+      if (m === 'pps') {
+        els.title.textContent = '2,380-Page Single PDF — Throughput (pages/sec)';
+        els.subtitle.textContent = 'Higher is faster';
+        const sorted = [...rows].sort((a, b) => (b.pps ?? -1) - (a.pps ?? -1)).map(r => ({
+          ...r,
+          _tip: r.pps ? `<strong>${esc(r.label)}</strong><br>${r.pps.toFixed(1)} pages/s (${r.elapsedSec.toFixed(2)} s)<br>Peak RSS: ${r.rssMb} MiB · Tables: ${r.tables}` : ''
+        }));
+        renderBarChart({ rows: sorted, valueKey: 'pps', formatVal: x => `${x.toFixed(1)} p/s`, useLog: state.logScale });
+      } else if (m === 'elapsedSec') {
+        els.title.textContent = '2,380-Page Single PDF — Elapsed Time (seconds)';
+        els.subtitle.textContent = 'Lower is faster';
+        const sorted = [...rows].sort((a, b) => (a.elapsedSec ?? 1e9) - (b.elapsedSec ?? 1e9)).map(r => ({
+          ...r,
+          _tip: r.elapsedSec ? `<strong>${esc(r.label)}</strong><br>Elapsed: ${r.elapsedSec.toFixed(2)} s (${r.pps.toFixed(1)} pages/s)<br>Peak RSS: ${r.rssMb} MiB` : ''
+        }));
+        renderBarChart({ rows: sorted, valueKey: 'elapsedSec', formatVal: x => `${x.toFixed(2)} s`, useLog: state.logScale });
+      } else {
+        els.title.textContent = '2,380-Page Single PDF — Peak Memory (RSS in MiB)';
+        els.subtitle.textContent = 'Lower uses less memory (note: pdfni decodes pages in parallel)';
+        const sorted = [...rows].sort((a, b) => (a.rssMb ?? 1e9) - (b.rssMb ?? 1e9)).map(r => ({
+          ...r,
+          _tip: r.rssMb ? `<strong>${esc(r.label)}</strong><br>Peak RSS: ${r.rssMb.toFixed(1)} MiB<br>Elapsed: ${r.elapsedSec.toFixed(2)} s (${r.pps.toFixed(1)} pages/s)` : ''
+        }));
+        renderBarChart({ rows: sorted, valueKey: 'rssMb', formatVal: x => `${x.toFixed(1)} MiB`, useLog: state.logScale });
+      }
+      return;
+    }
+  }
+
+  // Event wiring: benchmark view tabs & Chart/Table mode switch
+  els.viewTabs.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.view = btn.dataset.view;
+      state.metric = VIEWS[state.view].metrics[0].id;
+      els.viewTabs.querySelectorAll('.tab-btn').forEach(b => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+      buildMetricPills();
+      renderChart();
+      syncDisplayMode();
+    });
+  });
+
+  els.displayMode.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.displayMode = btn.dataset.mode;
+      syncDisplayMode();
+    });
+  });
+
+  els.optLog.addEventListener('change', () => { state.logScale = els.optLog.checked; renderChart(); });
+
+  // Quick Start tabs
+  const qsShell = document.querySelector('.qs-shell');
+  function setQuickStart(target) {
+    qsShell?.classList.add('js-ready');
+    document.querySelectorAll('[data-qs]').forEach(b => {
+      const active = b.dataset.qs === target;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    document.querySelectorAll('[data-qs-panel]').forEach(p => {
+      p.dataset.qsHidden = p.dataset.qsPanel !== target ? 'true' : 'false';
+    });
+  }
+  document.querySelectorAll('[data-qs]').forEach(btn => {
+    btn.addEventListener('click', () => setQuickStart(btn.dataset.qs));
+  });
+  setQuickStart('rust');
+
+  // Copy buttons
+  document.querySelectorAll('[data-copy]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const code = btn.parentElement.querySelector('code')?.textContent || '';
+      navigator.clipboard?.writeText(code).then(() => {
+        btn.textContent = 'Copied';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
+      });
+    });
+  });
+
+  // Init
+  buildMetricPills();
+  renderChart();
+  syncDisplayMode();
+})();
+</script>
+</body>
+</html>
